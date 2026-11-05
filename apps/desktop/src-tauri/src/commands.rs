@@ -158,24 +158,38 @@ fn output_dir(app: &AppHandle, prefs: &Settings, original: &Path) -> Result<Path
     Ok(dir)
 }
 
-/// `Kompacted` next to Kompacter.exe. Falls back to the app's local data folder if the
-/// install folder isn't writable.
+/// Kompacter's own output folder, first one that works:
+/// 1. `Kompacted` next to Kompacter.exe (portable style)
+/// 2. `Videos\Kompacter`
+/// 3. the app's local data folder
 fn app_outputs(app: &AppHandle) -> Result<PathBuf, String> {
-    let beside_exe = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("Kompacted")));
-    if let Some(dir) = beside_exe {
-        if std::fs::create_dir_all(&dir).is_ok() {
-            return Ok(dir);
-        }
+    let candidates = [
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("Kompacted"))),
+        app.path().video_dir().ok().map(|d| d.join("Kompacter")),
+        app.path()
+            .app_local_data_dir()
+            .ok()
+            .map(|d| d.join("Kompacted")),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|d| writable(d))
+        .ok_or_else(|| "no writable folder for compressed files".into())
+}
+
+/// Creates `dir` if needed and checks a file can actually be written there (a folder can
+/// exist and still be read-only, e.g. under Program Files).
+fn writable(dir: &Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
     }
-    let dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("Kompacted");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
+    let probe = dir.join(".kompacter-write-test");
+    let ok = std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    ok
 }
 
 /// "Replace the original": the original goes to the Recycle Bin (never deleted outright)

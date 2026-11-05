@@ -11,7 +11,7 @@
   import * as api from "./api";
 
   const OUTPUTS: { v: api.Settings["output"]; label: string; small: string }[] = [
-    { v: "app", label: "Kompacter folder", small: "Next to the app · deleted after 7 days" },
+    { v: "app", label: "Kompacter folder", small: "Next to the app (or Videos) · deleted after 7 days" },
     { v: "beside", label: "Next to the original", small: "In a “Kompacted” folder beside it" },
     { v: "custom", label: "A folder I choose", small: "" },
     { v: "replace", label: "Replace the original", small: "The original goes to the Recycle Bin" },
