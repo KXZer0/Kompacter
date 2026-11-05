@@ -53,3 +53,6 @@ export const showInFolder = (path: string) => invoke<void>("show_in_folder", { p
 export const encoders = () => invoke<Encoder[]>("encoders");
 export const getSettings = () => invoke<Settings>("get_settings");
 export const setSettings = (settings: Settings) => invoke<void>("set_settings", { settings });
+/** Filmstrip frames for the trimmer, as data: URLs, in time order. */
+export const thumbnails = (path: string, count = 10) =>
+  invoke<string[]>("thumbnails", { path, count });
