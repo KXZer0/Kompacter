@@ -23,11 +23,21 @@ class Card {
   private spring = new Spring(BASE_H);
   private raf = 0;
   private last = 0;
-  private closing: { from: number; start: number; done: () => void } | null = null;
+  private closing: { from: number; start: number; done: (closed: boolean) => void } | null = null;
   private wanted = BASE_H;
+  /** Height last drawn, so a reopen mid-close starts from where the card is. */
+  private shown = BASE_H;
+
+  /** True while the card is folding away. */
+  get isClosing() {
+    return this.closing !== null;
+  }
 
   attach(el: HTMLElement) {
     this.el = el;
+    // In the app the card starts folded away and opens when the tray shows the window,
+    // so it never flashes at full size first. In a plain browser (UI dev) it's just open.
+    if (inTauri) el.classList.add("closed");
     this.paint(this.spring.value);
   }
 
@@ -42,19 +52,27 @@ class Card {
 
   /** Grow open from a pill at the bottom edge, like a macOS panel. */
   open() {
-    this.closing = null;
+    const wasClosed = !this.closing;
+    if (this.closing) {
+      // Reopened mid-close: settle the old close and grow back from the current height.
+      this.closing.done(false);
+      this.closing = null;
+      this.el?.classList.remove("closing");
+    }
     this.el?.classList.remove("closed");
     if (reduced()) return this.jump(this.wanted);
-    this.spring.set(PILL_H);
+    this.spring.set(wasClosed ? PILL_H : this.shown);
     this.spring.configure(0.5, 0.72);
     this.go(this.wanted);
   }
 
-  /** Fold down into the bottom edge; resolves when it's gone. */
-  close(): Promise<void> {
+  /** Fold down into the bottom edge. Resolves true once it's gone, or false if it was
+   *  reopened (or was already closing) before the fold finished. */
+  close(): Promise<boolean> {
+    if (this.closing) return Promise.resolve(false); // already on its way
     if (reduced() || !this.el) {
       this.el?.classList.add("closed");
-      return Promise.resolve();
+      return Promise.resolve(true);
     }
     return new Promise((done) => {
       this.closing = { from: this.spring.value, start: performance.now(), done };
@@ -93,7 +111,7 @@ class Card {
           this.el?.classList.remove("closing");
           this.el?.classList.add("closed");
           this.spring.set(this.wanted);
-          return done();
+          return done(true);
         }
       } else {
         this.spring.step(dt);
@@ -114,6 +132,7 @@ class Card {
   /** One style write per frame; height changes clip the content from the top. */
   private paint(h: number, opacity = 1) {
     if (!this.el) return;
+    this.shown = h;
     this.el.style.height = `${h}px`;
     this.el.style.opacity = opacity < 1 ? String(Math.max(0, opacity * 1.4)) : "";
   }

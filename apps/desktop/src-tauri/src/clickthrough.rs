@@ -4,6 +4,9 @@
 //! inside it without resizing the window (resizing mid-animation is what made it choppy).
 //! A small loop watches the cursor: over the card the window takes the mouse, elsewhere
 //! clicks fall through to whatever is behind.
+//!
+//! The loop asks Windows directly for the window's position and visibility. Going through
+//! Tauri for that would hop onto the UI thread 60 times a second and stutter animations.
 
 use std::sync::{Arc, Mutex};
 
@@ -13,22 +16,29 @@ use tauri::AppHandle;
 pub fn start(app: &AppHandle, hit: Arc<Mutex<[f64; 4]>>) {
     use std::time::Duration;
     use tauri::Manager;
-    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, GetWindowRect, IsWindowVisible,
+    };
 
     /// Extra margin around the card, so the flag flips before the cursor reaches a button.
     const MARGIN: f64 = 6.0;
 
-    let app = app.clone();
+    let Some(win) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(hwnd) = win.hwnd() else { return };
+    // Window handles aren't Send; the number is all we need.
+    let hwnd = hwnd.0 as usize;
+
     std::thread::spawn(move || {
+        let hwnd = hwnd as HWND;
         let mut ignoring = false;
         loop {
             std::thread::sleep(Duration::from_millis(16));
-            let Some(win) = app.get_webview_window("main") else {
-                continue;
-            };
-            if !win.is_visible().unwrap_or(false) {
+            if unsafe { IsWindowVisible(hwnd) } == 0 {
                 if ignoring {
                     ignoring = false;
                     let _ = win.set_ignore_cursor_events(false);
@@ -36,18 +46,25 @@ pub fn start(app: &AppHandle, hit: Arc<Mutex<[f64; 4]>>) {
                 std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
-            let (Ok(origin), Ok(size), Ok(scale)) =
-                (win.outer_position(), win.outer_size(), win.scale_factor())
-            else {
-                continue;
+            let mut r = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
             };
             let mut pt = POINT { x: 0, y: 0 };
-            if unsafe { GetCursorPos(&mut pt) } == 0 {
+            if unsafe { GetWindowRect(hwnd, &mut r) } == 0 || unsafe { GetCursorPos(&mut pt) } == 0
+            {
                 continue;
             }
-            let x = (pt.x - origin.x) as f64 / scale;
-            let y = (pt.y - origin.y) as f64 / scale;
-            let (ww, wh) = (size.width as f64 / scale, size.height as f64 / scale);
+            let scale = match unsafe { GetDpiForWindow(hwnd) } {
+                0 => 1.0,
+                dpi => dpi as f64 / 96.0,
+            };
+            let x = (pt.x - r.left) as f64 / scale;
+            let y = (pt.y - r.top) as f64 / scale;
+            let ww = (r.right - r.left) as f64 / scale;
+            let wh = (r.bottom - r.top) as f64 / scale;
             let [rx, ry, rw, rh] = *hit.lock().unwrap();
             let on_card = rw > 0.0
                 && x >= rx - MARGIN

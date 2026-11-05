@@ -45,13 +45,28 @@ jobs:
           $license = Get-ChildItem ffmpeg-dl -Recurse -Filter LICENSE.txt | Select-Object -First 1
           Copy-Item $license.FullName "$dest/FFMPEG-LICENSE.txt"
 
+      # The installer takes its version from the tag: v0.0.2-test -> 0.0.2.
+      - name: Version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: apps/desktop/src-tauri
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart("v").Split("-")[0]
+          @{ version = $v } | ConvertTo-Json | Set-Content tauri.version.conf.json
+
       - name: Build installer
         working-directory: apps/desktop/src-tauri
-        run: npx --yes @tauri-apps/cli@2 build --config tauri.release.conf.json
+        shell: pwsh
+        run: |
+          $extra = @()
+          if (Test-Path tauri.version.conf.json) { $extra = @("--config", "tauri.version.conf.json") }
+          npx --yes @tauri-apps/cli@2 build --config tauri.release.conf.json @extra
 
       - name: Create draft release
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          # Tags with a dash (v0.0.2-test) are marked as pre-releases.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           files: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe

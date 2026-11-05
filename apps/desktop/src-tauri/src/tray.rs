@@ -45,20 +45,31 @@ pub fn toggle(app: &AppHandle) {
     }
 }
 
-/// Show the flyout window in the bottom-right corner, above the taskbar. The window is a
-/// fixed, mostly transparent canvas; the card inside grows open from its bottom edge.
+/// Show the flyout in the corner of the screen the mouse is on, inside the work area
+/// (the screen minus the taskbar, wherever it is). The window is a fixed, mostly
+/// transparent canvas; the card inside grows open from its bottom edge.
 pub fn show(app: &AppHandle) {
     let Some(w) = app.get_webview_window("main") else {
         return;
     };
-    if let (Ok(Some(m)), Ok(size)) = (w.current_monitor(), w.outer_size()) {
-        let scale = m.scale_factor();
-        let (mx, my) = (m.position().x, m.position().y);
-        let (mw, mh) = (m.size().width as i32, m.size().height as i32);
-        let margin = (2.0 * scale) as i32;
-        let taskbar = (48.0 * scale) as i32;
-        let x = mx + mw - size.width as i32 - margin;
-        let y = my + mh - size.height as i32 - taskbar - margin;
+    let monitor = app
+        .cursor_position()
+        .ok()
+        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+        .or_else(|| w.current_monitor().ok().flatten())
+        .or_else(|| w.primary_monitor().ok().flatten());
+    if let (Some(m), Ok(size), Ok(scale)) = (monitor, w.outer_size(), w.scale_factor()) {
+        // Size on the target monitor, which may use a different display scale.
+        let k = m.scale_factor() / scale;
+        let (ww, wh) = (
+            (size.width as f64 * k).round() as i32,
+            (size.height as f64 * k).round() as i32,
+        );
+        let area = m.work_area();
+        let (ax, ay) = (area.position.x, area.position.y);
+        let (aw, ah) = (area.size.width as i32, area.size.height as i32);
+        let x = ax + aw - ww;
+        let y = ay + ah - wh;
         let _ = w.set_position(PhysicalPosition::new(x, y));
     }
     let _ = w.show();

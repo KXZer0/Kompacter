@@ -70,7 +70,7 @@ fn main() {
         .setup(|app| {
             tray::create(app.handle())?;
             clickthrough::start(app.handle(), app.state::<AppState>().hit.clone());
-            commands::clean_old_outputs(app.handle());
+            commands::clean_old_outputs(app.handle(), None);
             // Detect GPU encoders in the background so the first compress doesn't wait.
             let engine = app.state::<AppState>().engine.clone();
             std::thread::spawn(move || {

@@ -123,6 +123,8 @@ pub async fn compress(
         }
         let copied = outcome.fits
             && crate::clipboard::copy_files(std::slice::from_ref(&outcome.path)).is_ok();
+        // The app can stay open for weeks, so tidy up here too, not just at startup.
+        clean_old_outputs(&app, Some(&outcome.path));
         Ok(Compressed { outcome, copied })
     })
     .await
@@ -147,15 +149,20 @@ pub fn hide(app: AppHandle) {
 /// - "beside": a `Kompacted` folder next to the original
 /// - "custom": the folder in `output_dir`
 /// - "replace": written to the app folder first, then swapped in for the original
+///
+/// If the chosen folder can't be written (read-only drive, unplugged USB stick, deleted
+/// custom folder), the app folder is used instead so the compress still works.
 fn output_dir(app: &AppHandle, prefs: &Settings, original: &Path) -> Result<PathBuf, String> {
     let parent = original.parent().unwrap_or(Path::new("."));
-    let dir = match prefs.output.as_str() {
-        "beside" => parent.join("Kompacted"),
-        "custom" if !prefs.output_dir.trim().is_empty() => PathBuf::from(&prefs.output_dir),
-        _ => app_outputs(app)?,
+    let chosen = match prefs.output.as_str() {
+        "beside" => Some(parent.join("Kompacted")),
+        "custom" if !prefs.output_dir.trim().is_empty() => Some(PathBuf::from(&prefs.output_dir)),
+        _ => None,
     };
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
+    match chosen {
+        Some(dir) if writable(&dir) => Ok(dir),
+        _ => app_outputs(app),
+    }
 }
 
 /// Kompacter's own output folder, first one that works:
@@ -194,23 +201,37 @@ fn writable(dir: &Path) -> bool {
 
 /// "Replace the original": the original goes to the Recycle Bin (never deleted outright)
 /// and the result takes its place, under the original name with the new extension.
+/// Folders are never replaced (the zip stays where it was made), and a different file that
+/// already has the new name is never overwritten: the result gets a numbered name instead.
 fn replace_original(made: &Path, original: &Path) -> Result<PathBuf, String> {
-    let name = if original.is_dir() {
-        original.file_name()
-    } else {
-        original.file_stem()
+    if original.is_dir() {
+        return Ok(made.to_path_buf());
     }
-    .map(|s| s.to_string_lossy().into_owned())
-    .unwrap_or_else(|| "kompacted".into());
-    let dest = match made.extension() {
-        Some(e) => original.with_file_name(format!("{name}.{}", e.to_string_lossy())),
-        None => original.with_file_name(&name),
-    };
+    let stem = original
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "kompacted".into());
+    let ext = made
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let mut dest = original.with_file_name(format!("{stem}{ext}"));
+    let mut n = 2;
+    while dest != original && dest.exists() {
+        dest = original.with_file_name(format!("{stem} ({n}){ext}"));
+        n += 1;
+    }
     trash::delete(original)
         .map_err(|e| format!("couldn't move the original to the Recycle Bin: {e}"))?;
     // rename fails across drives, so fall back to copy.
     if std::fs::rename(made, &dest).is_err() {
-        std::fs::copy(made, &dest).map_err(|e| e.to_string())?;
+        std::fs::copy(made, &dest).map_err(|e| {
+            format!(
+                "couldn't put the result in place ({e}). The original is in the Recycle Bin \
+                 and the result is at {}",
+                made.display()
+            )
+        })?;
         let _ = std::fs::remove_file(made);
     }
     Ok(dest)
@@ -229,9 +250,9 @@ pub fn open_outputs(app: AppHandle) -> Result<(), String> {
     r.map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// Delete files older than a week from the app's Kompacted folder. Runs once at startup;
-/// errors are ignored. Folders the user chose are never touched.
-pub fn clean_old_outputs(app: &AppHandle) {
+/// Delete files older than a week from the app's Kompacted folder. Runs at startup and
+/// after each compress; errors are ignored. Folders the user chose are never touched.
+pub fn clean_old_outputs(app: &AppHandle, keep: Option<&Path>) {
     let Ok(dir) = app_outputs(app) else { return };
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -244,7 +265,7 @@ pub fn clean_old_outputs(app: &AppHandle) {
             .ok()
             .and_then(|t| now.duration_since(t).ok())
             .is_some_and(|age| age > KEEP_OUTPUTS);
-        if old {
+        if old && keep != Some(e.path().as_path()) {
             let _ = std::fs::remove_file(e.path());
         }
     }

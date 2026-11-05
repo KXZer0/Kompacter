@@ -72,8 +72,9 @@
   let hovering = false;
   async function close() {
     clearTimeout(hideTimer);
-    await card.close();
-    await api.hide().catch(() => {});
+    hovering = false; // pointerleave doesn't fire when the card disappears under the mouse
+    // Only hide the window if the fold finished (a tray click can reopen it mid-close).
+    if (await card.close()) await api.hide().catch(() => {});
   }
   /** Fold away after `ms` if the user has moved on (not hovering, not dragging, not focused). */
   function autoHide(ms: number) {
@@ -182,7 +183,7 @@
       clearTimeout(hideTimer);
       card.open();
     }).catch(() => () => {});
-    const unClose = listen("flyout-close", () => close()).catch(() => () => {});
+    const unClose = listen("flyout-close", () => (card.isClosing ? card.open() : close())).catch(() => () => {});
     const onBlur = () => autoHide(1500);
     const onFocus = () => clearTimeout(hideTimer);
     window.addEventListener("blur", onBlur);
