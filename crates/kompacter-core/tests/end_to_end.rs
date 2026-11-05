@@ -81,6 +81,13 @@ fn video_fits_target_and_trim_works() {
         res.output_bytes
     );
 
+    let thumbs = engine.thumbnails(&info, 8, 48).unwrap();
+    assert!(thumbs.len() >= 6, "got {} thumbnails", thumbs.len());
+    assert!(
+        thumbs.iter().all(|t| t.starts_with(&[0xFF, 0xD8])),
+        "not JPEGs"
+    );
+
     opts.trim = Some(Trim::new(2.0, 5.0).unwrap());
     opts.mode = Mode::KeepQuality;
     let cut = run(&engine, &src, &opts);

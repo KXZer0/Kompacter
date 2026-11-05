@@ -224,3 +224,29 @@ pub fn get_settings(app: AppHandle) -> Settings {
 pub fn set_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
     settings::save(&app, &settings)
 }
+
+/// Filmstrip frames for the trimmer, as `data:` URLs (no file access needed in the UI).
+#[tauri::command]
+pub async fn thumbnails(
+    state: State<'_, AppState>,
+    path: String,
+    count: u32,
+) -> Result<Vec<String>, String> {
+    use base64::Engine as _;
+    let info = probe_cached(&state, Path::new(&path)).await?;
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let frames = engine
+            .thumbnails(&info, count.clamp(1, 24), 56)
+            .map_err(|e| e.to_string())?;
+        Ok(frames
+            .iter()
+            .map(|f| {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(f);
+                format!("data:image/jpeg;base64,{b64}")
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

@@ -11,6 +11,7 @@ mod jobs;
 pub mod plan;
 pub mod probe;
 pub mod size;
+mod thumbs;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -122,6 +123,11 @@ impl Engine {
     /// Hardware encoders that work on this PC, best first. Detected once, then cached.
     pub fn hw_encoders(&self) -> &[Encoder] {
         self.encoders.get_or_init(|| gpu::detect(&self.ff))
+    }
+
+    /// `count` small JPEG frames across a video, for the trimmer's filmstrip.
+    pub fn thumbnails(&self, info: &MediaInfo, count: u32, height: u32) -> Result<Vec<Vec<u8>>> {
+        thumbs::thumbnails(&self.ff, &info.path, info.duration, count, height)
     }
 
     pub fn probe(&self, path: &Path) -> Result<MediaInfo> {

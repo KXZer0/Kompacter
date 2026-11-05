@@ -41,6 +41,7 @@ fn main() {
             commands::clipboard_files,
             commands::show_in_folder,
             commands::encoders,
+            commands::thumbnails,
             commands::get_settings,
             commands::set_settings,
         ])
