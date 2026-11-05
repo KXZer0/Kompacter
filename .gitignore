@@ -2,3 +2,5 @@
 *.log
 *.log.mbtree
 /out
+/apps/kompacter/installer/dist
+/apps/kompacter/installer/*.exe

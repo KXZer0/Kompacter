@@ -14,7 +14,6 @@ const MIN_VIDEO_KBPS: f64 = 60.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Quality {
     Great,
     Okay,
@@ -35,7 +34,6 @@ impl Quality {
 
 /// A selected time range, in seconds from the start of the file.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Trim {
     pub start: f64,
     pub end: f64,
@@ -60,7 +58,6 @@ impl Trim {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct VideoPlan {
     pub width: u32,
     pub height: u32,

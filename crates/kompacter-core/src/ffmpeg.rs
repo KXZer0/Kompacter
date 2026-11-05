@@ -33,13 +33,28 @@ impl Default for Ffmpeg {
     }
 }
 
+/// A quiet child process: on Windows no console window pops up, and it runs at
+/// below-normal priority so games and the rest of the PC stay smooth while it works.
+pub(crate) fn command(program: &Path) -> Command {
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+        cmd.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+    }
+    cmd
+}
+
 /// Progress callback: receives 0.0..=1.0.
 pub type Progress<'a> = &'a mut dyn FnMut(f32);
 
 impl Ffmpeg {
     /// ffprobe as JSON. `Ok(None)` means ffprobe ran but couldn't read the file (not media).
     pub fn probe_json(&self, path: &Path) -> Result<Option<Value>> {
-        let out = Command::new(&self.ffprobe)
+        let out = command(&self.ffprobe)
             .args([
                 "-v",
                 "error",
@@ -72,7 +87,7 @@ impl Ffmpeg {
         progress: Progress,
         cancel: &AtomicBool,
     ) -> Result<()> {
-        let mut child = Command::new(&self.ffmpeg)
+        let mut child = command(&self.ffmpeg)
             .args([
                 "-hide_banner",
                 "-nostdin",

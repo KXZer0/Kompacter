@@ -1,7 +1,7 @@
 //! Hardware H.264 encoders. ffmpeg builds often *list* NVENC/QSV/AMF even when the PC has
 //! no such GPU, so each candidate is checked with a tiny real encode before it's trusted.
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Serialize;
 
@@ -9,7 +9,6 @@ use crate::ffmpeg::Ffmpeg;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Encoder {
     /// NVIDIA
     Nvenc,
@@ -109,7 +108,7 @@ pub fn detect(ff: &Ffmpeg) -> Vec<Encoder> {
 }
 
 fn works(ff: &Ffmpeg, enc: Encoder) -> bool {
-    Command::new(&ff.ffmpeg)
+    crate::ffmpeg::command(&ff.ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-nostdin"])
         .args(["-f", "lavfi", "-i", "color=black:s=256x256:r=30:d=0.2"])
         .args(["-c:v", enc.ffmpeg_name(), "-pix_fmt", enc.pix_fmt()])

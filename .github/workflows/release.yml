@@ -1,0 +1,68 @@
+name: Release
+
+# Push a tag like v0.0.3-test (or run it by hand) to build the Windows installer.
+# The result is a DRAFT GitHub Release: check it, then press Publish.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Kompacter
+        run: cargo build --release -p kompacter
+
+      # ffmpeg ships inside the installer so users don't install anything.
+      # GPL build (includes x264); its license goes into the install folder.
+      - name: Download ffmpeg
+        shell: pwsh
+        run: |
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          Invoke-WebRequest $url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-dl
+          $bin = (Get-ChildItem ffmpeg-dl -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
+          $dist = "apps/kompacter/installer/dist"
+          New-Item -ItemType Directory -Force $dist | Out-Null
+          Copy-Item "$bin/ffmpeg.exe", "$bin/ffprobe.exe" $dist
+          $license = Get-ChildItem ffmpeg-dl -Recurse -Filter LICENSE.txt | Select-Object -First 1
+          Copy-Item $license.FullName "$dist/FFMPEG-LICENSE.txt"
+          Copy-Item LICENSE "$dist/LICENSE.txt"
+          Copy-Item target/release/Kompacter.exe $dist
+
+      # The installer takes its version from the tag: v0.0.3-test -> 0.0.3.
+      - name: Build installer
+        working-directory: apps/kompacter/installer
+        shell: pwsh
+        run: |
+          $v = "0.0.0"
+          if ("${{ github.ref }}".StartsWith("refs/tags/v")) { $v = "${{ github.ref_name }}".TrimStart("v").Split("-")[0] }
+          $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $nsis)) { choco install nsis -y --no-progress; $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }
+          & $nsis /DVERSION=$v kompacter.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Create draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          # Tags with a dash (v0.0.3-test) are marked as pre-releases.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: apps/kompacter/installer/Kompacter-*-setup.exe
+
+      - name: Keep the installer (manual runs)
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: apps/kompacter/installer/Kompacter-*-setup.exe

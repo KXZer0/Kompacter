@@ -1,0 +1,841 @@
+// The Kompacter flyout. One calm 360×472 card; settings is taller.
+// Rust owns the logic (src/main.rs) and sets the properties below; this file only draws.
+
+import { Theme, Icon, AppLogo, Btn, IconBtn, Switch, Seg, Appear, Tip } from "theme.slint";
+import { Icons } from "icons.slint";
+import { Mood, Blob, DropZone, Press, Sparks } from "stage.slint";
+
+export { Theme }
+
+export enum View { idle, reading, big, busy, done, error, settings }
+
+export struct PresetItem {
+    name: string,
+    note: string,
+    size: string,
+    brand: string,
+}
+
+/// The tray icon (left click opens, right click shows the menu).
+export component Tray inherits SystemTrayIcon {
+    callback open();
+    callback open-folder();
+    callback quit();
+    icon: @image-url("tray.png");
+    tooltip: "Kompacter";
+    clicked => { root.open(); }
+    Menu {
+        MenuItem {
+            title: "Open Kompacter";
+            activated => { root.open(); }
+        }
+        MenuItem {
+            title: "Open Kompacted folder";
+            activated => { root.open-folder(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "Quit";
+            activated => { root.quit(); }
+        }
+    }
+}
+
+component Title inherits Text {
+    font-size: 19px;
+    font-weight: 650;
+    color: Theme.label;
+    horizontal-alignment: center;
+    overflow: elide;
+}
+
+component Sub inherits Text {
+    font-size: 13px;
+    color: Theme.label-2;
+    horizontal-alignment: center;
+    wrap: word-wrap;
+}
+
+/// A group row in settings: label + optional small text + something on the right.
+component Cell inherits Rectangle {
+    in property <string> label;
+    in property <string> small;
+    in property <bool> first;
+    in property <bool> clickable;
+    callback clicked;
+    min-height: root.small != "" ? 56px : 44px;
+    if !root.first: Rectangle {
+        x: 12px;
+        y: 0;
+        width: parent.width - 12px;
+        height: 1px;
+        background: Theme.sep;
+    }
+    if root.clickable: TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.label;
+                font-size: 14px;
+                color: Theme.label;
+                overflow: elide;
+            }
+            if root.small != "": Text {
+                text: root.small;
+                font-size: 12px;
+                color: Theme.label-2;
+                overflow: elide;
+            }
+        }
+        @children
+    }
+}
+
+component Group inherits Rectangle {
+    border-radius: 12px;
+    background: Theme.group;
+    clip: true;
+    VerticalLayout {
+        @children
+    }
+}
+
+component GroupTitle inherits Text {
+    font-size: 12px;
+    font-weight: 600;
+    color: Theme.label-2;
+}
+
+component Check inherits Rectangle {
+    in property <bool> on;
+    width: 18px;
+    Icon {
+        d: Icons.check;
+        color: Theme.accent-text;
+        opacity: root.on ? 1 : 0;
+    }
+}
+
+export component AppWindow inherits Window {
+    // ── Set by Rust ──
+    in-out property <View> view: View.idle;
+    in-out property <bool> dragging;
+    in property <float> progress;
+    in property <[PresetItem]> presets;
+    in property <int> preset-index;
+    in property <string> dash-path;
+    in property <string> target-text: "20 MB";
+
+    in property <string> file-name;
+    in property <string> file-meta;
+    in property <string> file-kind: "file";
+    in property <float> meter-fill;
+    in property <float> meter-limit;
+    in property <string> over-text;
+    in property <string> compress-label: "Compress";
+    in property <string> foot-text;
+
+    in property <string> busy-left;
+
+    in property <bool> done-ok;
+    in property <string> done-title;
+    in property <string> done-sub;
+    in-out property <string> note;
+
+    in property <string> error-text;
+
+    in property <int> theme-index;
+    in property <int> output-index;
+    in property <string> output-dir;
+    in property <bool> gpu;
+    in property <string> gpu-text;
+    in property <bool> auto-hide;
+    in property <bool> start-with-windows;
+    in property <int> custom-mb;
+
+    // ── Calls into Rust ──
+    callback choose-file();
+    callback paste();
+    callback compress();
+    callback cancel();
+    callback remove-file();
+    callback show-in-folder();
+    callback another();
+    callback select-preset(int);
+    callback open-settings();
+    callback close-settings();
+    callback set-theme(int);
+    callback set-output(int);
+    callback choose-folder();
+    callback open-outputs();
+    callback set-gpu(bool);
+    callback set-auto-hide(bool);
+    callback set-start(bool);
+    callback set-custom-mb(int);
+    callback escape();
+
+    title: "Kompacter";
+    no-frame: true;
+    always-on-top: true;
+    background: Theme.bg;
+    default-font-family: "Segoe UI Variable Text";
+    default-font-size: 14px;
+    width: 360px;
+    height: view == View.settings ? 600px : 472px;
+    forward-focus: keys;
+
+    property <Mood> mood: dragging ? Mood.hungry
+        : view == View.big || view == View.error ? Mood.worried
+        : view == View.busy || view == View.reading ? Mood.busy
+        : view == View.done ? (done-ok ? Mood.happy : Mood.worried)
+        : Mood.idle;
+    property <bool> stage-lg: view == View.idle || view == View.done;
+    property <bool> stage-md: view == View.reading || view == View.big || view == View.error;
+    property <length> stage-h: stage-lg ? 312px : 124px;
+    property <float> squeeze: view == View.busy ? progress : 0;
+    animate squeeze { duration: 300ms; easing: ease-out; }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.escape();
+                return accept;
+            }
+            if (event.modifiers.control && (event.text == "v" || event.text == "V")) {
+                root.paste();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    // Eyes follow the pointer while it's over the window.
+    eyes := TouchArea { }
+
+    // ── Header ──
+    if view != View.settings: Rectangle {
+        x: 16px;
+        y: 14px;
+        width: pill-row.preferred-width;
+        height: 30px;
+        border-radius: 15px;
+        background: pill-ta.has-hover ? Theme.fill-hover : Theme.fill;
+        animate background { duration: 120ms; }
+        pill-row := HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 10px;
+            spacing: 6px;
+            alignment: center;
+            AppLogo {
+                brand: root.presets[root.preset-index].brand;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: root.presets[root.preset-index].name + " · " + root.target-text;
+                font-size: 13px;
+                font-weight: 600;
+                color: Theme.label;
+                vertical-alignment: center;
+            }
+            Icon {
+                d: Icons.down;
+                size: 15px;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+        pill-ta := TouchArea {
+            enabled: root.view != View.busy;
+            mouse-cursor: pointer;
+            clicked => { menu.show(); }
+        }
+    }
+    if view != View.settings: IconBtn {
+        x: parent.width - 14px - self.width;
+        y: 13px;
+        icon: Icons.gear;
+        tip: "Settings";
+        tip-below: true;
+        enabled: root.view != View.busy;
+        clicked => { root.open-settings(); }
+    }
+
+    menu := PopupWindow {
+        x: 12px;
+        y: 48px;
+        width: 268px;
+        Rectangle {
+            border-radius: 14px;
+            background: Theme.bg;
+            border-width: 1px;
+            border-color: Theme.sep;
+            VerticalLayout {
+                padding: 6px;
+                for p[i] in root.presets: Rectangle {
+                    height: 32px;
+                    border-radius: 8px;
+                    background: row-ta.has-hover ? Theme.accent : transparent;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 10px;
+                        Icon {
+                            d: Icons.check;
+                            size: 14px;
+                            y: (parent.height - self.height) / 2;
+                            color: row-ta.has-hover ? white : Theme.label;
+                            opacity: i == root.preset-index ? 1 : 0;
+                        }
+                        AppLogo {
+                            brand: p.brand;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        Text {
+                            text: p.name;
+                            font-size: 13px;
+                            color: row-ta.has-hover ? white : Theme.label;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Text {
+                            text: p.size;
+                            font-size: 12px;
+                            color: row-ta.has-hover ? #ffffffd9 : Theme.label-2;
+                            vertical-alignment: center;
+                        }
+                    }
+                    row-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.select-preset(i); }
+                    }
+                }
+                Rectangle {
+                    height: 11px;
+                    Rectangle {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        height: 1px;
+                        background: Theme.sep;
+                    }
+                }
+                Rectangle {
+                    height: 32px;
+                    border-radius: 8px;
+                    background: edit-ta.has-hover ? Theme.accent : transparent;
+                    Text {
+                        x: 10px;
+                        text: "Edit targets…";
+                        font-size: 13px;
+                        color: edit-ta.has-hover ? white : Theme.label;
+                    }
+                    edit-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open-settings(); }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Stage: drop zone, blob, press ──
+    if stage-lg || stage-md: Rectangle {
+        x: 16px;
+        y: 50px;
+        width: 328px;
+        height: root.stage-h;
+        animate height { duration: 220ms; easing: ease-out; }
+        DropZone {
+            x: 10px;
+            y: 6px;
+            width: parent.width - 20px;
+            height: parent.height - 12px;
+            active: root.dragging;
+            visible-dash: root.view == View.idle;
+            dash-path: root.dash-path;
+        }
+        Blob {
+            mood: root.mood;
+            s: root.stage-lg ? 1 : 0.62;
+            swell: root.dragging;
+            cx: parent.width / 2;
+            cy: parent.height / 2;
+            look-x: eyes.has-hover ? Math.clamp((eyes.mouse-x - 180px) / 180px, -1, 1) : 0;
+            look-y: eyes.has-hover ? Math.clamp((eyes.mouse-y - 50px - parent.height / 2) / 200px, -1, 1) : 0;
+        }
+        if root.view == View.done && root.done-ok: Sparks {
+            width: parent.width;
+            height: parent.height;
+        }
+    }
+    if view == View.busy: Rectangle {
+        x: 0;
+        y: 50px;
+        width: 360px;
+        height: 252px;
+        Blob {
+            mood: Mood.busy;
+            s: 0.85;
+            c: root.squeeze;
+            cx: parent.width / 2;
+            cy: parent.height / 2;
+        }
+        Press {
+            width: parent.width;
+            height: parent.height;
+            active: true;
+            c: root.squeeze;
+        }
+    }
+
+    // ── Views: big text and buttons; the stage and controls say the rest ──
+    if view == View.idle: Appear {
+        x: 20px;
+        y: 376px;
+        width: 320px;
+        height: 76px;
+        Title {
+            y: 0;
+            width: parent.width;
+            height: 24px;
+            text: root.note != "" ? root.note : root.dragging ? "Drop it" : "Drop or copy a file";
+        }
+        HorizontalLayout {
+            y: 40px;
+            height: 36px;
+            spacing: 8px;
+            alignment: center;
+            Btn {
+                text: "Choose File…";
+                primary: true;
+                clicked => { root.choose-file(); }
+            }
+            Btn {
+                text: "Paste";
+                icon: Icons.clip;
+                tip: "Ctrl+V";
+                clicked => { root.paste(); }
+            }
+        }
+    }
+
+    if view == View.reading: Appear {
+        x: 20px;
+        y: 196px;
+        width: 320px;
+        height: 24px;
+        Title {
+            width: parent.width;
+            text: root.file-name;
+        }
+    }
+
+    if view == View.big: Appear {
+        x: 20px;
+        y: 186px;
+        width: 320px;
+        height: 266px;
+        // File card.
+        Rectangle {
+            y: 0;
+            height: 56px;
+            Rectangle {
+                x: 0;
+                y: 8px;
+                width: 40px;
+                height: 40px;
+                border-radius: 10px;
+                background: Theme.accent-soft;
+                Icon {
+                    d: root.file-kind == "video" ? Icons.film
+                        : root.file-kind == "audio" ? Icons.music
+                        : root.file-kind == "image" ? Icons.image
+                        : root.file-kind == "folder" ? Icons.folder
+                        : Icons.file;
+                    color: Theme.accent-text;
+                }
+            }
+            Text {
+                x: 52px;
+                y: 9px;
+                width: parent.width - 52px - 40px;
+                text: root.file-name;
+                font-size: 15px;
+                font-weight: 600;
+                color: Theme.label;
+                overflow: elide;
+            }
+            Text {
+                x: 52px;
+                y: 30px;
+                width: parent.width - 52px - 40px;
+                text: root.file-meta;
+                font-size: 13px;
+                color: Theme.label-2;
+                overflow: elide;
+            }
+            IconBtn {
+                x: parent.width - self.width;
+                y: 12px;
+                icon: Icons.x;
+                clicked => { root.remove-file(); }
+            }
+        }
+        // Size against the limit.
+        Rectangle {
+            y: 78px;
+            height: 28px;
+            Text {
+                x: parent.width * root.meter-limit - 40px;
+                y: 0;
+                width: 80px;
+                text: root.target-text;
+                font-size: 11px;
+                font-weight: 600;
+                color: Theme.label-2;
+                horizontal-alignment: center;
+            }
+            Rectangle {
+                y: 18px;
+                height: 8px;
+                border-radius: 4px;
+                background: Theme.fill;
+                clip: true;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * root.meter-fill;
+                    background: Theme.bad;
+                }
+                Rectangle {
+                    x: 0;
+                    width: parent.width * Math.min(root.meter-fill, root.meter-limit);
+                    background: Theme.accent;
+                }
+            }
+            Rectangle {
+                x: parent.width * root.meter-limit - 1px;
+                y: 14px;
+                width: 2px;
+                height: 16px;
+                border-radius: 1px;
+                background: Theme.label;
+            }
+        }
+        Text {
+            y: 116px;
+            width: parent.width;
+            height: 20px;
+            text: root.over-text;
+            font-size: 13px;
+            font-weight: 600;
+            color: Theme.bad;
+        }
+        Btn {
+            y: 152px;
+            width: parent.width;
+            text: root.compress-label;
+            icon: Icons.squeeze;
+            primary: true;
+            large: true;
+            clicked => { root.compress(); }
+        }
+        if root.foot-text != "": Text {
+            y: 206px;
+            width: parent.width;
+            text: root.foot-text;
+            font-size: 12px;
+            color: Theme.label-2;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+
+    if view == View.busy: Appear {
+        x: 20px;
+        y: 310px;
+        width: 320px;
+        height: 142px;
+        Text {
+            y: 0;
+            width: parent.width;
+            height: 34px;
+            text: Math.round(root.progress * 100) + "%";
+            font-size: 28px;
+            font-weight: 700;
+            color: Theme.label;
+            horizontal-alignment: center;
+        }
+        Sub {
+            y: 38px;
+            width: parent.width;
+            height: 18px;
+            text: root.busy-left;
+        }
+        HorizontalLayout {
+            y: 74px;
+            height: 36px;
+            alignment: center;
+            Btn {
+                text: "Cancel";
+                clicked => { root.cancel(); }
+            }
+        }
+    }
+
+    if view == View.done: Appear {
+        x: 20px;
+        y: 360px;
+        width: 320px;
+        height: 92px;
+        HorizontalLayout {
+            y: 0;
+            height: 26px;
+            spacing: 6px;
+            alignment: center;
+            Icon {
+                d: root.done-ok ? Icons.okc : Icons.xc;
+                size: 20px;
+                y: 3px;
+                color: root.done-ok ? Theme.ok : Theme.bad;
+            }
+            Title {
+                text: root.done-title;
+                color: root.done-ok ? Theme.label : Theme.bad;
+            }
+        }
+        // One quiet line: the result (size, resolution), or what to do next.
+        Sub {
+            y: 30px;
+            width: parent.width;
+            height: 18px;
+            text: root.done-sub;
+        }
+        HorizontalLayout {
+            y: 56px;
+            height: 36px;
+            spacing: 8px;
+            alignment: center;
+            Btn {
+                text: "Show in Folder";
+                icon: Icons.open;
+                clicked => { root.show-in-folder(); }
+            }
+            Btn {
+                text: "Another";
+                plain: true;
+                clicked => { root.another(); }
+            }
+        }
+    }
+
+    if view == View.error: Appear {
+        x: 20px;
+        y: 186px;
+        width: 320px;
+        height: 160px;
+        HorizontalLayout {
+            y: 0;
+            height: 26px;
+            spacing: 6px;
+            alignment: center;
+            Icon {
+                d: Icons.xc;
+                size: 20px;
+                y: 3px;
+                color: Theme.bad;
+            }
+            Title { text: "Couldn't do that"; }
+        }
+        Sub {
+            y: 32px;
+            width: parent.width;
+            height: 54px;
+            text: root.error-text;
+        }
+        HorizontalLayout {
+            y: 96px;
+            height: 36px;
+            alignment: center;
+            Btn {
+                text: "Try another";
+                primary: true;
+                clicked => { root.another(); }
+            }
+        }
+    }
+
+    // ── Settings ──
+    if view == View.settings: Appear {
+        width: 360px;
+        height: 600px;
+        Rectangle {
+            x: 8px;
+            y: 12px;
+            width: 340px;
+            height: 36px;
+            IconBtn {
+                x: 0;
+                y: 2px;
+                icon: Icons.back;
+                clicked => { root.close-settings(); }
+            }
+            Text {
+                x: 40px;
+                text: "Settings";
+                font-size: 19px;
+                font-weight: 650;
+                color: Theme.label;
+                vertical-alignment: center;
+            }
+        }
+        Flickable {
+            x: 0;
+            y: 52px;
+            width: 360px;
+            height: 548px;
+            VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-bottom: 20px;
+                spacing: 6px;
+
+                GroupTitle { text: "TARGET"; }
+                Group {
+                    for p[i] in root.presets: Cell {
+                        label: p.name;
+                        first: i == 0;
+                        clickable: true;
+                        clicked => { root.select-preset(i); }
+                        AppLogo {
+                            brand: p.brand;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        if p.brand == "custom": Rectangle {
+                            width: 64px;
+                            height: 28px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 7px;
+                            background: Theme.fill;
+                            mb := TextInput {
+                                x: 8px;
+                                width: parent.width - 16px;
+                                text: root.custom-mb;
+                                input-type: number;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                                color: Theme.label;
+                                font-size: 14px;
+                                accepted => { root.set-custom-mb(self.text.to-float()); }
+                                edited => {
+                                    if (self.text.is-float()) {
+                                        root.set-custom-mb(self.text.to-float());
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            text: p.brand == "custom" ? "MB" : p.size;
+                            font-size: 14px;
+                            color: Theme.label-2;
+                            vertical-alignment: center;
+                        }
+                        Check { on: i == root.preset-index; }
+                    }
+                }
+
+                GroupTitle { text: "THEME"; }
+                Seg {
+                    options: ["System", "Light", "Dark"];
+                    index: root.theme-index;
+                    picked(i) => { root.set-theme(i); }
+                }
+
+                GroupTitle { text: "SAVE TO"; }
+                Group {
+                    Cell {
+                        label: "Kompacter folder";
+                        small: "Deleted after 7 days";
+                        first: true;
+                        clickable: true;
+                        clicked => { root.set-output(0); }
+                        Btn {
+                            text: "Open";
+                            plain: true;
+                            y: (parent.height - self.height) / 2;
+                            clicked => { root.open-outputs(); }
+                        }
+                        Check { on: root.output-index == 0; }
+                    }
+                    Cell {
+                        label: "Next to the original";
+                        clickable: true;
+                        clicked => { root.set-output(1); }
+                        Check { on: root.output-index == 1; }
+                    }
+                    Cell {
+                        label: "Pick a folder";
+                        small: root.output-dir;
+                        clickable: true;
+                        clicked => { root.set-output(2); }
+                        Btn {
+                            text: "Choose…";
+                            plain: true;
+                            y: (parent.height - self.height) / 2;
+                            clicked => { root.choose-folder(); }
+                        }
+                        Check { on: root.output-index == 2; }
+                    }
+                    Cell {
+                        label: "Replace the original";
+                        small: "Original goes to the Recycle Bin";
+                        clickable: true;
+                        clicked => { root.set-output(3); }
+                        Check { on: root.output-index == 3; }
+                    }
+                }
+
+                GroupTitle { text: "ENCODING"; }
+                Group {
+                    Cell {
+                        label: "GPU encoding";
+                        small: root.gpu-text;
+                        first: true;
+                        Switch {
+                            checked: root.gpu;
+                            y: (parent.height - self.height) / 2;
+                            toggled(on) => { root.set-gpu(on); }
+                        }
+                    }
+                }
+
+                GroupTitle { text: "GENERAL"; }
+                Group {
+                    Cell {
+                        label: "Auto-hide";
+                        first: true;
+                        Switch {
+                            checked: root.auto-hide;
+                            y: (parent.height - self.height) / 2;
+                            toggled(on) => { root.set-auto-hide(on); }
+                        }
+                    }
+                    Cell {
+                        label: "Start with Windows";
+                        Switch {
+                            checked: root.start-with-windows;
+                            y: (parent.height - self.height) / 2;
+                            toggled(on) => { root.set-start(on); }
+                        }
+                    }
+                }
+
+            }
+        }
+    }
+}
