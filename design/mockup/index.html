@@ -211,7 +211,8 @@ kbd{display:inline-block;min-width:20px;padding:0 6px;border-radius:6px;backgrou
 /* ───────── Stage + pouch (signature) ───────── */
 .stage{position:relative;height:188px;margin:2px -4px 0;transition:none}
 .stage[data-size="md"]{height:112px}
-.stage[data-size="press"]{height:176px;overflow:hidden;margin:2px -20px 0}
+.stage[data-size="press"]{height:252px;overflow:hidden;margin:2px -20px 12px}
+.stage[data-size="press"] .shadow{opacity:0}
 .well{position:absolute;inset:6px 10px;border-radius:28px;background:transparent;opacity:0;transform:scale(.94);transition:transform var(--t-spring) var(--spring),opacity var(--t-fast),background-color var(--t-fast)}
 .flyout[data-view="idle"] .well{opacity:1;transform:none}
 .dragging .well{background:var(--accent-soft);transform:scale(1.015)}
@@ -245,19 +246,28 @@ kbd{display:inline-block;min-width:20px;padding:0 6px;border-radius:6px;backgrou
 [data-mood="worried"] .breathe{animation:wobble 2.6s ease-in-out infinite}
 @keyframes wobble{0%,55%,100%{transform:none}10%{transform:rotate(-4deg) scale(1.03,.97)}22%{transform:rotate(3deg) scale(.98,1.02)}34%{transform:rotate(-1.5deg)}45%{transform:rotate(.6deg)}}
 .shadow{position:absolute;left:18%;right:18%;bottom:-6px;height:12px;border-radius:50%;background:radial-gradient(closest-side,rgba(0,0,0,.22),transparent);transform-origin:50% 50%}
-/* Hydraulic press (compressing) */
-.rig{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity var(--t-fast)}
+/* Vertical hydraulic press (compressing): pole → hazard collar → trapezoid → plate, W = 124px */
+.rig{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity var(--t-fast);
+  --metal:linear-gradient(90deg,var(--m5) 0%,var(--m2) 22%,var(--m3) 38%,var(--m4) 60%,var(--m2) 80%,var(--m1) 100%)}
 .stage[data-size="press"] .rig{opacity:1}
-.plate{position:absolute;left:50%;top:50%;width:56px;height:112px;margin:-56px 0 0 -28px;border-radius:14px;will-change:transform;
-  background:linear-gradient(180deg,rgba(255,255,255,.55) 0,rgba(255,255,255,0) 24%,rgba(0,0,0,0) 72%,rgba(0,0,0,.2) 100%),
-    linear-gradient(90deg,var(--m1) 0%,var(--m2) 20%,var(--m3) 36%,var(--m4) 54%,var(--m2) 76%,var(--m5) 100%);
-  box-shadow:inset 0 1.5px 0 rgba(255,255,255,.95),inset 0 -2px 1px rgba(0,0,0,.2),inset 2px 0 2px rgba(255,255,255,.35),inset -2px 0 2px rgba(0,0,0,.18),
-    0 0 0 .5px rgba(0,0,0,.35),0 16px 18px -12px rgba(0,0,0,.55)}
-.plate::before{content:"";position:absolute;top:50%;width:200px;height:46px;margin-top:-23px;border-radius:9px;
-  background:linear-gradient(180deg,var(--m5) 0%,var(--m3) 26%,var(--m2) 46%,var(--m4) 64%,var(--m1) 100%);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.7),0 0 0 .5px rgba(0,0,0,.3),0 10px 14px -10px rgba(0,0,0,.5)}
-.plate.l::before{right:100%} .plate.r::before{left:100%}
-.dust i{position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px;border-radius:50%;background:var(--label-2);opacity:0}
+.head{position:absolute;left:50%;width:124px;margin-left:-62px;display:flex;flex-direction:column;align-items:center;will-change:transform}
+.head.t{bottom:50%} .head.b{top:50%;flex-direction:column-reverse}
+.pr-pole{flex:none;width:27%;height:200px;background:var(--metal);box-shadow:0 0 0 .5px rgba(0,0,0,.3)}
+.pr-collar{flex:none;width:35%;height:14px;border-radius:3px;background:repeating-linear-gradient(45deg,#f5c400 0 5px,#141414 5px 10px);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.4),inset 0 -1px 0 rgba(0,0,0,.45),0 0 0 .5px rgba(0,0,0,.6)}
+.pr-trap{flex:none;width:82%;height:26px;background:linear-gradient(180deg,rgba(255,255,255,.28),rgba(0,0,0,.16)),var(--metal)}
+.head.t .pr-trap{clip-path:polygon(11.6% 0,88.4% 0,100% 100%,0 100%)}
+.head.b .pr-trap{clip-path:polygon(0 0,100% 0,88.4% 100%,11.6% 100%)}
+.pr-plate{flex:none;width:100%;height:12px;border-radius:2px;background:linear-gradient(180deg,rgba(255,255,255,.55),rgba(255,255,255,0) 45%,rgba(0,0,0,.2)),var(--metal);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.9),inset 0 -1px 0 rgba(0,0,0,.28),0 0 0 .5px rgba(0,0,0,.4)}
+.head.t .pr-plate{box-shadow:inset 0 1px 0 rgba(255,255,255,.9),inset 0 -1px 0 rgba(0,0,0,.28),0 0 0 .5px rgba(0,0,0,.4),0 8px 10px -6px rgba(0,0,0,.45)}
+@media (prefers-reduced-motion: reduce){.rig{display:none}}
+html.rm .rig{display:none}
+[data-mood="busy"][data-sq="2"] .eye.l{transform:rotate(22deg)} [data-mood="busy"][data-sq="2"] .eye.r{transform:rotate(-22deg)}
+[data-mood="busy"][data-sq="2"] .mouth{width:6px;height:6px;margin-left:-3px}
+[data-mood="busy"][data-sq="3"] .eye{height:2.5px}
+[data-mood="busy"][data-sq="3"] .eye.l{transform:rotate(30deg) scaleX(1.15)} [data-mood="busy"][data-sq="3"] .eye.r{transform:rotate(-30deg) scaleX(1.15)}
+[data-mood="busy"][data-sq="3"] .mouth{width:4px;height:4px;margin-left:-2px;top:19px}
 .sparks i{position:absolute;left:50%;top:50%;width:6px;height:6px;margin:-3px;border-radius:50%;background:var(--accent);opacity:0}
 .sparks i:nth-child(even){background:var(--pouch-b)}
 .sparks.burst i{animation:spark 420ms var(--ease) forwards}
@@ -447,7 +457,7 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
   .actions{grid-template-columns:1fr 1fr}
   .qsize s{display:none}
   .fly-body{padding:6px 16px 16px}
-  .stage[data-size="press"]{margin:2px -16px 0}
+  .stage[data-size="press"]{margin:2px -16px 12px}
 }
 </style>
 </head>
@@ -565,7 +575,7 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
             </div></div>
             <div class="shadow" id="pouchShadow"></div>
           </div>
-          <div class="rig" aria-hidden="true"><div class="plate l" id="plateL"></div><div class="plate r" id="plateR"></div><div class="dust" id="dust"><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+          <div class="rig" aria-hidden="true"><div class="head t" id="headT"><div class="pr-pole"></div><div class="pr-collar"></div><div class="pr-trap"></div><div class="pr-plate"></div></div><div class="head b" id="headB"><div class="pr-pole"></div><div class="pr-collar"></div><div class="pr-trap"></div><div class="pr-plate"></div></div></div>
           <div class="sparks" id="sparks" aria-hidden="true"><i style="--a:0deg"></i><i style="--a:45deg"></i><i style="--a:90deg"></i><i style="--a:135deg"></i><i style="--a:180deg"></i><i style="--a:225deg"></i><i style="--a:270deg"></i><i style="--a:315deg"></i></div>
         </div>
 
@@ -1109,39 +1119,41 @@ $('#modeSeg').addEventListener('pick', e => { S.mode = e.detail; updTrim(true); 
 
 /* ───── Compress (single file) ───── */
 let prog = null;
-/* Hydraulic press: transform/opacity only (WAAPI on two plates, CSS var scale on the blob) */
-const plates = [$('#plateL'), $('#plateR')], PW = 28, SQ = .74, dustEls = $$('#dust i');
+/* Vertical hydraulic press: one continuous squeeze driven by (smoothed) progress. transform/opacity only. */
+const heads = [$('#headT'), $('#headB')], BASE = .85, HALF = 58;
 const setPs = v => pouchEl.style.setProperty('--ps', v.toFixed(3));
-const X = (i, d, y = 0) => `translate(${((i ? 1 : -1) * d).toFixed(1)}px,${y}px)`;
-const openDist = () => stage.clientWidth / 2 + PW + 6;
-function platesGo(frames, dur, easing) { plates.forEach((p, i) => { p.getAnimations().forEach(a => a.cancel()); const kf = frames.map(f => ({ transform: X(i, f.d, f.y || 0), offset: f.o, easing: f.e || 'linear' })); p.style.transform = kf[kf.length - 1].transform; p.animate(kf, { duration: dur, easing }); }); }
-function dust(edge) {
-  dustEls.forEach((d, i) => { const s = i % 2 ? 1 : -1, y = (Math.floor(i / 2) - 1) * 24;
-    d.animate([{ opacity: .75, transform: `translate(${s * edge}px,${y}px)` }, { opacity: 0, transform: `translate(${s * (edge + 10 + Math.random() * 10)}px,${y - 10 - Math.random() * 12}px) scale(.4)` }], { duration: 360, easing: 'ease-out' }); });
+const Y = (i, d) => `translateY(${(i ? d : -d).toFixed(2)}px)`;
+const openDist = () => stage.clientHeight / 2 + 10;
+function headsTo(d) { heads.forEach((h, i) => h.style.transform = Y(i, d)); }
+function headsAnim(frames, dur, easing) {
+  heads.forEach((h, i) => { h.getAnimations().forEach(a => a.cancel()); const kf = frames.map(f => ({ transform: Y(i, f.d), offset: f.o }));
+    h.style.transform = kf[kf.length - 1].transform; h.animate(kf, { duration: dur, easing }); });
+}
+function squash(c) { // c = 0…1 squeeze amount; returns plate distance from centre
+  const sy = 1 - .5 * c, sx = 1 + .2 * c;
+  pouchEl.style.transform = `scale(${(BASE * sx).toFixed(4)},${(BASE * sy).toFixed(4)})`;
+  pouchEl.dataset.sq = c > .66 ? 3 : c > .33 ? 2 : 1;
+  return HALF * BASE * sy + 1.5;
+}
+function resetBlob() {
+  pouchEl.getAnimations().forEach(a => a.cancel());
+  pouchEl.style.transition = ''; pouchEl.style.transform = ''; pouchEl.style.opacity = ''; delete pouchEl.dataset.sq;
 }
 function pressStart() {
-  setPs(1); pouchEl.style.opacity = '';
-  if (reduced()) return;
-  const o = openDist(); platesGo([{ d: o }, { d: 66 + PW + 16 }], 280, SPRING_EASE);
-}
-function stroke(base, next) {
-  const hit = 66 * base * SQ + PW, rest = 66 * base + PW + 14, back = 66 * next + PW + 14, T = 660;
-  platesGo([
-    { d: rest, e: 'cubic-bezier(.45,0,.55,1)' },          // slow wind-up (pull back)
-    { d: rest + 10, o: .36, e: 'cubic-bezier(.75,0,1,.6)' }, // fast, hard drive in
-    { d: hit - 1.5, o: .5 },                                 // impact
-    { d: hit + 1.2, y: .8, o: .55 }, { d: hit - .6, y: -.6, o: .6 }, { d: hit, o: .65 }, // tiny shake
-    { d: hit, o: .78, e: 'cubic-bezier(.3,0,.2,1)' }, { d: back }], T, 'linear');
-  prog.t.push(setTimeout(() => { if (!prog) return; sp.v.sx = SQ; sp.v.sy = 1.14; sp.vel.sx = sp.vel.sy = 0; sp.to({ sx: SQ, sy: 1.12 }); dust(hit - PW); }, T * .5));
-  prog.t.push(setTimeout(() => { if (!prog) return; setPs(next); sp.to({ sx: 1, sy: 1 }); }, T * .78));
+  resetBlob(); pouchEl.style.transition = 'none';
+  if (reduced()) { pouchEl.style.transform = `scale(${BASE})`; return; }
+  headsAnim([{ d: openDist() }, { d: squash(0) }], 620, 'cubic-bezier(.2,.7,.2,1)');
 }
 function pressFinish(done) {
-  if (reduced()) { pouchEl.style.opacity = '0'; prog.t.push(setTimeout(done, 160)); return; }
-  platesGo([{ d: 66 * .32 + PW + 14 }, { d: PW + 2 }], 200, 'cubic-bezier(.7,0,1,.6)');
-  sp.to({ sx: .4, sy: 1.15 }); setPs(.06);
-  prog.t.push(setTimeout(() => { pouchEl.style.opacity = '0'; burst(); }, 200));
-  prog.t.push(setTimeout(() => platesGo([{ d: PW + 2 }, { d: openDist() }], 260, SPRING_EASE), 260));
-  prog.t.push(setTimeout(done, 420));
+  if (reduced()) { pouchEl.style.opacity = '0'; prog.t.push(setTimeout(done, 180)); return; }
+  const from = pouchEl.style.transform, d0 = HALF * BASE * (1 - .5 * prog.c) + 1.5, ease = 'cubic-bezier(.45,0,.7,.2)';
+  pouchEl.animate([{ transform: from }, { transform: `scale(${BASE * 1.26},${BASE * .4})`, offset: .6 }, { transform: 'scale(.04)' }], { duration: 440, easing: ease, fill: 'forwards' });
+  headsAnim([{ d: d0 }, { d: HALF * BASE * .4 + 1.5, o: .6 }, { d: 3 }], 440, ease);
+  prog.t.push(setTimeout(() => {
+    pouchEl.getAnimations().forEach(a => a.cancel()); pouchEl.style.transform = 'scale(.04)'; pouchEl.style.opacity = '0'; burst();
+    headsAnim([{ d: 3 }, { d: openDist() }], 520, 'cubic-bezier(.3,0,.2,1)');
+  }, 450));
+  prog.t.push(setTimeout(done, 760));
 }
 function startCompress(o = {}) {
   const f = S.file, lim = L(), sec = o.sec ?? f.dur;
@@ -1152,10 +1164,9 @@ function startCompress(o = {}) {
   const gpu = $('#swGpu').getAttribute('aria-checked') === 'true';
   $('#progMeta').textContent = `${fmt(f.size)} → ≈ ${fmt(S.result.out)} · ${S.result.label} · ${gpu ? 'GPU' : 'CPU'}`;
   tray.dataset.state = 'busy';
-  const dur = 4600, every = 720, t0 = performance.now(); let lastMs = -1, lastStroke = -1;
-  const base = k => 1 - .68 * Math.min(1, k);
+  const dur = 4600, t0 = performance.now(); let lastMs = -1;
   const pb = $('#progBar');
-  prog = { raf: 0, t: [] };
+  prog = { raf: 0, t: [], c: 0, last: t0 };
   pressStart();
   const tick = now => {
     if (!prog) return;
@@ -1164,17 +1175,19 @@ function startCompress(o = {}) {
     $('#progLeft').textContent = k < 1 ? `About ${left} s left` : 'Finishing…';
     pb.setAttribute('aria-valuenow', pct); pb.setAttribute('aria-valuetext', `${pct}%, about ${left} seconds left`);
     const ms = Math.floor(pct / 25); if (ms !== lastMs && pct < 100) { lastMs = ms; say(`Compressing ${f.name}, ${pct}%`); }
-    const n = Math.floor((el - 200) / every);
-    if (n > lastStroke && el > 200 && el < dur - 350) { lastStroke = n; if (reduced()) setPs(base(k)); else stroke(base(k), base(k + .09)); }
+    const dt = Math.min(.05, (now - prog.last) / 1000); prog.last = now;
+    prog.c += (k - prog.c) * (1 - Math.exp(-dt / .3)); // eased, never jumps
+    if (reduced()) { pouchEl.style.transform = `scale(${(BASE * (1 - .6 * k)).toFixed(3)})`; pouchEl.style.opacity = (1 - .5 * k).toFixed(2); }
+    else headsTo(squash(prog.c));
     if (k < 1) prog.raf = requestAnimationFrame(tick);
-    else pressFinish(() => { const keep = prog; stopProgress(true); finishDone({ pop: true }); });
+    else pressFinish(() => { stopProgress(true); resetBlob(); finishDone({ pop: true }); });
   };
   prog.raf = requestAnimationFrame(tick);
 }
 function stopProgress(keepBlob) {
   if (prog) { cancelAnimationFrame(prog.raf); prog.t.forEach(clearTimeout); prog = null; }
-  plates.forEach(p => p.getAnimations().forEach(a => a.cancel()));
-  if (!keepBlob) { pouchEl.style.removeProperty('--ps'); pouchEl.style.opacity = ''; sp.to({ sx: 1, sy: 1 }); }
+  heads.forEach(h => h.getAnimations().forEach(a => a.cancel()));
+  if (!keepBlob) { resetBlob(); pouchEl.style.removeProperty('--ps'); sp.to({ sx: 1, sy: 1 }); }
   if (tray.dataset.state === 'busy') tray.dataset.state = '';
 }
 $('#cancelBtn').addEventListener('click', () => {
