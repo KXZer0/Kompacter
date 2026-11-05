@@ -958,7 +958,7 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                             }
                         }
-                        Text {
+                        if root.trim-verdict != "": Text {
                             text: root.trim-verdict;
                             font-size: 12px;
                             color: Theme.label-2;
