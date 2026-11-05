@@ -104,8 +104,7 @@ pub async fn compress(
     };
     let prefs = settings::load(&app);
     opts.gpu = prefs.gpu;
-    // The engine always writes to the app cache first; `place` moves the result after.
-    opts.out_dir = Some(outputs_dir(&app)?);
+    opts.out_dir = Some(output_dir(&app, &prefs, Path::new(&path))?);
 
     tauri::async_runtime::spawn_blocking(move || {
         let mut last = -1;
@@ -119,8 +118,8 @@ pub async fn compress(
         let mut outcome = engine
             .compress(Path::new(&path), &opts, &mut on_progress, &cancel)
             .map_err(|e| e.to_string())?;
-        if !outcome.untouched {
-            outcome.path = place(&outcome.path, Path::new(&path), &prefs)?;
+        if !outcome.untouched && prefs.output == "replace" {
+            outcome.path = replace_original(&outcome.path, Path::new(&path))?;
         }
         let copied = outcome.fits
             && crate::clipboard::copy_files(std::slice::from_ref(&outcome.path)).is_ok();
@@ -142,45 +141,60 @@ pub fn hide(app: AppHandle) {
     }
 }
 
-/// Move a finished file to where the user wants it (setting `output`):
-/// - "kompacted": a `Kompacted` folder next to the original (default)
+/// Where results go (setting `output`). Files keep the `name.kompact.ext` name.
+/// - "app" (default): a `Kompacted` folder inside Kompacter's own folder, like a portable
+///   app. Files there are deleted after 7 days.
+/// - "beside": a `Kompacted` folder next to the original
 /// - "custom": the folder in `output_dir`
-/// - "replace": where the original was; the original goes to the Recycle Bin
-/// - "temp": stay in the app cache (auto-deleted after 7 days)
-fn place(made: &Path, original: &Path, prefs: &Settings) -> Result<PathBuf, String> {
+/// - "replace": written to the app folder first, then swapped in for the original
+fn output_dir(app: &AppHandle, prefs: &Settings, original: &Path) -> Result<PathBuf, String> {
     let parent = original.parent().unwrap_or(Path::new("."));
     let dir = match prefs.output.as_str() {
-        "temp" => return Ok(made.to_path_buf()),
-        "replace" => parent.to_path_buf(),
+        "beside" => parent.join("Kompacted"),
         "custom" if !prefs.output_dir.trim().is_empty() => PathBuf::from(&prefs.output_dir),
-        _ => parent.join("Kompacted"),
+        _ => app_outputs(app)?,
     };
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
 
-    // Clean name: "clip.mp4", not "clip.kompact.mp4".
-    let stem = original
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "kompacted".into());
-    let stem = if original.is_dir() {
-        original
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or(stem)
-    } else {
-        stem
-    };
-    let ext = made.extension().map(|e| e.to_string_lossy().into_owned());
-    let dest = match ext {
-        Some(e) => dir.join(format!("{stem}.{e}")),
-        None => dir.join(&stem),
-    };
-
-    if prefs.output == "replace" {
-        trash::delete(original)
-            .map_err(|e| format!("couldn't move the original to the Recycle Bin: {e}"))?;
+/// `Kompacted` next to Kompacter.exe. Falls back to the app's local data folder if the
+/// install folder isn't writable.
+fn app_outputs(app: &AppHandle) -> Result<PathBuf, String> {
+    let beside_exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("Kompacted")));
+    if let Some(dir) = beside_exe {
+        if std::fs::create_dir_all(&dir).is_ok() {
+            return Ok(dir);
+        }
     }
-    // rename fails across drives (cache on C:, video on D:), so fall back to copy.
+    let dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("Kompacted");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// "Replace the original": the original goes to the Recycle Bin (never deleted outright)
+/// and the result takes its place, under the original name with the new extension.
+fn replace_original(made: &Path, original: &Path) -> Result<PathBuf, String> {
+    let name = if original.is_dir() {
+        original.file_name()
+    } else {
+        original.file_stem()
+    }
+    .map(|s| s.to_string_lossy().into_owned())
+    .unwrap_or_else(|| "kompacted".into());
+    let dest = match made.extension() {
+        Some(e) => original.with_file_name(format!("{name}.{}", e.to_string_lossy())),
+        None => original.with_file_name(&name),
+    };
+    trash::delete(original)
+        .map_err(|e| format!("couldn't move the original to the Recycle Bin: {e}"))?;
+    // rename fails across drives, so fall back to copy.
     if std::fs::rename(made, &dest).is_err() {
         std::fs::copy(made, &dest).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(made);
@@ -188,19 +202,23 @@ fn place(made: &Path, original: &Path, prefs: &Settings) -> Result<PathBuf, Stri
     Ok(dest)
 }
 
-fn outputs_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| e.to_string())?
-        .join("outputs");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
+/// Open the app's Kompacted folder in Explorer.
+#[tauri::command]
+pub fn open_outputs(app: AppHandle) -> Result<(), String> {
+    let dir = app_outputs(&app)?;
+    #[cfg(windows)]
+    let r = std::process::Command::new("explorer").arg(&dir).spawn();
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(&dir).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let r = std::process::Command::new("xdg-open").arg(&dir).spawn();
+    r.map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// Delete outputs older than a week. Runs once at startup; errors are ignored.
+/// Delete files older than a week from the app's Kompacted folder. Runs once at startup;
+/// errors are ignored. Folders the user chose are never touched.
 pub fn clean_old_outputs(app: &AppHandle) {
-    let Ok(dir) = outputs_dir(app) else { return };
+    let Ok(dir) = app_outputs(app) else { return };
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };

@@ -63,6 +63,7 @@ fn main() {
             commands::thumbnails,
             commands::pick_folder,
             commands::set_hit_rect,
+            commands::open_outputs,
             commands::get_settings,
             commands::set_settings,
         ])

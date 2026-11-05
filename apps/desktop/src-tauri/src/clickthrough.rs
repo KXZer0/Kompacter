@@ -3,8 +3,7 @@
 //! The window is a fixed canvas big enough for the tallest view, so the card can animate
 //! inside it without resizing the window (resizing mid-animation is what made it choppy).
 //! A small loop watches the cursor: over the card the window takes the mouse, elsewhere
-//! clicks fall through to whatever is behind. Approach learned from Coucou (MIT,
-//! github.com/Louis-CFM/coucou, windows/src-tauri/src/island.rs).
+//! clicks fall through to whatever is behind.
 
 use std::sync::{Arc, Mutex};
 

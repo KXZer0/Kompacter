@@ -1,30 +1,33 @@
-// A SwiftUI-style spring: `response` is roughly the time to settle (s), `damping` < 1 gives a
-// little overshoot. Integrated in small steps so a dropped frame never makes it jump.
-// Same model Coucou uses for its island (MIT, github.com/Louis-CFM/coucou, src/core/anim.ts).
+// Spring motion for the flyout card. `response` ≈ seconds to settle, `damping` < 1 adds a
+// small overshoot. Runs on a fixed 120 Hz clock with an accumulator, so frame drops or a
+// slow first frame never change how the motion looks.
+
+const STEP = 1 / 120;
 
 export class Spring {
   value: number;
   target: number;
   velocity = 0;
-  private omega: number;
-  private zeta: number;
+  private stiffness = 0;
+  private friction = 0;
+  private carry = 0;
 
   constructor(value: number, response = 0.5, damping = 0.72) {
-    this.value = value;
-    this.target = value;
-    this.omega = (2 * Math.PI) / response;
-    this.zeta = damping;
+    this.value = this.target = value;
+    this.configure(response, damping);
   }
 
   configure(response: number, damping: number) {
-    this.omega = (2 * Math.PI) / response;
-    this.zeta = damping;
+    const w = (2 * Math.PI) / response;
+    this.stiffness = w * w;
+    this.friction = 2 * damping * w;
   }
 
   /** Jump straight to `v`, no motion. */
   set(v: number) {
     this.value = this.target = v;
     this.velocity = 0;
+    this.carry = 0;
   }
 
   get settled() {
@@ -32,27 +35,15 @@ export class Spring {
   }
 
   step(dt: number) {
-    const steps = Math.max(1, Math.ceil(dt / (1 / 240)));
-    const h = dt / steps;
-    for (let i = 0; i < steps; i++) {
-      const acc = this.omega * this.omega * (this.target - this.value) - 2 * this.zeta * this.omega * this.velocity;
-      this.velocity += acc * h;
-      this.value += this.velocity * h;
+    this.carry += dt;
+    while (this.carry >= STEP) {
+      const force = this.stiffness * (this.target - this.value) - this.friction * this.velocity;
+      this.velocity += force * STEP;
+      this.value += this.velocity * STEP;
+      this.carry -= STEP;
     }
   }
 }
 
-/** Close curve: quick and calm, no bounce (cubic-bezier(.45,0,.2,1), 340 ms). */
-export function closeEase(t: number) {
-  // Bisection on the bezier's x; 12 rounds is plenty at 60 fps.
-  const [x1, y1, x2, y2] = [0.45, 0, 0.2, 1];
-  const bx = (u: number) => 3 * (1 - u) ** 2 * u * x1 + 3 * (1 - u) * u * u * x2 + u ** 3;
-  const by = (u: number) => 3 * (1 - u) ** 2 * u * y1 + 3 * (1 - u) * u * u * y2 + u ** 3;
-  let lo = 0, hi = 1, u = t;
-  for (let i = 0; i < 12; i++) {
-    if (bx(u) < t) lo = u;
-    else hi = u;
-    u = (lo + hi) / 2;
-  }
-  return by(u);
-}
+/** Close curve: eases in and out, no bounce. */
+export const closeEase = (t: number) => (t < 0.5 ? 8 * t ** 4 : 1 - (-2 * t + 2) ** 4 / 2);

@@ -43,7 +43,7 @@ export type Settings = {
   startWithWindows: boolean;
   hotkey: string;
   /** Where results go. */
-  output: "kompacted" | "custom" | "replace" | "temp";
+  output: "app" | "beside" | "custom" | "replace";
   /** Folder for output = "custom". */
   outputDir: string;
   /** Hide the flyout when it loses focus. */
@@ -66,3 +66,5 @@ export const thumbnails = (path: string, count = 10) =>
 export const pickFolder = () => invoke<string | null>("pick_folder");
 /** Resize the flyout (logical px), bottom edge fixed, in one step (no flicker). */
 export const setFlyoutHeight = (height: number) => invoke<void>("set_flyout_height", { height });
+/** Open Kompacter's own Kompacted folder in Explorer. */
+export const openOutputs = () => invoke<void>("open_outputs");

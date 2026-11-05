@@ -11,10 +11,10 @@
   import * as api from "./api";
 
   const OUTPUTS: { v: api.Settings["output"]; label: string; small: string }[] = [
-    { v: "kompacted", label: "Kompacted folder", small: "A “Kompacted” folder next to the original" },
+    { v: "app", label: "Kompacter folder", small: "Next to the app · deleted after 7 days" },
+    { v: "beside", label: "Next to the original", small: "In a “Kompacted” folder beside it" },
     { v: "custom", label: "A folder I choose", small: "" },
     { v: "replace", label: "Replace the original", small: "The original goes to the Recycle Bin" },
-    { v: "temp", label: "Temporary", small: "Deleted automatically after 7 days" },
   ];
   async function chooseFolder() {
     const dir = await api.pickFolder().catch(() => null);
@@ -110,6 +110,8 @@
         <span class="grow">{o.label}<small>{o.v === "custom" ? settings.outputDir || "Pick a folder" : o.small}</small></span>
         {#if o.v === "custom"}
           <button class="btn plain press" onclick={(e) => (e.preventDefault(), chooseFolder())}>Choose…</button>
+        {:else if o.v === "app"}
+          <button class="btn plain press" onclick={(e) => (e.preventDefault(), api.openOutputs())}>Open</button>
         {/if}
         <span class="chk"><Icon name="check" /></span>
       </label>

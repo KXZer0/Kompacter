@@ -12,7 +12,7 @@ export const DEFAULTS: api.Settings = {
   pasteGuard: false,
   startWithWindows: false,
   hotkey: "Ctrl+Shift+K",
-  output: "kompacted",
+  output: "app",
   outputDir: "",
   autoHide: true,
 };
