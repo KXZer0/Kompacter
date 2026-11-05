@@ -82,7 +82,7 @@
   .preset:hover { background: var(--fill-hover); }
   .menu {
     position: absolute; top: 36px; left: -4px; z-index: 40; min-width: 240px; padding: 6px; border-radius: 14px;
-    background: var(--mat-strong); backdrop-filter: blur(30px) saturate(1.8); box-shadow: var(--shadow);
+    background: var(--mat-strong); box-shadow: var(--shadow);
     transform-origin: top left; animation: pop 200ms var(--spring);
   }
   @keyframes pop { from { opacity: 0; transform: scale(0.94); } to { opacity: 1; transform: none; } }

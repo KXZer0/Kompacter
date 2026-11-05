@@ -8,6 +8,22 @@
   import { CUSTOM_ID, logoFor, note, shortName } from "./presets";
   import Seg from "./Seg.svelte";
   import { changed, resolved, settings } from "./settings.svelte";
+  import * as api from "./api";
+
+  const OUTPUTS: { v: api.Settings["output"]; label: string; small: string }[] = [
+    { v: "kompacted", label: "Kompacted folder", small: "A “Kompacted” folder next to the original" },
+    { v: "custom", label: "A folder I choose", small: "" },
+    { v: "replace", label: "Replace the original", small: "The original goes to the Recycle Bin" },
+    { v: "temp", label: "Temporary", small: "Deleted automatically after 7 days" },
+  ];
+  async function chooseFolder() {
+    const dir = await api.pickFolder().catch(() => null);
+    if (dir) {
+      settings.outputDir = dir;
+      settings.output = "custom";
+      changed();
+    }
+  }
 
   let { presets, encoders, onback }: { presets: Preset[]; encoders: Encoder[] | null; onback: () => void } = $props();
 
@@ -30,7 +46,7 @@
   };
 </script>
 
-{#snippet toggle(id: string, key: "gpu" | "pasteGuard" | "startWithWindows", label: string, small = "", soon = false, describedby = "")}
+{#snippet toggle(id: string, key: "gpu" | "pasteGuard" | "startWithWindows" | "autoHide", label: string, small = "", soon = false, describedby = "")}
   <div class="cell">
     <div class="grow" id={id}>{label}{#if soon}<span class="soon">Coming soon</span>{/if}{#if small}<small>{small}</small>{/if}</div>
     <span class="sw-state" aria-hidden="true">{settings[key] ? "On" : "Off"}</span>
@@ -85,11 +101,27 @@
       options={[{ v: "system", label: "System" }, { v: "light", label: "Light" }, { v: "dark", label: "Dark" }]} />
   {/if}
 
+  <h3 class="grp-h" id="g-out">Save compressed files to</h3>
+  <div class="grp" role="radiogroup" aria-labelledby="g-out">
+    {#each OUTPUTS as o (o.v)}
+      <label class="cell">
+        <input type="radio" name="output" value={o.v} checked={settings.output === o.v}
+          onchange={() => (o.v === "custom" && !settings.outputDir ? chooseFolder() : set("output", o.v))} />
+        <span class="grow">{o.label}<small>{o.v === "custom" ? settings.outputDir || "Pick a folder" : o.small}</small></span>
+        {#if o.v === "custom"}
+          <button class="btn plain press" onclick={(e) => (e.preventDefault(), chooseFolder())}>Choose…</button>
+        {/if}
+        <span class="chk"><Icon name="check" /></span>
+      </label>
+    {/each}
+  </div>
+
   <h3 class="grp-h">Encoding</h3>
   <div class="grp">{@render toggle("l-gpu", "gpu", "GPU encoding", encText)}</div>
 
   <h3 class="grp-h">General</h3>
   <div class="grp">
+    {@render toggle("l-hide", "autoHide", "Hide when I click away", "Stays open while you drag a file to it")}
     {@render toggle("l-guard", "pasteGuard", "Catch oversized pastes", "", true, "guardExplain")}
     {@render toggle("l-start", "startWithWindows", "Start with Windows", "", true)}
     <div class="cell">

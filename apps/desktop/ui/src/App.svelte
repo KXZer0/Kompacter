@@ -1,9 +1,11 @@
 <!--
   The flyout. One calm base size (360×472); only the trimmer and settings grow taller.
+  The card grows open from its bottom edge and folds back down (lib/window.ts).
   A small state machine decides what the stage and the view below it show.
 -->
 <script lang="ts">
   import { onMount } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import * as api from "./lib/api";
   import type { Encoder } from "./lib/bindings/Encoder";
@@ -13,7 +15,6 @@
   import { bytes, fileName } from "./lib/format";
   import Icon from "./lib/Icon.svelte";
   import { live, say } from "./lib/live.svelte";
-  import { flipFrom, reduced } from "./lib/motion";
   import PresetPill from "./lib/PresetPill.svelte";
   import { withCustom } from "./lib/presets";
   import ProgressView from "./lib/ProgressView.svelte";
@@ -23,7 +24,7 @@
   import SizeMeter from "./lib/SizeMeter.svelte";
   import Stage, { type Mood, type StageSize } from "./lib/Stage.svelte";
   import Trimmer, { type TrimRequest } from "./lib/Trimmer.svelte";
-  import { BASE_HEIGHT, maxHeight, setHeight } from "./lib/window";
+  import { BASE_H, card } from "./lib/window";
 
   type From = "idle" | "big" | "trim" | "queue";
   type View =
@@ -44,7 +45,7 @@
   let progress = $state(0);
   let cancelling = false;
   let stage: Stage;
-  let surface: HTMLDivElement;
+  let flyout: HTMLDivElement;
 
   const presets = $derived(withCustom(enginePresets, settings.customBytes));
   const preset = $derived(presets.find((p) => p.id === settings.preset) ?? presets[0] ?? { id: "discord", label: "Discord", bytes: 20 * 1024 * 1024 });
@@ -60,22 +61,28 @@
     : "idle",
   );
 
-  /* ── Window height: base for everything except the trimmer and settings ── */
-  let curH = BASE_HEIGHT;
-  async function fitWindow(k: View["k"]) {
-    const h = k === "trim" ? Math.min(608, maxHeight()) : k === "settings" ? Math.min(600, maxHeight()) : BASE_HEIGHT;
-    if (h === curH) return;
-    const from = surface.getBoundingClientRect();
-    if (h < curH && !reduced())
-      await surface.animate([{ transform: "none" }, { transform: `scaleY(${h / curH})` }], { duration: 180, easing: "cubic-bezier(.3,0,.2,1)", fill: "forwards" }).finished;
-    await setHeight(h);
-    surface.getAnimations().forEach((a) => a.cancel());
-    if (h > curH) requestAnimationFrame(() => flipFrom(surface, from, "50% 100%"));
-    curH = h;
-  }
+  /* ── Card height: base for everything except the trimmer and settings ── */
+  const HEIGHT: Partial<Record<View["k"], number>> = { trim: 608, settings: 600 };
   $effect(() => {
-    fitWindow(view.k);
+    card.setTarget(HEIGHT[view.k] ?? BASE_H);
   });
+
+  /* ── Open / close / auto-hide ── */
+  let hideTimer = 0;
+  let hovering = false;
+  async function close() {
+    clearTimeout(hideTimer);
+    await card.close();
+    await api.hide().catch(() => {});
+  }
+  /** Fold away after `ms` if the user has moved on (not hovering, not dragging, not focused). */
+  function autoHide(ms: number) {
+    clearTimeout(hideTimer);
+    if (!settings.autoHide) return;
+    hideTimer = window.setTimeout(() => {
+      if (!hovering && !dragging && !document.hasFocus() && view.k !== "busy") close();
+    }, ms);
+  }
 
   /* ── Flow ── */
   const media = (ins: api.Inspection) => {
@@ -114,6 +121,7 @@
       if (!quick) await stage.finish();
       view = { k: "done", result, label: result.untouched ? "" : label };
       stage.celebrate();
+      if (!document.hasFocus()) autoHide(2500);
       say(result.fits ? (result.copied ? `Copied ${fileName(result.path)}, ${bytes(result.output_bytes)}. Paste anywhere with Control V.` : `Saved ${bytes(result.output_bytes)}.`) : `Still too big: ${bytes(result.output_bytes)}.`);
     } catch (e) {
       if (cancelling) {
@@ -157,7 +165,7 @@
     if (e.key === "Escape") {
       if (view.k === "settings") view = view.back;
       else if (view.k === "trim") view = { k: "big", path: view.path, ins: view.ins };
-      else api.hide().catch(() => {});
+      else close();
     } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v" && !(e.target instanceof HTMLInputElement)) {
       e.preventDefault();
       paste();
@@ -169,6 +177,17 @@
     api.presets().then((p) => (enginePresets = p)).catch(() => {});
     api.encoders().then((e) => (encoders = e)).catch(() => (encoders = []));
 
+    card.attach(flyout);
+    const unOpen = listen("flyout-open", () => {
+      clearTimeout(hideTimer);
+      card.open();
+    }).catch(() => () => {});
+    const unClose = listen("flyout-close", () => close()).catch(() => () => {});
+    const onBlur = () => autoHide(1500);
+    const onFocus = () => clearTimeout(hideTimer);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
+
     const onVis = () => (document.hidden ? (document.documentElement.dataset.hidden = "") : delete document.documentElement.dataset.hidden);
     document.addEventListener("visibilitychange", onVis);
 
@@ -177,6 +196,7 @@
       .onDragDropEvent(({ payload }) => {
         if (view.k === "busy") return;
         if (payload.type === "enter" || payload.type === "over") {
+          clearTimeout(hideTimer);
           if (!dragging && view.k !== "idle") view = { k: "idle" };
           dragging = true;
           const r = devicePixelRatio || 1;
@@ -190,6 +210,10 @@
       .catch(() => () => {});
 
     return () => {
+      unOpen.then((f) => f());
+      unClose.then((f) => f());
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVis);
       unProgress.then((f) => f());
       unDrop.then((f) => f());
@@ -199,8 +223,10 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div class="flyout" data-view={view.k}>
-  <div class="fly-surface" bind:this={surface}></div>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="flyout" data-view={view.k} bind:this={flyout}
+  onpointerenter={() => ((hovering = true), clearTimeout(hideTimer))}
+  onpointerleave={() => ((hovering = false), document.hasFocus() || autoHide(1500))}>
   <div class="fly-inner">
     <header class="fly-head">
       <PresetPill {presets} selected={preset} onselect={selectPreset} onedit={goSettings} />
@@ -283,10 +309,19 @@
 <div class="sr-only" aria-live="polite">{live.text}</div>
 
 <style>
-  .flyout { position: relative; height: 100%; }
-  /* Without OS acrylic behind a transparent window, use the strong material so text stays readable. */
-  .fly-surface { position: absolute; inset: 0; border-radius: var(--r-xl); background: var(--mat-strong); box-shadow: inset 0 0 0 0.5px var(--hair); transform-origin: 50% 100%; }
-  .fly-inner { position: relative; display: flex; flex-direction: column; height: 100%; }
+  /* The card: anchored to the window's bottom edge; only its height animates (lib/window.ts).
+     It draws its own shadow and hairline border, since the OS window shadow is off. */
+  .flyout {
+    position: absolute; left: 12px; bottom: 12px; width: 360px; height: 472px;
+    overflow: hidden; border-radius: var(--r-xl);
+    background: var(--mat-strong);
+    box-shadow: 0 0 0 0.5px var(--hair), 0 8px 24px -6px rgba(0, 0, 0, 0.32);
+    contain: layout paint;
+  }
+  :global(.flyout.closed) { visibility: hidden; }
+  /* Content keeps its full height and sits on the bottom edge, so a shorter card
+     reveals it from the bottom up instead of squashing it. */
+  .fly-inner { position: absolute; left: 0; right: 0; bottom: 0; height: var(--content-h, 472px); display: flex; flex-direction: column; }
   .fly-head { display: flex; align-items: center; gap: 8px; padding: 14px 14px 0 16px; position: relative; z-index: 2; }
   .spacer { flex: 1; }
   .fly-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 6px 20px 20px; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }

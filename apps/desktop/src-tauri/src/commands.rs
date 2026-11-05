@@ -102,8 +102,10 @@ pub async fn compress(
     } else {
         Mode::Fit
     };
+    let prefs = settings::load(&app);
+    opts.gpu = prefs.gpu;
+    // The engine always writes to the app cache first; `place` moves the result after.
     opts.out_dir = Some(outputs_dir(&app)?);
-    opts.gpu = settings::load(&app).gpu;
 
     tauri::async_runtime::spawn_blocking(move || {
         let mut last = -1;
@@ -114,9 +116,12 @@ pub async fn compress(
                 let _ = app.emit("progress", p);
             }
         };
-        let outcome = engine
+        let mut outcome = engine
             .compress(Path::new(&path), &opts, &mut on_progress, &cancel)
             .map_err(|e| e.to_string())?;
+        if !outcome.untouched {
+            outcome.path = place(&outcome.path, Path::new(&path), &prefs)?;
+        }
         let copied = outcome.fits
             && crate::clipboard::copy_files(std::slice::from_ref(&outcome.path)).is_ok();
         Ok(Compressed { outcome, copied })
@@ -135,6 +140,52 @@ pub fn hide(app: AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
+}
+
+/// Move a finished file to where the user wants it (setting `output`):
+/// - "kompacted": a `Kompacted` folder next to the original (default)
+/// - "custom": the folder in `output_dir`
+/// - "replace": where the original was; the original goes to the Recycle Bin
+/// - "temp": stay in the app cache (auto-deleted after 7 days)
+fn place(made: &Path, original: &Path, prefs: &Settings) -> Result<PathBuf, String> {
+    let parent = original.parent().unwrap_or(Path::new("."));
+    let dir = match prefs.output.as_str() {
+        "temp" => return Ok(made.to_path_buf()),
+        "replace" => parent.to_path_buf(),
+        "custom" if !prefs.output_dir.trim().is_empty() => PathBuf::from(&prefs.output_dir),
+        _ => parent.join("Kompacted"),
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    // Clean name: "clip.mp4", not "clip.kompact.mp4".
+    let stem = original
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "kompacted".into());
+    let stem = if original.is_dir() {
+        original
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or(stem)
+    } else {
+        stem
+    };
+    let ext = made.extension().map(|e| e.to_string_lossy().into_owned());
+    let dest = match ext {
+        Some(e) => dir.join(format!("{stem}.{e}")),
+        None => dir.join(&stem),
+    };
+
+    if prefs.output == "replace" {
+        trash::delete(original)
+            .map_err(|e| format!("couldn't move the original to the Recycle Bin: {e}"))?;
+    }
+    // rename fails across drives (cache on C:, video on D:), so fall back to copy.
+    if std::fs::rename(made, &dest).is_err() {
+        std::fs::copy(made, &dest).map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_file(made);
+    }
+    Ok(dest)
 }
 
 fn outputs_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -249,4 +300,26 @@ pub async fn thumbnails(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Native "choose folder" dialog for the custom output folder. `None` if cancelled.
+#[tauri::command]
+pub async fn pick_folder(app: AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .blocking_pick_folder()
+            .map(|f| f.to_string())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// The card's on-screen rectangle (logical px, window-relative). Outside it, clicks pass
+/// through the transparent window to whatever is behind (see clickthrough.rs).
+#[tauri::command]
+pub fn set_hit_rect(state: State<'_, AppState>, x: f64, y: f64, w: f64, h: f64) {
+    *state.hit.lock().unwrap() = [x, y, w, h];
 }

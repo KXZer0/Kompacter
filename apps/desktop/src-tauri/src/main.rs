@@ -1,6 +1,7 @@
 // No console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod clickthrough;
 mod clipboard;
 mod commands;
 mod settings;
@@ -21,6 +22,8 @@ pub struct AppState {
     pub cancel: Arc<AtomicBool>,
     /// ffprobe results keyed by path + modified time, so trimmer drags don't re-probe.
     pub probes: Mutex<HashMap<(PathBuf, Option<SystemTime>), MediaInfo>>,
+    /// Card rectangle reported by the page: [x, y, w, h] in logical px.
+    pub hit: Arc<Mutex<[f64; 4]>>,
 }
 
 /// Installed builds ship ffmpeg next to the app (Tauri sidecar). Dev builds use the PATH.
@@ -44,6 +47,7 @@ fn main() {
             engine: Arc::new(Engine::new(bundled_ffmpeg())),
             cancel: Arc::new(AtomicBool::new(false)),
             probes: Mutex::new(HashMap::new()),
+            hit: Arc::new(Mutex::new([0.0; 4])),
         })
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -57,11 +61,14 @@ fn main() {
             commands::show_in_folder,
             commands::encoders,
             commands::thumbnails,
+            commands::pick_folder,
+            commands::set_hit_rect,
             commands::get_settings,
             commands::set_settings,
         ])
         .setup(|app| {
             tray::create(app.handle())?;
+            clickthrough::start(app.handle(), app.state::<AppState>().hit.clone());
             commands::clean_old_outputs(app.handle());
             // Detect GPU encoders in the background so the first compress doesn't wait.
             let engine = app.state::<AppState>().engine.clone();

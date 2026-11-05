@@ -4,7 +4,7 @@
    Generated from design/mockup/index.html — keep the two in sync. */
 /* ───────── Tokens ───────── */
 :root{
-  --font:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI Variable",system-ui,sans-serif;
+  --font:"Inter Variable",-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI Variable",system-ui,sans-serif;
   --r-xl:22px; --r-lg:16px; --r-md:12px; --r-sm:9px;
   --spring:cubic-bezier(.2,.9,.25,1.05);
   --ease:cubic-bezier(.2,.8,.2,1);

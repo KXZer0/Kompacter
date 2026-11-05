@@ -23,6 +23,12 @@ pub struct Settings {
     pub paste_guard: bool,
     pub start_with_windows: bool,
     pub hotkey: String,
+    /// Where results go: "kompacted" | "custom" | "replace" | "temp".
+    pub output: String,
+    /// Folder for `output = "custom"`.
+    pub output_dir: String,
+    /// Hide the flyout when it loses focus (not while a file is dragged over it).
+    pub auto_hide: bool,
 }
 
 impl Default for Settings {
@@ -37,6 +43,9 @@ impl Default for Settings {
             paste_guard: false,
             start_with_windows: false,
             hotkey: "Ctrl+Shift+K".into(),
+            output: "kompacted".into(),
+            output_dir: String::new(),
+            auto_hide: true,
         }
     }
 }

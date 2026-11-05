@@ -12,6 +12,9 @@ export const DEFAULTS: api.Settings = {
   pasteGuard: false,
   startWithWindows: false,
   hotkey: "Ctrl+Shift+K",
+  output: "kompacted",
+  outputDir: "",
+  autoHide: true,
 };
 
 export const settings = $state<api.Settings>({ ...DEFAULTS });

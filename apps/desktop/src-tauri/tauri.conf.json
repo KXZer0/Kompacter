@@ -21,15 +21,15 @@
       {
         "label": "main",
         "title": "Kompacter",
-        "width": 360,
-        "height": 472,
+        "width": 384,
+        "height": 680,
         "resizable": false,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false,
-        "shadow": true,
+        "shadow": false,
         "dragDropEnabled": true
       }
     ],

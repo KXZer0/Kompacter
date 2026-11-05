@@ -42,6 +42,12 @@ export type Settings = {
   pasteGuard: boolean;
   startWithWindows: boolean;
   hotkey: string;
+  /** Where results go. */
+  output: "kompacted" | "custom" | "replace" | "temp";
+  /** Folder for output = "custom". */
+  outputDir: string;
+  /** Hide the flyout when it loses focus. */
+  autoHide: boolean;
 };
 
 /** Native open-file dialog; null if cancelled. */
@@ -56,3 +62,7 @@ export const setSettings = (settings: Settings) => invoke<void>("set_settings", 
 /** Filmstrip frames for the trimmer, as data: URLs, in time order. */
 export const thumbnails = (path: string, count = 10) =>
   invoke<string[]>("thumbnails", { path, count });
+/** Native choose-folder dialog; null if cancelled. */
+export const pickFolder = () => invoke<string | null>("pick_folder");
+/** Resize the flyout (logical px), bottom edge fixed, in one step (no flicker). */
+export const setFlyoutHeight = (height: number) => invoke<void>("set_flyout_height", { height });

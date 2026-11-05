@@ -24,6 +24,19 @@ button { cursor: pointer; }
 .bad { color: var(--bad); }
 kbd { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 6px; background: var(--fill); font: 500 12px/20px var(--font); text-align: center; color: var(--label-2); }
 
+/* Thin, rounded scrollbars that only show on hover (instead of the Windows default) */
+* { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+*:hover { scrollbar-color: var(--fill-2) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
+::-webkit-scrollbar-thumb { border-radius: 8px; background: transparent; border: 2px solid transparent; background-clip: padding-box; }
+:hover::-webkit-scrollbar-thumb { background-color: var(--fill-2); }
+::-webkit-scrollbar-corner, ::-webkit-scrollbar-track { background: transparent; }
+
+/* Native-looking inputs, not Windows defaults */
+input[type="number"] { appearance: textfield; }
+input[type="number"]::-webkit-inner-spin-button { appearance: none; }
+select { appearance: none; }
+
 /* Instant press feedback */
 .press { transition: transform var(--t-fast) var(--spring), background-color var(--t-fast) var(--ease), opacity var(--t-fast); }
 .press:active { transform: scale(0.96); transition-duration: 70ms; }

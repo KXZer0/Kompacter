@@ -2,7 +2,7 @@
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, PhysicalPosition};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Kompacter", true, None::<&str>)?;
@@ -38,13 +38,15 @@ pub fn toggle(app: &AppHandle) {
         return;
     };
     if w.is_visible().unwrap_or(false) {
-        let _ = w.hide();
+        // The page plays the close animation, then calls `hide`.
+        let _ = w.emit("flyout-close", ());
     } else {
         show(app);
     }
 }
 
-/// Show the flyout in the bottom-right corner, just above the taskbar.
+/// Show the flyout window in the bottom-right corner, above the taskbar. The window is a
+/// fixed, mostly transparent canvas; the card inside grows open from its bottom edge.
 pub fn show(app: &AppHandle) {
     let Some(w) = app.get_webview_window("main") else {
         return;
@@ -53,7 +55,7 @@ pub fn show(app: &AppHandle) {
         let scale = m.scale_factor();
         let (mx, my) = (m.position().x, m.position().y);
         let (mw, mh) = (m.size().width as i32, m.size().height as i32);
-        let margin = (12.0 * scale) as i32;
+        let margin = (2.0 * scale) as i32;
         let taskbar = (48.0 * scale) as i32;
         let x = mx + mw - size.width as i32 - margin;
         let y = my + mh - size.height as i32 - taskbar - margin;
@@ -61,4 +63,5 @@ pub fn show(app: &AppHandle) {
     }
     let _ = w.show();
     let _ = w.set_focus();
+    let _ = w.emit("flyout-open", ());
 }
