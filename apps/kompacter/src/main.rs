@@ -676,16 +676,7 @@ fn demo(app: &Rc<App>, which: &str) {
             label: "Bitrate".into(),
             value: "1.9 Mbps video · 96 kbps audio".into(),
         },
-        DetailRow {
-            label: "Average 720p video".into(),
-            value: "2.2 Mbps".into(),
-        },
-        DetailRow {
-            label: "This one".into(),
-            value: "About average".into(),
-        },
     ])));
-    ui.set_trim_verdict("".into());
     match which {
         "big" => ui.set_view(View::Big),
         "trim" => {

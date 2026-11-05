@@ -123,15 +123,11 @@ impl App {
                 "Bitrate",
                 format!("{} (original)", rate(original_kbps)),
             ));
-            if let Some(v) = video {
-                rows.extend(compare(v.width, v.height, v.fps, original_kbps));
-            }
             rows
         };
-        let same = "";
 
         if ui.get_trim_mode() == 0 {
-            self.set_details(original(), same);
+            self.set_details(original());
             // Keep quality: a cut, no re-encode.
             ui.set_trim_big(format!("≈ {}", bytes(keep_bytes)).into());
             ui.set_trim_grade(3);
@@ -148,7 +144,7 @@ impl App {
                 ui.set_trim_button(format!("Fit to {} instead", bytes(target)).into());
             }
         } else if est.fits_as_is {
-            self.set_details(original(), same);
+            self.set_details(original());
             ui.set_trim_big("Original".into());
             ui.set_trim_grade(3);
             ui.set_trim_ok(true);
@@ -179,8 +175,7 @@ impl App {
                 "Bitrate",
                 format!("{} video · {} kbps audio", rate(v.video_kbps), v.audio_kbps),
             ));
-            rows.extend(compare(v.width, v.height, v.fps, v.video_kbps));
-            self.set_details(rows, "");
+            self.set_details(rows);
             ui.set_trim_big(format!("{}p", v.height).into());
             ui.set_trim_grade(match v.quality {
                 Quality::Great => 3,
@@ -200,10 +195,8 @@ impl App {
         } else {
             let ok = est.audio_kbps.is_some();
             let k = est.audio_kbps.unwrap_or(0);
-            let mut rows = vec![row("Audio bitrate", format!("{k} kbps"))];
-            rows.push(row("Average audio", "128 kbps".into()));
-            rows.push(row("This one", versus(k as f64 / 128.0).into()));
-            self.set_details(rows, "");
+            let rows = vec![row("Audio bitrate", format!("{k} kbps"))];
+            self.set_details(rows);
             ui.set_trim_big(
                 est.audio_kbps
                     .map_or("—".into(), |k| format!("{k} kbps"))
@@ -223,10 +216,9 @@ impl App {
         }
     }
 
-    fn set_details(&self, rows: Vec<DetailRow>, verdict: &str) {
-        let ui = self.ui();
-        ui.set_trim_details(ModelRc::new(VecModel::from(rows)));
-        ui.set_trim_verdict(verdict.into());
+    fn set_details(&self, rows: Vec<DetailRow>) {
+        self.ui()
+            .set_trim_details(ModelRc::new(VecModel::from(rows)));
     }
 
     pub fn trim_compress(self: &Rc<Self>) {
@@ -257,70 +249,5 @@ fn rate(kbps: u32) -> String {
         format!("{} Mbps", m.trim_end_matches(".0"))
     } else {
         format!("{kbps} kbps")
-    }
-}
-
-/// Bitrate of an average H.264 video of this size and frame rate. Works for any
-/// resolution (and vertical videos): about 0.08 bits per pixel per frame at 30 fps, which
-/// gives the usual streaming numbers (720p ≈ 2.2 Mbps, 1080p ≈ 5 Mbps, 4K ≈ 20 Mbps).
-/// Higher frame rates need more, but not double (frames are more alike).
-fn average_kbps(width: u32, height: u32, fps: f64) -> u32 {
-    let fps = fps.clamp(10.0, 120.0);
-    let per_frame = width as f64 * height as f64 * 0.08;
-    let kbps = per_frame * 30.0 * (fps / 30.0).powf(0.6) / 1000.0;
-    // Round to a friendly number.
-    let step = if kbps >= 1000.0 { 100.0 } else { 50.0 };
-    ((kbps / step).round() * step).max(50.0) as u32
-}
-
-/// Baseline for an average video at this size, and how this one compares.
-fn compare(width: u32, height: u32, fps: f64, kbps: u32) -> [DetailRow; 2] {
-    let avg = average_kbps(width, height, fps);
-    let p = width.min(height); // "720p" means the short side, also for vertical video
-    let what = format!(
-        "{p}p{}",
-        if fps > 40.0 {
-            fps.round().to_string()
-        } else {
-            String::new()
-        }
-    );
-    [
-        row(&format!("Average {what} video"), rate(avg)),
-        row("This one", versus(kbps as f64 / avg as f64).into()),
-    ]
-}
-
-fn versus(ratio: f64) -> &'static str {
-    if ratio >= 1.15 {
-        "Above average"
-    } else if ratio >= 0.8 {
-        "About average"
-    } else {
-        "Below average"
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn average_bitrate_scales_with_size_and_fps() {
-        assert_eq!(average_kbps(1280, 720, 30.0), 2200);
-        assert_eq!(average_kbps(1920, 1080, 30.0), 5000);
-        assert_eq!(average_kbps(3840, 2160, 30.0), 19900);
-        assert_eq!(average_kbps(854, 480, 30.0), 1000);
-        // Vertical phone video: same pixels, same baseline.
-        assert_eq!(average_kbps(1080, 1920, 30.0), 5000);
-        // 60 fps needs more, but not double.
-        let (a, b) = (
-            average_kbps(1920, 1080, 30.0),
-            average_kbps(1920, 1080, 60.0),
-        );
-        assert!(b > a && b < 2 * a);
-        assert_eq!(versus(1.3), "Above average");
-        assert_eq!(versus(0.9), "About average");
-        assert_eq!(versus(0.5), "Below average");
     }
 }
