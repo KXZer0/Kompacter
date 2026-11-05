@@ -22,8 +22,10 @@ use serde::{Deserialize, Serialize};
 pub use error::{Error, Result};
 pub use ffmpeg::Ffmpeg;
 pub use gpu::Encoder;
+pub use jobs::split::MAX_PARTS;
 pub use plan::{Quality, Trim, VideoPlan};
 pub use probe::{MediaInfo, MediaKind};
+pub use thumbs::Frames;
 
 /// What to do with a file.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +58,9 @@ pub struct Options {
     pub speed: Speed,
     /// Use a hardware encoder when one works (falls back to CPU on any failure).
     pub gpu: bool,
+    /// When it can't fit (well) in one file: video/audio are cut into equal parts and
+    /// folders into several zips, each under the target (see `Estimate::parts`).
+    pub split: bool,
 }
 
 impl Options {
@@ -67,6 +72,7 @@ impl Options {
             out_dir: None,
             speed: Speed::Balanced,
             gpu: true,
+            split: false,
         }
     }
 }
@@ -80,6 +86,9 @@ pub struct Outcome {
     pub fits: bool,
     /// True when the file already fit and nothing was written.
     pub untouched: bool,
+    /// Every file made, in order, when it was split into parts (`path` is the first).
+    /// Empty for a single file. `output_bytes` is then the total.
+    pub parts: Vec<PathBuf>,
 }
 
 /// Live numbers for the UI. Cheap enough to recompute on every trim-handle drag.
@@ -97,6 +106,9 @@ pub struct Estimate {
     pub video: Option<VideoPlan>,
     /// Fit mode, audio: bitrate we'd use (`None` = too long to fit).
     pub audio_kbps: Option<u32>,
+    /// Video/audio too long to fit well in one file: how many parts would each fit at a
+    /// decent quality (at most `MAX_PARTS`). `None` when one file is fine.
+    pub parts: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -119,8 +131,10 @@ impl Engine {
     }
 
     /// `count` small JPEG frames across a video, for the trimmer's filmstrip.
-    pub fn thumbnails(&self, info: &MediaInfo, count: u32, height: u32) -> Result<Vec<Vec<u8>>> {
-        thumbs::thumbnails(&self.ff, &info.path, info.duration, count, height)
+    /// Filmstrip frames for the trimmer (raw RGB).
+    pub fn thumbnails(&self, info: &MediaInfo, count: u32, height: u32) -> Result<thumbs::Frames> {
+        let size = info.video.as_ref().map_or((0, 0), |v| (v.width, v.height));
+        thumbs::thumbnails(&self.ff, &info.path, info.duration, size, count, height)
     }
 
     pub fn probe(&self, path: &Path) -> Result<MediaInfo> {
@@ -147,6 +161,7 @@ impl Engine {
         let audio_kbps = (info.kind == MediaKind::Audio)
             .then(|| plan::plan_audio_kbps(target, seconds))
             .flatten();
+        let parts = split_count(info, seconds, target);
         Ok(Estimate {
             kind: info.kind,
             original_bytes: info.size_bytes,
@@ -156,6 +171,7 @@ impl Engine {
             keep_quality_bytes,
             video,
             audio_kbps,
+            parts,
         })
     }
 
@@ -189,6 +205,36 @@ impl Engine {
             speed: opts.speed,
             encoders: if opts.gpu { self.hw_encoders() } else { &[] },
         };
+        if opts.split && opts.mode == Mode::Fit {
+            let parts = match info.kind {
+                MediaKind::Video | MediaKind::Audio => {
+                    let secs = trim.map_or(info.duration, |t| t.len());
+                    split_count(&info, secs, target).map(|n| {
+                        jobs::split::media(&ctx, &info, trim, n, target, &out_base, progress)
+                    })
+                }
+                MediaKind::Folder => Some(jobs::folder::fit_parts(
+                    &ctx, path, target, &out_base, progress,
+                )),
+                _ => None,
+            };
+            if let Some(parts) = parts {
+                let parts = parts?;
+                let sizes = parts
+                    .iter()
+                    .map(|p| jobs::file_size(p))
+                    .collect::<Result<Vec<_>>>()?;
+                return Ok(Outcome {
+                    path: parts[0].clone(),
+                    kind: info.kind,
+                    original_bytes: info.size_bytes,
+                    output_bytes: sizes.iter().sum(),
+                    fits: sizes.iter().all(|&s| s <= target),
+                    untouched: false,
+                    parts: if parts.len() > 1 { parts } else { Vec::new() },
+                });
+            }
+        }
         let out = match (opts.mode, trim) {
             (Mode::KeepQuality, Some(t)) => jobs::cut(&ctx, &info, t, &out_base, progress)?,
             (Mode::KeepQuality, None) => {
@@ -213,7 +259,26 @@ fn outcome(info: &MediaInfo, path: PathBuf, size: u64, target: u64, untouched: b
         output_bytes: size,
         fits: size <= target,
         untouched,
+        parts: Vec::new(),
     }
+}
+
+/// How many equal parts a video/audio needs so each fits at a decent quality: `None` when
+/// one file is already fine, otherwise 2…`MAX_PARTS` (`MAX_PARTS` if even that isn't great).
+fn split_count(info: &MediaInfo, seconds: f64, target: u64) -> Option<u32> {
+    let good = |secs: f64| match (info.kind, &info.video) {
+        (MediaKind::Video, Some(v)) => {
+            let p = plan::plan_video(target, secs, v.width, v.height, v.fps, info.audio.is_some());
+            p.fits && p.quality != Quality::Low
+        }
+        (MediaKind::Audio, _) => plan::plan_audio_kbps(target, secs).is_some_and(|k| k >= 64),
+        _ => true,
+    };
+    if seconds <= 0.0 || info.size_bytes <= target || good(seconds) {
+        return None;
+    }
+    let max = jobs::split::MAX_PARTS;
+    Some((2..=max).find(|&n| good(seconds / n as f64)).unwrap_or(max))
 }
 
 /// Trims only make sense for video/audio; clamp them to the real duration.

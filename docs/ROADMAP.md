@@ -49,6 +49,6 @@ Not doing: intercepting drag-and-drop into Discord, hooking its upload dialog, o
 - [x] GPU encoders (NVENC / AMF / QSV / VideoToolbox) with detection and CPU fallback
 - [ ] Verify GPU encodes on real NVIDIA / AMD / Intel hardware
 - [ ] Exact keep-quality estimate from packet sizes
-- [ ] EXIF orientation for photos
-- [ ] Split folders/long videos into parts when they can't fit
+- [x] EXIF orientation for photos
+- [x] Split folders/long videos into parts when they can't fit
 - [x] Bundle ffmpeg with the installer

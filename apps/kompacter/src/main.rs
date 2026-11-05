@@ -2,55 +2,54 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 //! Kompacter: a tray app that shrinks any file to fit an upload limit and puts the result
-//! on the clipboard. The window is drawn by Slint (ui/*.slint); this file holds the logic.
-//! Heavy work (probing, compressing) runs on worker threads; results come back to the UI
-//! thread with `slint::invoke_from_event_loop`. Nothing runs while the window is hidden.
+//! on the clipboard. The window is drawn by Slint (ui/*.slint); the logic lives here.
+//! Heavy work (probing, compressing, filmstrips) runs on worker threads; results come
+//! back to the UI thread with `slint::invoke_from_event_loop`. Nothing runs while the
+//! window is hidden.
 
+mod flow;
 mod format;
+mod motion;
 mod output;
 mod settings;
 mod sys;
+mod trim;
 
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use kompacter_core::size::PRESETS;
-use kompacter_core::{Engine, Estimate, MediaInfo, MediaKind, Mode, Options, Outcome};
+use kompacter_core::{Engine, Estimate, MediaInfo, MediaKind};
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-use crate::format::{bytes, file_name};
+use crate::format::bytes;
 use crate::settings::Settings;
 
 slint::include_modules!();
 
-const CARD_W: f64 = 360.0;
-const CARD_H: f64 = 472.0;
-const SETTINGS_H: f64 = 600.0;
-
 /// A preset as shown: the engine's presets plus "Custom".
-struct Target {
-    id: String,
-    name: String,
-    note: String,
-    brand: String,
-    bytes: u64,
+pub struct Target {
+    pub id: String,
+    pub name: String,
+    pub brand: String,
+    pub bytes: u64,
 }
 
-fn targets(custom_bytes: u64) -> Vec<Target> {
+pub fn targets(custom_bytes: u64) -> Vec<Target> {
     let mut list: Vec<Target> = PRESETS
         .iter()
         .map(|p| {
-            let (name, note) = match p.id {
-                "discord" => ("Discord", "Free"),
-                "discord-nitro-basic" => ("Nitro Basic", "Discord"),
-                "discord-nitro" => ("Nitro", "Discord"),
-                id if id.starts_with("email") => ("Email", "Attachment"),
-                _ => (p.label, ""),
+            let name = match p.id {
+                "discord" => "Discord",
+                "discord-nitro-basic" => "Nitro Basic",
+                "discord-nitro" => "Nitro",
+                id if id.starts_with("email") => "Email",
+                _ => p.label,
             };
             let brand = if p.id.starts_with("discord") {
                 "discord"
@@ -60,7 +59,6 @@ fn targets(custom_bytes: u64) -> Vec<Target> {
             Target {
                 id: p.id.into(),
                 name: name.into(),
-                note: note.into(),
                 brand: brand.into(),
                 bytes: p.bytes,
             }
@@ -69,7 +67,6 @@ fn targets(custom_bytes: u64) -> Vec<Target> {
     list.push(Target {
         id: "custom".into(),
         name: "Custom".into(),
-        note: String::new(),
         brand: "custom".into(),
         bytes: custom_bytes,
     });
@@ -77,44 +74,52 @@ fn targets(custom_bytes: u64) -> Vec<Target> {
 }
 
 /// The file currently in the window.
-struct Current {
-    path: PathBuf,
-    info: MediaInfo,
-    estimate: Estimate,
+pub struct Current {
+    pub path: PathBuf,
+    pub info: MediaInfo,
+    pub estimate: Estimate,
 }
 
-struct App {
-    ui: slint::Weak<AppWindow>,
-    engine: Arc<Engine>,
-    cancel: Arc<AtomicBool>,
-    settings: RefCell<Settings>,
-    current: RefCell<Option<Current>>,
-    result: RefCell<Option<PathBuf>>,
-    started: Cell<Option<Instant>>,
+pub struct App {
+    pub ui: slint::Weak<AppWindow>,
+    pub engine: Arc<Engine>,
+    pub cancel: Arc<AtomicBool>,
+    pub settings: RefCell<Settings>,
+    pub current: RefCell<Option<Current>>,
+    pub result: RefCell<Option<PathBuf>>,
+    /// The trim range of the last compress (so "Split into parts" can reuse it).
+    pub last_range: Cell<Option<(f64, f64)>>,
+    pub started: Cell<Option<Instant>>,
     /// A file dialog is open: don't auto-hide while the user picks.
-    modal: Cell<bool>,
+    pub modal: Cell<bool>,
     /// When the window last hid itself on focus loss (a tray click causes that too).
-    auto_hidden: Cell<Option<Instant>>,
+    pub auto_hidden: Cell<Option<Instant>>,
+    /// All animations (off in Low-memory mode or when Windows animations are off).
+    pub rich: bool,
+    /// Floating see-through card (GPU drawing); otherwise a plain window.
+    pub glass: bool,
+    pub motion: motion::Motion,
+    pub trim: trim::Trim,
 }
 
 impl App {
-    fn ui(&self) -> AppWindow {
+    pub fn ui(&self) -> AppWindow {
         self.ui.upgrade().expect("window")
     }
 
-    fn target(&self) -> Target {
+    pub fn target(&self) -> Target {
         let s = self.settings.borrow();
         let list = targets(s.custom_bytes);
         let i = list.iter().position(|t| t.id == s.preset).unwrap_or(0);
         list.into_iter().nth(i).expect("presets")
     }
 
-    fn save(&self) {
+    pub fn save(&self) {
         settings::save(&self.settings.borrow());
     }
 
     /// Push settings and presets into the window.
-    fn sync_settings(&self) {
+    pub fn sync_settings(&self) {
         let ui = self.ui();
         let s = self.settings.borrow();
         let list = targets(s.custom_bytes);
@@ -122,7 +127,7 @@ impl App {
             .iter()
             .map(|t| PresetItem {
                 name: t.name.as_str().into(),
-                note: t.note.as_str().into(),
+                note: SharedString::new(),
                 size: bytes(t.bytes).into(),
                 brand: t.brand.as_str().into(),
             })
@@ -131,11 +136,33 @@ impl App {
         ui.set_presets(ModelRc::new(VecModel::from(items)));
         ui.set_preset_index(index as i32);
         ui.set_target_text(bytes(list[index].bytes).into());
-        ui.set_theme_index(match s.theme.as_str() {
-            "light" => 1,
-            "dark" => 2,
-            _ => 0,
-        });
+
+        let discord = s.style == "discord";
+        ui.set_style_index(discord as i32);
+        let (options, index): (&[&str], i32) = if discord {
+            (
+                &["Match", "Light", "Ash", "Dark", "Onyx"],
+                match s.discord_theme.as_str() {
+                    "light" => 1,
+                    "ash" => 2,
+                    "dark" => 3,
+                    "onyx" => 4,
+                    _ => 0,
+                },
+            )
+        } else {
+            (
+                &["System", "Light", "Dark"],
+                match s.theme.as_str() {
+                    "light" => 1,
+                    "dark" => 2,
+                    _ => 0,
+                },
+            )
+        };
+        let options: Vec<SharedString> = options.iter().map(|o| (*o).into()).collect();
+        ui.set_theme_options(ModelRc::new(VecModel::from(options)));
+        ui.set_theme_index(index);
         ui.set_output_index(match s.output.as_str() {
             "beside" => 1,
             "custom" => 2,
@@ -146,334 +173,40 @@ impl App {
         ui.set_gpu(s.gpu);
         ui.set_auto_hide(s.auto_hide);
         ui.set_start_with_windows(s.start_with_windows);
+        ui.set_low_memory(s.low_memory);
         ui.set_custom_mb((s.custom_bytes / (1024 * 1024)) as i32);
         drop(s);
         self.apply_theme();
     }
 
-    fn apply_theme(&self) {
-        let dark = match self.settings.borrow().theme.as_str() {
+    pub fn apply_theme(&self) {
+        let s = self.settings.borrow();
+        let system_dark = sys::system_dark();
+        let ui = self.ui();
+        let theme = ui.global::<Theme>();
+        theme.set_dark(match s.theme.as_str() {
             "light" => false,
             "dark" => true,
-            _ => sys::system_dark(),
-        };
-        self.ui().global::<Theme>().set_dark(dark);
+            _ => system_dark,
+        });
+        theme.set_style((s.style == "discord") as i32);
+        theme.set_dt(match s.discord_theme.as_str() {
+            "light" => 0,
+            "ash" => 1,
+            "dark" => 2,
+            "onyx" => 3,
+            _ if system_dark => 2,
+            _ => 0,
+        });
     }
 
-    fn set_view(&self, v: View) {
-        let ui = self.ui();
-        let was_tall = ui.get_view() == View::Settings;
-        ui.set_view(v);
-        if was_tall != (v == View::Settings) && ui.window().is_visible() {
-            self.place();
-        }
-    }
-
-    /// Put the window in the bottom-right corner above the taskbar.
-    fn place(&self) {
-        let ui = self.ui();
-        let h = if ui.get_view() == View::Settings {
-            SETTINGS_H
-        } else {
-            CARD_H
-        };
-        if let Some((right, bottom, scale)) = sys::corner() {
-            let margin = 12.0 * scale;
-            let x = right as f64 - CARD_W * scale - margin;
-            let y = bottom as f64 - h * scale - margin;
-            ui.window()
-                .set_position(slint::PhysicalPosition::new(x as i32, y as i32));
-        }
-    }
-
-    fn show(&self) {
-        let ui = self.ui();
-        self.apply_theme();
-        self.place();
-        let _ = ui.show();
-        // Position again once the window exists (first show), then focus it.
-        self.place();
-        ui.window().with_winit_window(|w| w.focus_window());
-    }
-
-    fn hide(&self) {
-        let ui = self.ui();
-        if ui.get_view() == View::Settings {
-            self.close_settings();
-        }
-        let _ = ui.hide();
-    }
-
-    fn toggle(&self) {
-        if self.ui().window().is_visible() {
-            self.hide();
-        } else if self
-            .auto_hidden
-            .get()
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(400))
-        {
-            // This click is what made the window lose focus and hide; leave it closed.
-        } else {
-            self.show();
-        }
-    }
-
-    fn close_settings(&self) {
-        let back = if self.current.borrow().is_some() {
-            View::Big
-        } else {
-            View::Idle
-        };
-        self.set_view(back);
-    }
-
-    /// A file arrived (drop, paste, choose). Read it, then compress right away if that's
-    /// the obvious next step, or show the choices.
-    fn open(self: &Rc<Self>, path: PathBuf) {
-        let ui = self.ui();
-        if matches!(ui.get_view(), View::Busy | View::Reading) {
-            return;
-        }
-        *self.current.borrow_mut() = None;
-        ui.set_file_name(file_name(&path).into());
-        self.set_view(View::Reading);
-
-        let engine = self.engine.clone();
-        let target = self.target().bytes;
-        let weak = Rc::downgrade(self);
-        let p = path.clone();
-        run(
-            move || {
-                let info = engine.probe(&p).map_err(|e| e.to_string())?;
-                let estimate = engine
-                    .estimate(&info, &Options::new(target))
-                    .map_err(|e| e.to_string())?;
-                Ok::<_, String>((info, estimate))
-            },
-            move |r| {
-                let Some(app) = weak.upgrade() else { return };
-                match r {
-                    Err(e) => app.fail(&path, &e),
-                    Ok((info, estimate)) => {
-                        let direct = estimate.fits_as_is || !matches!(info.kind, MediaKind::Video);
-                        *app.current.borrow_mut() = Some(Current {
-                            path,
-                            info,
-                            estimate,
-                        });
-                        if direct {
-                            app.compress();
-                        } else {
-                            app.show_big();
-                        }
-                    }
-                }
-            },
-        );
-    }
-
-    /// "Too big" view: what the file is and what compressing would give.
-    fn show_big(&self) {
-        let ui = self.ui();
-        let cur = self.current.borrow();
-        let Some(c) = cur.as_ref() else { return };
-        let target = self.target().bytes;
-        let size = c.info.size_bytes;
-
-        let mut meta = Vec::new();
-        if c.info.duration > 0.0 {
-            meta.push(format::clock(c.info.duration));
-        }
-        if let Some(v) = &c.info.video {
-            meta.push(format!("{}×{}", v.width, v.height));
-        }
-        meta.push(bytes(size));
-        ui.set_file_name(file_name(&c.path).into());
-        ui.set_file_meta(meta.join(" · ").into());
-        ui.set_file_kind(kind_name(c.info.kind).into());
-
-        let max = size.max(target) as f64 * 1.08;
-        ui.set_meter_fill((size as f64 / max) as f32);
-        ui.set_meter_limit((target as f64 / max) as f32);
-        ui.set_over_text(format!("{} too big", bytes(size.saturating_sub(target))).into());
-        // The button says what it will do; a line appears only as a warning.
-        let (label, warn) = match &c.estimate.video {
-            Some(v) if v.fits => (format!("Compress to {}p", v.height), ""),
-            Some(_) => (
-                "Compress".to_string(),
-                "Quality will be low. Trim it first for a better result.",
-            ),
-            None => ("Compress".to_string(), ""),
-        };
-        ui.set_compress_label(label.into());
-        ui.set_foot_text(warn.into());
-        drop(cur);
-        self.set_view(View::Big);
-    }
-
-    fn compress(self: &Rc<Self>) {
-        let ui = self.ui();
-        let cur = self.current.borrow();
-        let Some(c) = cur.as_ref() else { return };
-        let path = c.path.clone();
-        let quick = c.estimate.fits_as_is;
-        let height = c.estimate.video.as_ref().map(|v| v.height);
-        drop(cur);
-
-        let prefs = self.settings.borrow().clone();
-        let target = self.target().bytes;
-        let mut opts = Options::new(target);
-        opts.mode = Mode::Fit;
-        opts.gpu = prefs.gpu;
-        opts.out_dir = match output::dir(&prefs, &path) {
-            Ok(d) => Some(d),
-            Err(e) => return self.fail(&path, &e),
-        };
-
-        self.cancel.store(false, Ordering::Relaxed);
-        self.started.set(Some(Instant::now()));
-        ui.set_progress(0.0);
-        ui.set_busy_left("Estimating time…".into());
-        if !quick {
-            self.set_view(View::Busy);
-        }
-
-        let engine = self.engine.clone();
-        let cancel = self.cancel.clone();
-        let ui_weak = self.ui.clone();
-        let weak = Rc::downgrade(self);
-        let original = path.clone();
-        run(
-            move || {
-                let mut last = -1;
-                let mut on_progress = |p: f32| {
-                    let step = (p * 200.0) as i32; // ~0.5% steps
-                    if step != last {
-                        last = step;
-                        let w = ui_weak.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = w.upgrade() {
-                                ui.set_progress(p);
-                            }
-                        });
-                    }
-                };
-                let mut out = engine
-                    .compress(&path, &opts, &mut on_progress, &cancel)
-                    .map_err(|e| e.to_string())?;
-                if !out.untouched && prefs.output == "replace" {
-                    out.path = output::replace_original(&out.path, &path)?;
-                }
-                let copied = out.fits && sys::copy_files(std::slice::from_ref(&out.path)).is_ok();
-                output::clean(Some(&out.path));
-                Ok::<_, String>((out, copied))
-            },
-            move |r| {
-                let Some(app) = weak.upgrade() else { return };
-                match r {
-                    Ok((out, copied)) => {
-                        app.ui().set_progress(1.0);
-                        // Let the press finish its squeeze before the result appears.
-                        let weak = Rc::downgrade(&app);
-                        let delay = if quick { 0 } else { 380 };
-                        slint::Timer::single_shot(Duration::from_millis(delay), move || {
-                            if let Some(app) = weak.upgrade() {
-                                app.done(out, copied, height);
-                            }
-                        });
-                    }
-                    Err(_) if app.cancel.load(Ordering::Relaxed) => {
-                        if app.current.borrow().as_ref().is_some_and(|c| {
-                            c.estimate.fits_as_is || !matches!(c.info.kind, MediaKind::Video)
-                        }) {
-                            app.another();
-                        } else {
-                            app.show_big();
-                        }
-                    }
-                    Err(e) => app.fail(&original, &e),
-                }
-            },
-        );
-    }
-
-    fn done(&self, out: Outcome, copied: bool, height: Option<u32>) {
-        let ui = self.ui();
-        let title = if !out.fits {
-            "Still too big"
-        } else if copied {
-            "Copied"
-        } else {
-            "Saved"
-        };
-        let ratio = out.original_bytes as f64 / out.output_bytes.max(1) as f64;
-        let mut details = vec![bytes(out.output_bytes)];
-        if let Some(h) = height.filter(|_| !out.untouched) {
-            details.push(format!("{h}p"));
-        }
-        if out.untouched {
-            details.push("already fit".into());
-        } else if ratio >= 1.1 {
-            details.push(format!("{ratio:.1}× smaller"));
-        }
-        let sub = if !out.fits {
-            format!(
-                "{} · trim it or pick a bigger target",
-                bytes(out.output_bytes)
-            )
-        } else if !copied {
-            "Couldn't copy it — drag it from the folder".into()
-        } else {
-            details.join(" · ")
-        };
-        ui.set_done_sub(sub.into());
-        ui.set_done_ok(out.fits);
-        ui.set_done_title(title.into());
-        *self.result.borrow_mut() = Some(out.path);
-        self.set_view(View::Done);
-        // If the user already went back to their chat, fold away after a moment.
-        if !ui
-            .window()
-            .with_winit_window(|w| w.has_focus())
-            .unwrap_or(true)
-        {
-            self.auto_hide_later(2500);
-        }
-    }
-
-    fn fail(&self, path: &Path, e: &str) {
-        let ui = self.ui();
-        let _ = path;
-        ui.set_error_text(e.into());
-        self.set_view(View::Error);
-    }
-
-    fn another(&self) {
+    pub fn another(&self) {
         *self.current.borrow_mut() = None;
         self.set_view(View::Idle);
     }
 
-    fn auto_hide_later(&self, ms: u64) {
-        let ui = self.ui.clone();
-        let auto = self.settings.borrow().auto_hide;
-        if !auto {
-            return;
-        }
-        slint::Timer::single_shot(Duration::from_millis(ms), move || {
-            if let Some(ui) = ui.upgrade() {
-                let focused = ui
-                    .window()
-                    .with_winit_window(|w| w.has_focus())
-                    .unwrap_or(true);
-                if !focused && ui.get_view() != View::Busy && !ui.get_dragging() {
-                    let _ = ui.hide();
-                }
-            }
-        });
-    }
-
     /// Native file or folder picker on a worker thread, so the window keeps drawing.
-    fn pick(self: &Rc<Self>, folder: bool, then: impl FnOnce(&Rc<App>, PathBuf) + 'static) {
+    pub fn pick(self: &Rc<Self>, folder: bool, then: impl FnOnce(&Rc<App>, PathBuf) + 'static) {
         self.modal.set(true);
         let weak = Rc::downgrade(self);
         run(
@@ -495,9 +228,23 @@ impl App {
             },
         );
     }
+
+    /// Restart Kompacter (the drawing mode can only be chosen at start).
+    fn restart(&self) {
+        if let Ok(exe) = std::env::current_exe() {
+            let pid = std::process::id().to_string();
+            if std::process::Command::new(exe)
+                .args(["--after", &pid])
+                .spawn()
+                .is_ok()
+            {
+                let _ = slint::quit_event_loop();
+            }
+        }
+    }
 }
 
-fn kind_name(k: MediaKind) -> &'static str {
+pub fn kind_name(k: MediaKind) -> &'static str {
     match k {
         MediaKind::Video => "video",
         MediaKind::Audio => "audio",
@@ -508,11 +255,11 @@ fn kind_name(k: MediaKind) -> &'static str {
 }
 
 /// Run `work` on a worker thread, then `done` with its result on the UI thread.
-fn run<T: Send + 'static>(
+pub fn run<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     done: impl FnOnce(T) + 'static,
 ) {
-    let done = send_wrapper(done);
+    let done = UiOnly(Some(done), std::thread::current().id());
     std::thread::spawn(move || {
         let r = work();
         let _ = slint::invoke_from_event_loop(move || (done.take())(r));
@@ -542,27 +289,53 @@ impl<F> Drop for UiOnly<F> {
         }
     }
 }
-fn send_wrapper<F>(f: F) -> UiOnly<F> {
-    UiOnly(Some(f), std::thread::current().id())
+
+thread_local! {
+    /// What a second launch does: open the window (set once in main).
+    static SHOW: RefCell<Box<dyn Fn()>> = RefCell::new(Box::new(|| {}));
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // After a restart, wait for the old copy to exit first.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(pid) = args
+        .iter()
+        .position(|a| a == "--after")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|p| p.parse().ok())
+    {
+        sys::wait_for_exit(pid);
+    }
     if !sys::first_instance() {
         return Ok(());
     }
-    let quiet = std::env::args().any(|a| a == "--tray");
+    let quiet = args.iter().any(|a| a == "--tray");
 
-    slint::BackendSelector::new()
-        .backend_name("winit".into())
-        .renderer_name("software".into())
-        .with_winit_window_attributes_hook(|attrs| {
+    let prefs = settings::load();
+    let low_memory = prefs.low_memory;
+
+    let mut backend = slint::BackendSelector::new().backend_name("winit".into());
+    if low_memory {
+        // CPU drawing: the least memory.
+        backend = backend.renderer_name("software".into());
+    }
+    // Otherwise the GPU first, with CPU drawing as Slint's automatic fallback.
+    backend
+        .with_winit_window_attributes_hook(move |attrs| {
             #[cfg(windows)]
             {
                 use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
-                attrs
-                    .with_skip_taskbar(true)
-                    .with_undecorated_shadow(true)
-                    .with_corner_preference(CornerPreference::Round)
+                let attrs = attrs.with_skip_taskbar(true);
+                if low_memory {
+                    attrs
+                        .with_undecorated_shadow(true)
+                        .with_corner_preference(CornerPreference::Round)
+                } else {
+                    // The floating card draws its own corners and shadow.
+                    attrs
+                        .with_undecorated_shadow(false)
+                        .with_corner_preference(CornerPreference::DoNotRound)
+                }
             }
             #[cfg(not(windows))]
             attrs
@@ -570,22 +343,35 @@ fn main() -> Result<(), slint::PlatformError> {
         .select()?;
 
     let ui = AppWindow::new()?;
+    // Only GPU drawing supports a rendering hook, so this tells which one we got.
+    let gpu = !low_memory && ui.window().set_rendering_notifier(|_, _| {}).is_ok();
+    let rich = !low_memory && sys::animations_enabled();
+    ui.global::<Fx>().set_glass(gpu);
+    ui.global::<Fx>().set_rich(rich);
+    // Starts folded, so the first open grows in.
+    ui.set_opened(!gpu);
+
     let tray = Tray::new()?;
     let app = Rc::new(App {
         ui: ui.as_weak(),
         engine: Arc::new(Engine::new(sys::ffmpeg())),
         cancel: Arc::new(AtomicBool::new(false)),
-        settings: RefCell::new(settings::load()),
+        settings: RefCell::new(prefs),
         current: RefCell::new(None),
         result: RefCell::new(None),
+        last_range: Cell::new(None),
         started: Cell::new(None),
         modal: Cell::new(false),
         auto_hidden: Cell::new(None),
+        rich,
+        glass: gpu,
+        motion: motion::Motion::default(),
+        trim: trim::Trim::default(),
     });
     // The Run entry is the truth (it can be turned off in Task Manager).
     app.settings.borrow_mut().start_with_windows = sys::starts_with_windows();
     app.sync_settings();
-    ui.set_dash_path(format::dashed_round_rect(308.0, 300.0, 28.0, 6.0, 7.0).into());
+    ui.set_dash_path(format::dashed_round_rect(308.0, 300.0, 28.0, 6.0, 7.0, 0.0).into());
 
     // Find GPU encoders in the background (so the first compress doesn't wait), then
     // tidy old outputs.
@@ -637,7 +423,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     {
                         drop(s);
                         a.auto_hidden.set(Some(Instant::now()));
-                        a.hide();
+                        a.close();
                     }
                 }
                 winit::event::WindowEvent::HoveredFile(_) => {
@@ -646,6 +432,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             a.another();
                         }
                         ui.set_dragging(true);
+                        a.wake();
                     }
                 }
                 winit::event::WindowEvent::HoveredFileCancelled => ui.set_dragging(false),
@@ -681,7 +468,12 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
         let a = app.clone();
-        ui.on_compress(move || a.compress());
+        ui.on_compress(move || a.compress(None, false, false));
+        let a = app.clone();
+        ui.on_split(move || {
+            let range = a.last_range.get();
+            a.compress(range, false, true)
+        });
         let a = app.clone();
         ui.on_cancel(move || a.cancel.store(true, Ordering::Relaxed));
         let a = app.clone();
@@ -701,10 +493,16 @@ fn main() -> Result<(), slint::PlatformError> {
                 a.settings.borrow_mut().preset = t.id.clone();
                 a.save();
                 a.sync_settings();
-                // Re-check the file against the new limit.
-                let path = a.current.borrow().as_ref().map(|c| c.path.clone());
-                if let (Some(p), View::Big) = (path, a.ui().get_view()) {
-                    a.open(p);
+                match a.ui().get_view() {
+                    // Re-check the file against the new limit.
+                    View::Big => {
+                        let path = a.current.borrow().as_ref().map(|c| c.path.clone());
+                        if let Some(p) = path {
+                            a.open(p);
+                        }
+                    }
+                    View::Trim => a.trim_update(),
+                    _ => {}
                 }
             }
         });
@@ -717,17 +515,35 @@ fn main() -> Result<(), slint::PlatformError> {
         let a = app.clone();
         ui.on_close_settings(move || a.close_settings());
         let a = app.clone();
-        ui.on_escape(move || {
-            if a.ui().get_view() == View::Settings {
-                a.close_settings();
-            } else {
-                a.hide();
-            }
+        ui.on_open_trim(move || a.open_trim());
+        let a = app.clone();
+        ui.on_close_trim(move || a.set_view(View::Big));
+        let a = app.clone();
+        ui.on_trim_changed(move || a.trim_update());
+        let a = app.clone();
+        ui.on_trim_compress(move || a.trim_compress());
+        let a = app.clone();
+        ui.on_escape(move || match a.ui().get_view() {
+            View::Settings => a.close_settings(),
+            View::Trim => a.set_view(View::Big),
+            _ => a.close(),
+        });
+        let a = app.clone();
+        ui.on_set_style(move |i| {
+            a.settings.borrow_mut().style = if i == 1 { "discord" } else { "kompacter" }.into();
+            a.save();
+            a.sync_settings();
         });
         let a = app.clone();
         ui.on_set_theme(move |i| {
-            a.settings.borrow_mut().theme =
-                ["system", "light", "dark"][i.clamp(0, 2) as usize].into();
+            let mut s = a.settings.borrow_mut();
+            if s.style == "discord" {
+                s.discord_theme =
+                    ["match", "light", "ash", "dark", "onyx"][i.clamp(0, 4) as usize].into();
+            } else {
+                s.theme = ["system", "light", "dark"][i.clamp(0, 2) as usize].into();
+            }
+            drop(s);
             a.save();
             a.sync_settings();
         });
@@ -735,14 +551,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_set_output(move |i| {
             let i = i.clamp(0, 3) as usize;
             if i == 2 && a.settings.borrow().output_dir.is_empty() {
-                a.pick(true, |app, dir| {
-                    let mut s = app.settings.borrow_mut();
-                    s.output_dir = dir.display().to_string();
-                    s.output = "custom".into();
-                    drop(s);
-                    app.save();
-                    app.sync_settings();
-                });
+                a.pick(true, set_custom_dir);
                 return;
             }
             a.settings.borrow_mut().output = ["app", "beside", "custom", "replace"][i].into();
@@ -750,16 +559,7 @@ fn main() -> Result<(), slint::PlatformError> {
             a.sync_settings();
         });
         let a = app.clone();
-        ui.on_choose_folder(move || {
-            a.pick(true, |app, dir| {
-                let mut s = app.settings.borrow_mut();
-                s.output_dir = dir.display().to_string();
-                s.output = "custom".into();
-                drop(s);
-                app.save();
-                app.sync_settings();
-            })
-        });
+        ui.on_choose_folder(move || a.pick(true, set_custom_dir));
         ui.on_open_outputs(|| {
             if let Ok(d) = output::app_dir() {
                 sys::open_folder(&d);
@@ -785,6 +585,19 @@ fn main() -> Result<(), slint::PlatformError> {
             a.sync_settings();
         });
         let a = app.clone();
+        ui.on_set_low_memory(move |on| {
+            a.settings.borrow_mut().low_memory = on;
+            a.save();
+            a.sync_settings();
+            // Let the switch finish moving, then come back in the new mode.
+            let weak = Rc::downgrade(&a);
+            slint::Timer::single_shot(Duration::from_millis(350), move || {
+                if let Some(a) = weak.upgrade() {
+                    a.restart();
+                }
+            });
+        });
+        let a = app.clone();
         ui.on_set_custom_mb(move |mb| {
             let mb = (mb as u64).clamp(1, 4096);
             a.settings.borrow_mut().custom_bytes = mb * 1024 * 1024;
@@ -793,62 +606,46 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // Progress text ("About 1 min left") follows the progress value.
+    // A second launch (from the Start menu) opens the window.
     {
-        let a = app.clone();
-        let timer = slint::Timer::default();
-        timer.start(
-            slint::TimerMode::Repeated,
-            Duration::from_millis(500),
-            move || {
-                let ui = a.ui();
-                if ui.get_view() == View::Busy {
-                    if let Some(t) = a.started.get() {
-                        let text =
-                            format::time_left(t.elapsed().as_secs_f64(), ui.get_progress() as f64);
-                        ui.set_busy_left(text.into());
-                    }
-                }
-            },
-        );
-        // A second launch (from the Start menu) opens the window.
-        let w = ui.as_weak();
-        let a2 = Rc::downgrade(&app);
-        let _keep = (timer, w);
-        sys::listen_for_show(move || {
-            let _ = slint::invoke_from_event_loop(|| SHOW.with(|f| (f.borrow())()));
-        });
+        let weak = Rc::downgrade(&app);
         SHOW.with(|f| {
             *f.borrow_mut() = Box::new(move || {
-                if let Some(a) = a2.upgrade() {
+                if let Some(a) = weak.upgrade() {
                     a.show();
                 }
             })
         });
-
-        #[cfg(debug_assertions)]
-        if let Ok(v) = std::env::var("KOMPACTER_DEMO") {
-            demo(&app, &v);
-        }
-        if !quiet {
-            app.show();
-        }
-        slint::run_event_loop_until_quit()?;
-        drop(_keep);
+        sys::listen_for_show(|| {
+            let _ = slint::invoke_from_event_loop(|| SHOW.with(|f| (f.borrow())()));
+        });
     }
+
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("KOMPACTER_DEMO") {
+        demo(&app, &v);
+    }
+    if !quiet {
+        app.show();
+    }
+    slint::run_event_loop_until_quit()?;
     drop(tray);
     Ok(())
 }
 
-thread_local! {
-    /// What a second launch does: open the window (set once in main).
-    static SHOW: RefCell<Box<dyn Fn()>> = RefCell::new(Box::new(|| {}));
+fn set_custom_dir(app: &Rc<App>, dir: PathBuf) {
+    let mut s = app.settings.borrow_mut();
+    s.output_dir = dir.display().to_string();
+    s.output = "custom".into();
+    drop(s);
+    app.save();
+    app.sync_settings();
 }
 
-/// Dev builds only: `KOMPACTER_DEMO=big|busy|done|error|settings|drag` shows a screen
-/// with sample data, for screenshots.
+/// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord`
+/// shows a screen with sample data, for screenshots.
 #[cfg(debug_assertions)]
-fn demo(app: &App, which: &str) {
+fn demo(app: &Rc<App>, which: &str) {
     let ui = app.ui();
     ui.set_file_name("Valorant clutch 4K.mp4".into());
     ui.set_file_meta("1:42 · 2560×1440 · 128 MB".into());
@@ -856,21 +653,73 @@ fn demo(app: &App, which: &str) {
     ui.set_meter_fill(0.92);
     ui.set_meter_limit(0.15);
     ui.set_over_text("108 MB too big".into());
+    ui.set_compress_label("Compress to 720p".into());
+    ui.set_can_trim(true);
     ui.set_progress(0.42);
+    ui.set_squeeze(0.42);
+    ui.set_intro(1.0);
     ui.set_busy_left("About 40 s left".into());
     ui.set_done_ok(true);
     ui.set_done_title("Copied".into());
     ui.set_done_sub("19.4 MB · 720p · 6.6× smaller".into());
-    ui.set_compress_label("Compress to 720p".into());
     ui.set_error_text("ffprobe couldn't read this file".into());
+    ui.set_trim_dur(102.0);
+    ui.set_trim_a(12.0);
+    ui.set_trim_b(40.0);
+    ui.set_trim_range("0:12 – 0:40 · 28 s".into());
+    ui.set_trim_big("≈ 14.2 MB".into());
+    ui.set_trim_status("Fits 20 MB".into());
+    ui.set_trim_grade(2);
+    ui.set_trim_big("720p".into());
+    ui.set_trim_details(ModelRc::new(VecModel::from(vec![
+        DetailRow {
+            label: "Resolution".into(),
+            value: "2560×1440 → 1280×720".into(),
+        },
+        DetailRow {
+            label: "Frame rate".into(),
+            value: "60 → 30 fps".into(),
+        },
+        DetailRow {
+            label: "Bitrate".into(),
+            value: "1.9 Mbps video · 96 kbps audio".into(),
+        },
+    ])));
     match which {
         "big" => ui.set_view(View::Big),
+        "split" => {
+            ui.set_split_count(3);
+            ui.set_view(View::Big);
+        }
+        "toobig" => {
+            ui.set_done_ok(false);
+            ui.set_done_split(true);
+            ui.set_done_title("Still too big".into());
+            ui.set_done_sub("48 MB · too big for one file".into());
+            ui.set_view(View::Done);
+        }
+        "parts" => {
+            ui.set_done_title("Copied 3 parts".into());
+            ui.set_done_sub("3 files · each under 20 MB".into());
+            ui.set_view(View::Done);
+        }
+        "trim" => {
+            ui.set_win_h(624.0);
+            ui.set_view(View::Trim);
+        }
         "busy" => ui.set_view(View::Busy),
         "done" => ui.set_view(View::Done),
         "error" => ui.set_view(View::Error),
-        "settings" => ui.set_view(View::Settings),
+        "settings" => {
+            ui.set_win_h(600.0);
+            ui.set_view(View::Settings);
+        }
         "drag" => ui.set_dragging(true),
-        "dark" => ui.global::<Theme>().set_dark(true),
+        "discord" => {
+            app.settings.borrow_mut().style = "discord".into();
+            app.settings.borrow_mut().discord_theme = "ash".into();
+            app.sync_settings();
+        }
         _ => {}
     }
 }
