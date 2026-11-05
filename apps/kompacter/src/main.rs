@@ -406,6 +406,16 @@ impl App {
         } else {
             "Saved"
         };
+        let ratio = out.original_bytes as f64 / out.output_bytes.max(1) as f64;
+        let mut details = vec![bytes(out.output_bytes)];
+        if let Some(h) = height.filter(|_| !out.untouched) {
+            details.push(format!("{h}p"));
+        }
+        if out.untouched {
+            details.push("already fit".into());
+        } else if ratio >= 1.1 {
+            details.push(format!("{ratio:.1}× smaller"));
+        }
         let sub = if !out.fits {
             format!(
                 "{} · trim it or pick a bigger target",
@@ -414,20 +424,9 @@ impl App {
         } else if !copied {
             "Couldn't copy it — drag it from the folder".into()
         } else {
-            String::new()
+            details.join(" · ")
         };
-        let ratio = out.original_bytes as f64 / out.output_bytes.max(1) as f64;
-        let mut tip = vec![bytes(out.output_bytes)];
-        if let Some(h) = height {
-            tip.push(format!("{h}p"));
-        }
-        if out.untouched {
-            tip.push("already fit".into());
-        } else if ratio >= 1.1 {
-            tip.push(format!("{ratio:.1}× smaller"));
-        }
         ui.set_done_sub(sub.into());
-        ui.set_done_tip(tip.join(" · ").into());
         ui.set_done_ok(out.fits);
         ui.set_done_title(title.into());
         *self.result.borrow_mut() = Some(out.path);
@@ -861,7 +860,7 @@ fn demo(app: &App, which: &str) {
     ui.set_busy_left("About 40 s left".into());
     ui.set_done_ok(true);
     ui.set_done_title("Copied".into());
-    ui.set_done_tip("19.4 MB · 720p · 6.6× smaller".into());
+    ui.set_done_sub("19.4 MB · 720p · 6.6× smaller".into());
     ui.set_compress_label("Compress to 720p".into());
     ui.set_error_text("ffprobe couldn't read this file".into());
     match which {

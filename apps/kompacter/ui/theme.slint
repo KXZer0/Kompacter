@@ -96,7 +96,9 @@ export component Tip inherits Rectangle {
     width: label.preferred-width + 16px;
     height: 24px;
     border-radius: 6px;
-    background: #1c1c1eeb;
+    background: Theme.dark ? #3a3a3e : #ffffff;
+    border-width: 1px;
+    border-color: Theme.dark ? #ffffff26 : #d1d1d6;
     opacity: show && text != "" ? 1 : 0;
     animate opacity { duration: 120ms; }
     Timer {
@@ -106,7 +108,7 @@ export component Tip inherits Rectangle {
     }
     label := Text {
         text: root.text;
-        color: white;
+        color: Theme.label;
         font-size: 12px;
         vertical-alignment: center;
     }
