@@ -30,12 +30,19 @@ Apple-inspired: simple and snappy. Frosted panels, large rounded corners, one ac
 
 Not doing: intercepting drag-and-drop into Discord, hooking its upload dialog, or reading its UI. All need injection or break on every Discord update.
 
+## Decisions
+
+- **Big paste: ask first.** The paste is held and the tray flyout opens with Compress & paste / Trim / Paste anyway. Never compress silently.
+- **Paste guard UI:** reuses the tray flyout (same fixed size) instead of a separate card; a small "On hold" hint is shown and focus stays in the chat app.
+- **Flyout size:** one fixed base size for all quick states; only Settings, the folder queue and the trimmer extend.
+- **Theme:** Kompacter blue by default, plus a Discord-style palette. Light/dark follows Windows.
+  Auto-matching Discord's own theme is best effort: Discord keeps its theme in synced account settings, which we won't read (no tokens). Options to explore: Discord's "sync with computer" default (= follow Windows), or sampling the Discord window's background colour.
+
 ## Open decisions
 
-1. Big paste: **ask first** (proposed) vs. auto-compress, or auto for images/audio and ask for video.
-2. Default guarded apps: Discord, WhatsApp Desktop, Slack?
-3. Output cache cleanup: 7 days (proposed).
-4. WhatsApp preset: verify current limits before adding.
+1. Default guarded apps: Discord, WhatsApp Desktop, Slack?
+2. Output cache cleanup: 7 days (proposed).
+3. Verify Telegram / Slack / Gmail / WhatsApp limits before adding presets.
 
 ## Engine to-do
 
