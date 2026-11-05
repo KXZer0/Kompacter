@@ -42,7 +42,8 @@
   --focus:rgba(0,113,227,.55);
   --shadow:0 0 0 .5px rgba(0,0,0,.12),0 10px 30px rgba(0,0,0,.16),0 30px 80px -20px rgba(0,0,0,.28);
   --shadow-sm:0 0 0 .5px rgba(0,0,0,.1),0 4px 14px rgba(0,0,0,.12);
-  --pouch-a:#e9f2ff; --pouch-b:#9cc4ff; --pouch-c:#5b8cff; --face:#13213f;
+  --pouch-a:#e9f2ff; --pouch-b:#9cc4ff; --pouch-c:#5b8cff;
+  --plate-a:#c3c7cf; --plate-b:#f4f5f7; --plate-c:#a9aeb7;
   --chat-bg:#fbfaf8; --chat-side:#f1efea; --chat-line:rgba(0,0,0,.08); --chat-text:#26251f; --chat-muted:#66635b; --chat-input:#ebe8e2; --chat-accent:#0b7a6c;
 }
 @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
@@ -56,7 +57,7 @@
   --focus:rgba(77,163,255,.7);
   --shadow:0 0 0 .5px rgba(255,255,255,.12),0 10px 30px rgba(0,0,0,.4),0 30px 80px -20px rgba(0,0,0,.6);
   --shadow-sm:0 0 0 .5px rgba(255,255,255,.1),0 4px 14px rgba(0,0,0,.35);
-  --pouch-a:#cfe2ff; --pouch-b:#7aa9ff; --pouch-c:#3d6fff;
+  --pouch-a:#cfe2ff; --pouch-b:#7aa9ff; --pouch-c:#3d6fff; --plate-a:#4a4e57; --plate-b:#9095a0; --plate-c:#383b42;
   --chat-bg:#1d1e1b; --chat-side:#252622; --chat-line:rgba(255,255,255,.08); --chat-text:#ecebe6; --chat-muted:#a9a69d; --chat-input:#2e2f2b; --chat-accent:#4fd1bd;
 }}
 :root[data-theme="dark"]{
@@ -70,7 +71,7 @@
   --focus:rgba(77,163,255,.7);
   --shadow:0 0 0 .5px rgba(255,255,255,.12),0 10px 30px rgba(0,0,0,.4),0 30px 80px -20px rgba(0,0,0,.6);
   --shadow-sm:0 0 0 .5px rgba(255,255,255,.1),0 4px 14px rgba(0,0,0,.35);
-  --pouch-a:#cfe2ff; --pouch-b:#7aa9ff; --pouch-c:#3d6fff;
+  --pouch-a:#cfe2ff; --pouch-b:#7aa9ff; --pouch-c:#3d6fff; --plate-a:#4a4e57; --plate-b:#9095a0; --plate-c:#383b42;
   --chat-bg:#1d1e1b; --chat-side:#252622; --chat-line:rgba(255,255,255,.08); --chat-text:#ecebe6; --chat-muted:#a9a69d; --chat-input:#2e2f2b; --chat-accent:#4fd1bd;
 }
 @supports (transition-timing-function: linear(0, 1)){
@@ -174,7 +175,14 @@ kbd{display:inline-block;min-width:20px;padding:0 6px;border-radius:6px;backgrou
 .fly-head{display:flex;align-items:center;gap:8px;padding:14px 14px 0 16px;position:relative}
 .preset{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px 0 12px;border:0;border-radius:999px;background:var(--fill);font-weight:600;font-size:13px}
 .preset:hover{background:var(--fill-hover)}
-.preset .dot{width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.app{width:15px;height:15px;flex:none;vertical-align:-2px}
+.app.brand{fill:currentColor;stroke:none}
+.b-discord{color:#5865f2} .b-whatsapp{color:#1fa855} .b-slack{color:#4a154b} .b-gmail{color:#ea4335} .b-telegram{color:#229ed9} .b-mail,.b-custom{color:var(--label-2)}
+:root[data-theme="dark"] .b-slack{color:#e3b6e6}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .b-slack{color:#e3b6e6}}
+.menu [role^="menuitem"]:hover .app,.menu [role^="menuitem"]:focus-visible .app{color:#fff}
+.guard .b-mail,.guard .b-custom{color:#c7c7cc}
+.cell .app{margin-right:2px}
 .fly-head .spacer{flex:1}
 .fly-body{padding:6px 20px 20px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
 .view.on{animation:viewIn 220ms var(--ease) both}
@@ -203,43 +211,37 @@ kbd{display:inline-block;min-width:20px;padding:0 6px;border-radius:6px;backgrou
 /* ───────── Stage + pouch (signature) ───────── */
 .stage{position:relative;height:188px;margin:2px -4px 0;transition:none}
 .stage[data-size="md"]{height:112px}
-.stage[data-size="ring"]{height:212px}
+.stage[data-size="press"]{height:176px;overflow:hidden;margin:2px -20px 0}
 .well{position:absolute;inset:6px 10px;border-radius:28px;background:var(--accent-soft);opacity:0;transform:scale(.94);transition:transform var(--t-spring) var(--spring),opacity var(--t-fast)}
 .well::before{content:"";position:absolute;inset:0;border-radius:inherit;border:2px dashed var(--accent-text);opacity:0;transition:opacity var(--t-fast)}
 .dragging .well{opacity:1;transform:none}
 .dragging .well::before{opacity:.9}
-.pouch{position:absolute;left:50%;top:50%;width:132px;height:116px;margin:-58px 0 0 -66px;transform:scale(var(--ps,1));transition:transform var(--t-spring) var(--spring)}
+.pouch{position:absolute;left:50%;top:50%;width:132px;height:116px;margin:-58px 0 0 -66px;transform:scale(var(--ps,1));transition:transform var(--t-spring) var(--spring),opacity 120ms linear}
 .stage[data-size="md"] .pouch{--ps:.62}
-.stage[data-size="ring"] .pouch{--ps:.86}
 .breathe{position:absolute;inset:0;transform-origin:50% 100%;animation:breathe 3.6s ease-in-out infinite}
 @keyframes breathe{0%,100%{transform:none}50%{transform:scale(1.025,.985)}}
 .spring{position:absolute;inset:0;transform-origin:50% 95%;will-change:transform}
 .blob{position:absolute;inset:0;border-radius:47% 53% 45% 55%/55% 52% 48% 45%;background:linear-gradient(150deg,var(--pouch-a) 0%,var(--pouch-b) 55%,var(--pouch-c) 100%);box-shadow:inset 0 -12px 22px rgba(25,45,120,.22),inset 0 8px 14px rgba(255,255,255,.6),0 10px 22px -8px rgba(40,70,160,.45);animation:spin 18s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .gloss{position:absolute;left:20%;top:11%;width:36%;height:20%;border-radius:50%;background:radial-gradient(closest-side,rgba(255,255,255,.9),rgba(255,255,255,0));transform:rotate(-16deg)}
-.face{position:absolute;left:50%;top:44%;width:52px;height:28px;margin-left:-26px;transition:transform 180ms var(--ease)}
-.eye{position:absolute;top:0;width:8px;height:13px;border-radius:5px;background:var(--face);transform-origin:50% 60%;animation:blink 5.4s infinite}
-.eye.l{left:9px} .eye.r{right:9px}
-@keyframes blink{0%,95%,100%{transform:none}97%{transform:scaleY(.12)}}
-.mouth{position:absolute;left:50%;top:18px;width:12px;height:6px;margin-left:-6px;border:2.2px solid var(--face);border-top:0;border-radius:0 0 12px 12px}
-[data-mood="hungry"] .eye{height:15px;width:9px}
-[data-mood="hungry"] .mouth{width:13px;height:13px;margin-left:-6.5px;border:0;border-radius:50%;background:var(--face);top:17px}
-[data-mood="worried"] .eye{height:10px;top:3px}
-[data-mood="worried"] .mouth{top:21px;height:5px;border:2.2px solid var(--face);border-bottom:0;border-radius:12px 12px 0 0}
-[data-mood="busy"] .eye{height:3px;width:10px;top:6px;border-radius:2px;animation:none}
-[data-mood="busy"] .eye.l{transform:rotate(14deg)} [data-mood="busy"] .eye.r{transform:rotate(-14deg)}
-[data-mood="busy"] .mouth{width:7px;height:7px;margin-left:-3.5px;border:2px solid var(--face);border-radius:50%}
-[data-mood="happy"] .eye{background:none;border:2.4px solid var(--face);border-bottom:0;border-radius:10px 10px 0 0;height:7px;width:11px;top:4px;animation:none}
-[data-mood="happy"] .mouth{width:18px;height:9px;margin-left:-9px;border:0;background:var(--face);border-radius:0 0 18px 18px}
+[data-mood="worried"] .breathe{animation:wobble 2.6s ease-in-out infinite}
+@keyframes wobble{0%,55%,100%{transform:none}10%{transform:rotate(-4deg) scale(1.03,.97)}22%{transform:rotate(3deg) scale(.98,1.02)}34%{transform:rotate(-1.5deg)}45%{transform:rotate(.6deg)}}
 .shadow{position:absolute;left:18%;right:18%;bottom:-6px;height:12px;border-radius:50%;background:radial-gradient(closest-side,rgba(0,0,0,.22),transparent);transform-origin:50% 50%}
-.ring{position:absolute;left:50%;top:50%;width:196px;height:196px;margin:-98px 0 0 -98px;opacity:0;transform:scale(.85) rotate(-90deg);transition:opacity var(--t-fast),transform var(--t-spring) var(--spring)}
-.stage[data-size="ring"] .ring{opacity:1;transform:rotate(-90deg)}
-.ring circle{fill:none;stroke-width:5}
-.ring .track{stroke:var(--fill-2)}
-.ring .bar{stroke:var(--accent);stroke-linecap:round;stroke-dasharray:597;stroke-dashoffset:597}
-.morsel{position:absolute;left:50%;top:6px;width:22px;height:28px;margin-left:-11px;opacity:0;color:var(--accent);pointer-events:none}
-.chomping .morsel{animation:morsel 640ms cubic-bezier(.5,0,.75,0) infinite}
-@keyframes morsel{0%{opacity:0;transform:translateY(-6px) scale(.9)}20%{opacity:1}75%{opacity:1;transform:translateY(64px) scale(.45)}100%{opacity:0;transform:translateY(74px) scale(.3)}}
+/* Hydraulic press (compressing) */
+.rig{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity var(--t-fast)}
+.stage[data-size="press"] .rig{opacity:1}
+.plate{position:absolute;left:50%;top:50%;width:40px;height:124px;margin:-62px 0 0 -20px;border-radius:10px;will-change:transform;
+  background:repeating-linear-gradient(180deg,transparent 0 2px,rgba(255,255,255,.16) 2px 3px),linear-gradient(90deg,var(--plate-a),var(--plate-b) 46%,var(--plate-c));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.65),inset 0 -1px 0 rgba(0,0,0,.14),0 0 0 .5px rgba(0,0,0,.2),0 10px 20px -8px rgba(0,0,0,.4)}
+.plate::after{content:"";position:absolute;top:10px;bottom:10px;width:2px;border-radius:1px;background:rgba(255,255,255,.7)}
+.plate.l::after{right:4px} .plate.r::after{left:4px}
+.rod{position:absolute;top:50%;width:240px;height:10px;margin-top:-5px;border-radius:5px;background:linear-gradient(180deg,var(--plate-b),var(--plate-a) 55%,var(--plate-c));box-shadow:0 0 0 .5px rgba(0,0,0,.18)}
+.plate.l .rod{right:100%} .plate.r .rod{left:100%}
+.rod::before{content:"";position:absolute;top:-4px;bottom:-4px;width:8px;border-radius:3px;background:var(--plate-c)}
+.plate.l .rod::before{right:0} .plate.r .rod::before{left:0}
+.dust i{position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px;border-radius:50%;background:var(--label-2);opacity:0}
+.pbar{width:160px;height:4px;margin:6px auto 0;border-radius:2px;background:var(--fill-2);overflow:hidden}
+.pbar i{display:block;height:100%;background:var(--accent);transform-origin:0 50%;transform:scaleX(0)}
 .sparks i{position:absolute;left:50%;top:50%;width:6px;height:6px;margin:-3px;border-radius:50%;background:var(--accent);opacity:0}
 .sparks i:nth-child(even){background:var(--pouch-b)}
 .sparks.burst i{animation:spark 420ms var(--ease) forwards}
@@ -429,6 +431,7 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
   .actions{grid-template-columns:1fr 1fr}
   .qsize s{display:none}
   .fly-body{padding:6px 16px 16px}
+  .stage[data-size="press"]{margin:2px -16px 0}
 }
 </style>
 </head>
@@ -437,7 +440,16 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
   <defs>
     <linearGradient id="kpg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e9f2ff"/><stop offset=".55" stop-color="#8fb9ff"/><stop offset="1" stop-color="#4f7fff"/></linearGradient>
   </defs>
-  <symbol id="i-logo" viewBox="0 0 24 24"><path stroke="none" fill="url(#kpg)" d="M12 3.4c5.2 0 8.8 3.3 8.8 8.4 0 5.3-3.8 8.8-8.8 8.8s-8.8-3.5-8.8-8.8c0-5.1 3.6-8.4 8.8-8.4z"/><rect stroke="none" x="8.6" y="9.6" width="1.9" height="3.2" rx=".95" fill="#13213f"/><rect stroke="none" x="13.5" y="9.6" width="1.9" height="3.2" rx=".95" fill="#13213f"/></symbol>
+  <symbol id="i-logo" viewBox="0 0 24 24"><path stroke="none" fill="url(#kpg)" d="M12 3.4c5.2 0 8.8 3.3 8.8 8.4 0 5.3-3.8 8.8-8.8 8.8s-8.8-3.5-8.8-8.8c0-5.1 3.6-8.4 8.8-8.4z"/><ellipse stroke="none" cx="9.4" cy="8.4" rx="3.2" ry="1.8" fill="#fff" fill-opacity=".75" transform="rotate(-18 9.4 8.4)"/></symbol>
+
+  <!-- App glyphs: Simple Icons 13.21.0 (CC0), inlined. Used only to label which app a preset targets. -->
+  <symbol id="i-discord" viewBox="0 0 24 24"><path stroke="none" fill="currentColor" d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></symbol>
+  <symbol id="i-whatsapp" viewBox="0 0 24 24"><path stroke="none" fill="currentColor" d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></symbol>
+  <symbol id="i-slack" viewBox="0 0 24 24"><path stroke="none" fill="currentColor" d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/></symbol>
+  <symbol id="i-gmail" viewBox="0 0 24 24"><path stroke="none" fill="currentColor" d="M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 0 1 0 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.91 1.528-1.145C21.69 2.28 24 3.434 24 5.457z"/></symbol>
+  <symbol id="i-telegram" viewBox="0 0 24 24"><path stroke="none" fill="currentColor" d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="M4.5 7l7.5 6 7.5-6"/></symbol>
+  <symbol id="i-custom" viewBox="0 0 24 24"><path d="M5 8h9M18 8h1M5 16h1M10 16h9"/><circle cx="16" cy="8" r="2"/><circle cx="8" cy="16" r="2"/></symbol>
   <symbol id="i-film" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="3"/><path d="M8 5v14M16 5v14M3.5 9.5H8M3.5 14.5H8M16 9.5h4.5M16 14.5h4.5"/></symbol>
   <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 17.5V6l10-2v11.5"/><circle cx="6.5" cy="17.5" r="2.5"/><circle cx="16.5" cy="15.5" r="2.5"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.8l2 2h7.2a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
@@ -499,7 +511,7 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
           <div class="gh"><svg class="ic logo"><use href="#i-logo"/></svg>Kompacter
             <button class="icon-btn x press" id="gClose" aria-label="Cancel paste"><svg class="ic sm"><use href="#i-x"/></svg></button></div>
           <div role="status" aria-live="polite">
-            <p class="gt ask-only">clip.mp4 is 48 MB — over your <span class="lim">20 MB</span> limit</p>
+            <p class="gt ask-only">clip.mp4 is 48 MB — over your <span class="gApp"></span> <span class="lim">20 MB</span> limit</p>
             <p class="gs ask-only">Paste is on hold. Nothing has been sent.</p>
             <p class="gt work-only">Compressing clip.mp4…</p>
             <p class="gt done-only"><span aria-hidden="true">✓</span> Pasted — clip.mp4 · <span id="gOut">19.4 MB</span></p>
@@ -521,7 +533,7 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
     <div class="fly-inner">
       <div class="fly-head">
         <button class="preset press" id="presetBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="presetMenu" aria-label="Target size: Discord, 20 MB. Change">
-          <span class="dot" aria-hidden="true"></span><span id="presetLabel">Discord · 20 MB</span><svg class="ic sm"><use href="#i-down"/></svg></button>
+          <span id="presetLogo"></span><span id="presetLabel">Discord · 20 MB</span><svg class="ic sm"><use href="#i-down"/></svg></button>
         <span class="spacer"></span>
         <button class="icon-btn press" id="gearBtn" aria-label="Settings" aria-pressed="false"><svg class="ic"><use href="#i-gear"/></svg></button>
         <div class="menu preset-menu" id="presetMenu" role="menu" aria-label="Target size" hidden></div>
@@ -530,15 +542,13 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
       <div class="fly-body" id="flyBody">
         <div class="stage" id="stage" data-size="lg">
           <div class="well" aria-hidden="true"></div>
-          <svg class="ring" viewBox="0 0 200 200" aria-hidden="true"><circle class="track" cx="100" cy="100" r="95"/><circle class="bar" id="ringBar" cx="100" cy="100" r="95"/></svg>
-          <div class="pouch" id="pouch" data-mood="idle" aria-hidden="true">
+                    <div class="pouch" id="pouch" data-mood="idle" aria-hidden="true">
             <div class="breathe"><div class="spring" id="pouchSpring">
               <div class="blob"></div><div class="gloss"></div>
-              <div class="face" id="face"><span class="eye l"></span><span class="eye r"></span><span class="mouth"></span></div>
             </div></div>
             <div class="shadow" id="pouchShadow"></div>
           </div>
-          <svg class="morsel" viewBox="0 0 24 30" aria-hidden="true"><use href="#i-file"/></svg>
+          <div class="rig" aria-hidden="true"><div class="plate l" id="plateL"><span class="rod"></span></div><div class="plate r" id="plateR"><span class="rod"></span></div><div class="dust" id="dust"><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
           <div class="sparks" id="sparks" aria-hidden="true"><i style="--a:0deg"></i><i style="--a:45deg"></i><i style="--a:90deg"></i><i style="--a:135deg"></i><i style="--a:180deg"></i><i style="--a:225deg"></i><i style="--a:270deg"></i><i style="--a:315deg"></i></div>
         </div>
 
@@ -611,7 +621,7 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
         <!-- Compressing -->
         <section class="view center" data-view="progress" aria-label="Compressing">
           <div id="progBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Compression progress">
-            <div class="pct" id="pct">0%</div>
+            <div class="pct" id="pct">0%</div><div class="pbar" aria-hidden="true"><i id="pbarFill"></i></div>
           </div>
           <p class="sub" id="progLeft" style="margin-top:0">Starting…</p>
           <p class="sub" id="progMeta"></p>
@@ -641,9 +651,12 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
             <div class="cell"><div class="grow" id="l-prof">Per-app targets<small>Use the limit of the app you paste into</small></div><span class="sw-state" aria-hidden="true"></span><button class="switch" role="switch" aria-checked="true" aria-labelledby="l-prof" id="swProf"><span class="knob"></span></button></div>
           </div>
           <fieldset id="profiles" class="grp" style="margin-top:10px" aria-label="Per-app targets">
-            <div class="cell"><span class="grow">Chat apps (Discord)</span><select class="mini-sel" aria-label="Target for chat apps"><option>20 MB</option><option>50 MB</option><option>500 MB</option></select></div>
-            <div class="cell"><span class="grow">WhatsApp</span><select class="mini-sel" aria-label="Target for WhatsApp"><option>16 MB</option><option>100 MB</option></select></div>
-            <div class="cell"><span class="grow">Mail apps</span><select class="mini-sel" aria-label="Target for mail apps"><option>25 MB</option><option>10 MB</option></select></div>
+            <div class="cell"><svg class="ic app brand b-discord" aria-hidden="true"><use href="#i-discord"/></svg><span class="grow">Discord</span><select class="mini-sel" aria-label="Target for Discord"><option>20 MB</option><option>50 MB</option><option>500 MB</option></select></div>
+            <div class="cell"><svg class="ic app brand b-whatsapp" aria-hidden="true"><use href="#i-whatsapp"/></svg><span class="grow">WhatsApp</span><select class="mini-sel" aria-label="Target for WhatsApp"><option>16 MB</option><option>100 MB</option></select></div>
+            <div class="cell"><svg class="ic app brand b-telegram" aria-hidden="true"><use href="#i-telegram"/></svg><span class="grow">Telegram</span><select class="mini-sel" aria-label="Target for Telegram"><option>2 GB</option><option>50 MB</option></select></div>
+            <div class="cell"><svg class="ic app brand b-slack" aria-hidden="true"><use href="#i-slack"/></svg><span class="grow">Slack</span><select class="mini-sel" aria-label="Target for Slack"><option>1 GB</option><option>100 MB</option></select></div>
+            <div class="cell"><svg class="ic app brand b-gmail" aria-hidden="true"><use href="#i-gmail"/></svg><span class="grow">Gmail</span><select class="mini-sel" aria-label="Target for Gmail"><option>25 MB</option><option>10 MB</option></select></div>
+            <div class="cell"><svg class="ic app b-mail" aria-hidden="true"><use href="#i-mail"/></svg><span class="grow">Other mail apps</span><select class="mini-sel" aria-label="Target for Other mail apps"><option>25 MB</option><option>10 MB</option></select></div>
           </fieldset>
 
           <h3 class="grp-h">General</h3>
@@ -757,12 +770,12 @@ let liveT; const say = m => { clearTimeout(liveT); $('#live').textContent = ''; 
 
 /* ───── Data ───── */
 const PRESETS = [
-  { id: 'd20', name: 'Discord', note: 'Free', short: 'Discord', mb: 20 },
-  { id: 'd50', name: 'Discord', note: 'Nitro Basic', short: 'Nitro Basic', mb: 50 },
-  { id: 'd500', name: 'Discord', note: 'Nitro', short: 'Nitro', mb: 500 },
-  { id: 'wa', name: 'WhatsApp', note: 'Video', short: 'WhatsApp', mb: 16 },
-  { id: 'mail', name: 'Email', note: 'Most providers', short: 'Email', mb: 25 },
-  { id: 'custom', name: 'Custom', note: '', short: 'Custom', mb: 10 },
+  { id: 'd20', logo: 'discord', name: 'Discord', note: 'Free', short: 'Discord', mb: 20 },
+  { id: 'd50', logo: 'discord', name: 'Discord', note: 'Nitro Basic', short: 'Nitro Basic', mb: 50 },
+  { id: 'd500', logo: 'discord', name: 'Discord', note: 'Nitro', short: 'Nitro', mb: 500 },
+  { id: 'wa', logo: 'whatsapp', name: 'WhatsApp', note: 'Video', short: 'WhatsApp', mb: 16 },
+  { id: 'mail', logo: 'mail', name: 'Email', note: 'Most providers', short: 'Email', mb: 25 },
+  { id: 'custom', logo: 'custom', name: 'Custom', note: '', short: 'Custom', mb: 10 },
 ];
 const FILES = {
   clip: { name: 'clip.mp4', kind: 'video', size: 48, dur: 62, meta: '1:02 · 1920×1080 · 48 MB' },
@@ -826,21 +839,11 @@ const sp = new Spring($('#pouchSpring'), $('#pouchShadow'));
 const setMood = m => pouchEl.dataset.mood = m;
 const chomp = () => sp.push({ sx: 3.2, sy: -4.2 });
 function burst() { if (reduced()) return; const s = $('#sparks'); s.classList.remove('burst'); void s.offsetWidth; s.classList.add('burst'); }
-pouchEl.parentElement.addEventListener('pointerdown', e => { if (e.target.closest('.pouch')) { chomp(); } });
-pouchEl.style.pointerEvents = 'auto';
 
-/* Eyes follow the pointer, a little */
-let eyeRaf = 0, px = 0, py = 0;
-const face = $('#face');
-function lookAt() { eyeRaf = 0; if (reduced() || !S.open) return; const r = pouchEl.getBoundingClientRect(); if (!r.width) return;
-  const dx = px - (r.left + r.width / 2), dy = py - (r.top + r.height / 2), d = Math.hypot(dx, dy) || 1, m = Math.min(3.5, d / 50);
-  face.style.transform = `translate(${(dx / d * m).toFixed(2)}px,${(dy / d * m * .7).toFixed(2)}px)`; }
-const trackPtr = e => { px = e.clientX; py = e.clientY; if (!eyeRaf) eyeRaf = requestAnimationFrame(lookAt); };
-document.addEventListener('pointermove', trackPtr, { passive: true });
 
 /* ───── Flyout + views ───── */
 const fly = $('#flyout'), surface = $('#flySurface'), stage = $('#stage'), tray = $('#trayBtn');
-const STAGE = { idle: 'lg', big: 'md', queue: 'md', progress: 'ring', done: 'lg' };
+const STAGE = { idle: 'lg', big: 'md', queue: 'md', progress: 'press', done: 'lg' };
 const MOOD = { idle: 'idle', big: 'worried', queue: 'idle', progress: 'busy', done: 'happy' };
 function animateFrom(el, from) { // shared-element / FLIP
   if (reduced() || !from || !from.width) return;
@@ -855,7 +858,6 @@ function show(view) {
   S.view = view; fly.dataset.view = view;
   $$('.view', fly).forEach(v => { const on = v.dataset.view === view; v.hidden = !on; v.classList.toggle('on', on); });
   const st = STAGE[view]; stage.hidden = !st; if (st) stage.dataset.size = st;
-  stage.classList.toggle('chomping', view === 'progress');
   fly.classList.toggle('wide', view === 'trim');
   setMood(MOOD[view] || 'idle');
   $('#gearBtn').setAttribute('aria-pressed', view === 'settings');
@@ -881,28 +883,30 @@ function closeFly() {
 tray.addEventListener('click', () => S.open ? closeFly() : openFly(S.view));
 
 /* Presets */
+const appIcon = l => `<svg class="ic app ${['mail', 'custom'].includes(l) ? '' : 'brand '}b-${l}" aria-hidden="true"><use href="#i-${l}"/></svg>`;
 function presetLabel(p) { return `${p.short} · ${fmt(p.mb)}`; }
 function setPreset(id) {
   S.preset = PRESETS.find(p => p.id === id) || PRESETS[0];
   const lbl = presetLabel(S.preset);
-  $('#presetLabel').textContent = lbl;
+  $('#presetLabel').textContent = lbl; $('#presetLogo').innerHTML = appIcon(S.preset.logo);
+  $$('.gApp').forEach(e => e.innerHTML = `${appIcon(S.preset.logo)} ${S.preset.short}`);
   $('#presetBtn').setAttribute('aria-label', `Target size: ${lbl}. Change`);
   tray.title = `Kompacter · ${lbl}`;
   $$('.lim').forEach(e => e.textContent = fmt(L()));
   $('#fitLbl').textContent = `Fit to ${fmt(L())}`;
-  $$('.ctxLim').forEach(e => e.textContent = lbl);
-  $('#nfBody').textContent = `Trim & compress for ${S.preset.short}?`;
+  $$('.ctxLim').forEach(e => e.innerHTML = `${appIcon(S.preset.logo)} ${lbl}`);
+  $('#nfBody').innerHTML = `Trim &amp; compress for ${appIcon(S.preset.logo)} ${S.preset.short}?`;
   $$('#presetList input').forEach(i => i.checked = i.value === id);
   renderPresetMenu();
   if (S.view === 'big') renderBig();
   if (S.view === 'trim') updTrim();
 }
 function renderPresetMenu() {
-  $('#presetMenu').innerHTML = PRESETS.map(p => `<button role="menuitemradio" aria-checked="${p.id === S.preset.id}" data-id="${p.id}"><span class="chk">${icon('check')}</span>${p.name}${p.note ? ' · ' + p.note : ''}<small>${fmt(p.mb)}</small></button>`).join('') +
+  $('#presetMenu').innerHTML = PRESETS.map(p => `<button role="menuitemradio" aria-checked="${p.id === S.preset.id}" data-id="${p.id}"><span class="chk">${icon('check')}</span>${appIcon(p.logo)}${p.name}${p.note ? ' · ' + p.note : ''}<small>${fmt(p.mb)}</small></button>`).join('') +
     `<hr><button role="menuitem" data-id="edit">Edit targets…</button>`;
 }
 function renderPresetList() {
-  $('#presetList').innerHTML = PRESETS.map(p => `<label class="cell"><input type="radio" name="preset" value="${p.id}" ${p.id === S.preset.id ? 'checked' : ''}><span class="grow">${p.name}${p.note ? `<small>${p.note}</small>` : ''}</span>` +
+  $('#presetList').innerHTML = PRESETS.map(p => `<label class="cell"><input type="radio" name="preset" value="${p.id}" ${p.id === S.preset.id ? 'checked' : ''}>${appIcon(p.logo)}<span class="grow">${p.name}${p.note ? `<small>${p.note}</small>` : ''}</span>` +
     (p.id === 'custom' ? `<input class="num" id="customMb" type="number" min="1" max="4000" value="${p.mb}" aria-label="Custom limit in MB"><span class="val">MB</span>` : `<span class="val">${fmt(p.mb)}</span>`) +
     `<span class="chk">${icon('check', 'ic')}</span></label>`).join('');
 }
@@ -1079,7 +1083,35 @@ $('#modeSeg').addEventListener('pick', e => { S.mode = e.detail; updTrim(true); 
 
 /* ───── Compress (single file) ───── */
 let prog = null;
-const RING = 2 * Math.PI * 95;
+/* Hydraulic press: transform/opacity only (WAAPI on two plates, CSS var scale on the blob) */
+const plates = [$('#plateL'), $('#plateR')], PW = 20, SQ = .74, dustEls = $$('#dust i');
+const setPs = v => pouchEl.style.setProperty('--ps', v.toFixed(3));
+const X = (i, d, y = 0) => `translate(${((i ? 1 : -1) * d).toFixed(1)}px,${y}px)`;
+const openDist = () => stage.clientWidth / 2 + PW + 6;
+function platesGo(frames, dur, easing) { plates.forEach((p, i) => { p.getAnimations().forEach(a => a.cancel()); const kf = frames.map(f => ({ transform: X(i, f.d, f.y || 0), offset: f.o })); p.style.transform = kf[kf.length - 1].transform; p.animate(kf, { duration: dur, easing }); }); }
+function dust(edge) {
+  dustEls.forEach((d, i) => { const s = i % 2 ? 1 : -1, y = (Math.floor(i / 2) - 1) * 24;
+    d.animate([{ opacity: .75, transform: `translate(${s * edge}px,${y}px)` }, { opacity: 0, transform: `translate(${s * (edge + 10 + Math.random() * 10)}px,${y - 10 - Math.random() * 12}px) scale(.4)` }], { duration: 360, easing: 'ease-out' }); });
+}
+function pressStart() {
+  setPs(1); pouchEl.style.opacity = '';
+  if (reduced()) return;
+  const o = openDist(); platesGo([{ d: o }, { d: 66 + PW + 16 }], 280, SPRING_EASE);
+}
+function stroke(base, next) {
+  const hit = 66 * base * SQ + PW, back = 66 * next + PW + 14, T = 540;
+  platesGo([{ d: 66 * base + PW + 14 }, { d: hit - 2, o: .3 }, { d: hit + 1.4, y: 1, o: .38 }, { d: hit - .7, y: -1, o: .46 }, { d: hit, o: .54 }, { d: hit, o: .68 }, { d: back }], T, 'cubic-bezier(.55,0,.25,1)');
+  prog.t.push(setTimeout(() => { if (!prog) return; sp.v.sx = SQ; sp.v.sy = 1.14; sp.vel.sx = sp.vel.sy = 0; sp.to({ sx: SQ, sy: 1.12 }); dust(hit - PW); }, T * .3));
+  prog.t.push(setTimeout(() => { if (!prog) return; setPs(next); sp.to({ sx: 1, sy: 1 }); }, T * .68));
+}
+function pressFinish(done) {
+  if (reduced()) { pouchEl.style.opacity = '0'; prog.t.push(setTimeout(done, 160)); return; }
+  platesGo([{ d: 66 * .32 + PW + 14 }, { d: PW + 3 }], 200, 'cubic-bezier(.6,0,.9,.6)');
+  sp.to({ sx: .4, sy: 1.15 }); setPs(.06);
+  prog.t.push(setTimeout(() => { pouchEl.style.opacity = '0'; burst(); }, 200));
+  prog.t.push(setTimeout(() => platesGo([{ d: PW + 3 }, { d: openDist() }], 260, SPRING_EASE), 260));
+  prog.t.push(setTimeout(done, 420));
+}
 function startCompress(o = {}) {
   const f = S.file, lim = L(), sec = o.sec ?? f.dur;
   const p = f.kind === 'video' ? plan(sec) : null;
@@ -1089,22 +1121,32 @@ function startCompress(o = {}) {
   const gpu = $('#swGpu').getAttribute('aria-checked') === 'true';
   $('#progMeta').textContent = `${fmt(f.size)} → ≈ ${fmt(S.result.out)} · ${S.result.label} · ${gpu ? 'GPU' : 'CPU'}`;
   tray.dataset.state = 'busy';
-  const dur = 4600, t0 = performance.now(); let lastMs = -1;
-  const bar = $('#ringBar'), pb = $('#progBar');
-  prog = { raf: 0, chompT: setInterval(chomp, 640) };
+  const dur = 4600, every = 575, t0 = performance.now(); let lastMs = -1, lastStroke = -1;
+  const base = k => 1 - .68 * Math.min(1, k);
+  const pb = $('#progBar'), fillEl = $('#pbarFill');
+  prog = { raf: 0, t: [] };
+  pressStart();
   const tick = now => {
-    const k = Math.min(1, (now - t0) / dur), pct = Math.round(k * 100), left = Math.ceil((1 - k) * 14);
-    bar.style.strokeDashoffset = (RING * (1 - k)).toFixed(1);
+    if (!prog) return;
+    const el = now - t0, k = Math.min(1, el / dur), pct = Math.round(k * 100), left = Math.ceil((1 - k) * 14);
+    fillEl.style.transform = `scaleX(${k.toFixed(3)})`;
     $('#pct').textContent = pct + '%';
     $('#progLeft').textContent = k < 1 ? `About ${left} s left` : 'Finishing…';
     pb.setAttribute('aria-valuenow', pct); pb.setAttribute('aria-valuetext', `${pct}%, about ${left} seconds left`);
     const ms = Math.floor(pct / 25); if (ms !== lastMs && pct < 100) { lastMs = ms; say(`Compressing ${f.name}, ${pct}%`); }
-    if (k < 1) prog.raf = requestAnimationFrame(tick); else { stopProgress(); finishDone(); }
+    const n = Math.floor((el - 200) / every);
+    if (n > lastStroke && el > 200 && el < dur - 350) { lastStroke = n; if (reduced()) setPs(base(k)); else stroke(base(k), base(k + .09)); }
+    if (k < 1) prog.raf = requestAnimationFrame(tick);
+    else pressFinish(() => { const keep = prog; stopProgress(true); finishDone({ pop: true }); });
   };
-  bar.style.strokeDashoffset = RING;
   prog.raf = requestAnimationFrame(tick);
 }
-function stopProgress() { if (prog) { cancelAnimationFrame(prog.raf); clearInterval(prog.chompT); prog = null; } if (tray.dataset.state === 'busy') tray.dataset.state = ''; }
+function stopProgress(keepBlob) {
+  if (prog) { cancelAnimationFrame(prog.raf); prog.t.forEach(clearTimeout); prog = null; }
+  plates.forEach(p => p.getAnimations().forEach(a => a.cancel()));
+  if (!keepBlob) { pouchEl.style.removeProperty('--ps'); pouchEl.style.opacity = ''; sp.to({ sx: 1, sy: 1 }); }
+  if (tray.dataset.state === 'busy') tray.dataset.state = '';
+}
 $('#cancelBtn').addEventListener('click', () => {
   stopProgress(); say('Compression cancelled');
   if (S.prevView === 'trim') openTrim(); else if (S.prevView === 'big') { renderBig(); show('big'); } else show('idle');
@@ -1117,6 +1159,8 @@ function finishDone(o = {}) {
   else { const r = S.result; sub = `${f.name} · ${fmt(r.out)} · ${r.label} · ${(f.size / r.out).toFixed(1)}× smaller`; }
   $('#doneSub').textContent = sub; $('#doneNote').textContent = '';
   show('done');
+  if (o.pop) { sp.v.sx = sp.v.sy = 1; sp.to({ sx: 1, sy: 1 }); setPs(.05); pouchEl.style.opacity = ''; requestAnimationFrame(() => requestAnimationFrame(() => pouchEl.style.removeProperty('--ps'))); }
+  else { pouchEl.style.removeProperty('--ps'); pouchEl.style.opacity = ''; }
   tray.dataset.state = 'done'; setTimeout(() => { if (tray.dataset.state === 'done') tray.dataset.state = ''; }, 4000);
   if (!reduced()) setTimeout(() => { sp.push({ y: -420, sy: 3.5, sx: -2.5 }); burst(); }, 60);
   say(`Copied. ${sub}. Paste anywhere with Control V.`);
@@ -1138,7 +1182,7 @@ function setDrag(on) {
   sp.to(on ? { sx: 1.08, sy: 1.08 } : { sx: 1, sy: 1 });
 }
 fly.addEventListener('dragenter', e => { e.preventDefault(); if (++dragDepth === 1) { if (S.view !== 'idle' && !prog) show('idle'); setDrag(true); } });
-fly.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; trackPtr(e); });
+fly.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
 fly.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; setDrag(false); } });
 fly.addEventListener('drop', e => {
   e.preventDefault(); dragDepth = 0; setDrag(false);
