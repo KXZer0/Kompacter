@@ -203,6 +203,8 @@ export component AppWindow inherits Window {
     in property <string> file-name;
     in property <string> file-meta;
     in property <string> file-kind: "file";
+    /// The file's own Windows icon (empty: use our line icon).
+    in property <image> file-icon;
     in property <float> meter-fill;
     in property <float> meter-limit;
     in property <string> over-text;
@@ -599,7 +601,15 @@ export component AppWindow inherits Window {
                 Rectangle {
                     y: 0;
                     height: 56px;
-                    Rectangle {
+                    if root.file-icon.width > 0: Image {
+                        x: 0;
+                        y: 6px;
+                        width: 44px;
+                        height: 44px;
+                        source: root.file-icon;
+                        image-fit: contain;
+                    }
+                    if root.file-icon.width == 0: Rectangle {
                         x: 0;
                         y: 8px;
                         width: 40px;

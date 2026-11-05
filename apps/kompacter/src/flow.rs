@@ -82,6 +82,13 @@ impl App {
         ui.set_file_name(file_name(&c.path).into());
         ui.set_file_meta(meta.join(" · ").into());
         ui.set_file_kind(kind_name(c.info.kind).into());
+        ui.set_file_icon(
+            sys::file_icon(&c.path)
+                .map(|(w, h, px)| {
+                    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(&px, w, h))
+                })
+                .unwrap_or_default(),
+        );
 
         let max = size.max(target) as f64 * 1.08;
         ui.set_meter_fill((size as f64 / max) as f32);

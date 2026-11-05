@@ -324,6 +324,96 @@ mod imp {
         }
     }
 
+    /// The icon Windows shows for this file or folder in Explorer (48 px), as straight RGBA.
+    pub fn file_icon(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+        use windows_sys::core::GUID;
+        use windows_sys::Win32::Graphics::Gdi::{
+            CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO,
+            BITMAPINFOHEADER, DIB_RGB_COLORS,
+        };
+        use windows_sys::Win32::UI::Controls::{ImageList_GetIcon, ILD_TRANSPARENT};
+        use windows_sys::Win32::UI::Shell::{
+            SHGetFileInfoW, SHGetImageList, SHFILEINFOW, SHGFI_SYSICONINDEX, SHIL_EXTRALARGE,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
+
+        // IImageList
+        const IID: GUID = GUID::from_u128(0x46eb5926_582e_4017_9fdf_e8998daa0950);
+        unsafe {
+            let mut fi: SHFILEINFOW = std::mem::zeroed();
+            let w = wide(path);
+            if SHGetFileInfoW(
+                w.as_ptr(),
+                0,
+                &mut fi,
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_SYSICONINDEX,
+            ) == 0
+            {
+                return None;
+            }
+            let mut list: *mut std::ffi::c_void = null_mut();
+            if SHGetImageList(SHIL_EXTRALARGE as i32, &IID, &mut list) != 0 || list.is_null() {
+                return None;
+            }
+            let icon = ImageList_GetIcon(list as _, fi.iIcon, ILD_TRANSPARENT);
+            if icon.is_null() {
+                return None;
+            }
+            let mut ii: ICONINFO = std::mem::zeroed();
+            let ok = GetIconInfo(icon, &mut ii) != 0;
+            let out = if ok && !ii.hbmColor.is_null() {
+                let mut bm: BITMAP = std::mem::zeroed();
+                GetObjectW(
+                    ii.hbmColor,
+                    std::mem::size_of::<BITMAP>() as i32,
+                    &mut bm as *mut _ as *mut _,
+                );
+                let (iw, ih) = (bm.bmWidth.max(1) as u32, bm.bmHeight.unsigned_abs().max(1));
+                let mut bmi: BITMAPINFO = std::mem::zeroed();
+                bmi.bmiHeader = BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: iw as i32,
+                    biHeight: -(ih as i32), // top-down
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    ..std::mem::zeroed()
+                };
+                let mut px = vec![0u8; (iw * ih * 4) as usize];
+                let dc = CreateCompatibleDC(null_mut());
+                let got = GetDIBits(
+                    dc,
+                    ii.hbmColor,
+                    0,
+                    ih,
+                    px.as_mut_ptr() as *mut _,
+                    &mut bmi,
+                    DIB_RGB_COLORS,
+                );
+                DeleteDC(dc);
+                // BGRA → RGBA. Old-style icons have no alpha: then everything is opaque.
+                let has_alpha = px.chunks_exact(4).any(|p| p[3] != 0);
+                for p in px.chunks_exact_mut(4) {
+                    p.swap(0, 2);
+                    if !has_alpha {
+                        p[3] = 255;
+                    }
+                }
+                (got != 0).then_some((iw, ih, px))
+            } else {
+                None
+            };
+            if !ii.hbmColor.is_null() {
+                DeleteObject(ii.hbmColor);
+            }
+            if !ii.hbmMask.is_null() {
+                DeleteObject(ii.hbmMask);
+            }
+            DestroyIcon(icon);
+            out
+        }
+    }
+
     /// Move a file or folder to the Recycle Bin.
     pub fn recycle(path: &Path) -> Result<(), String> {
         let mut from = wide(path);
@@ -467,6 +557,9 @@ mod imp {
         None
     }
     pub fn cursor() -> Option<(i32, i32)> {
+        None
+    }
+    pub fn file_icon(_path: &Path) -> Option<(u32, u32, Vec<u8>)> {
         None
     }
     pub fn set_alpha(_hwnd: isize, _alpha: u8) {}
