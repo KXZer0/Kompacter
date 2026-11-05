@@ -137,6 +137,7 @@ impl App {
     /// Push settings and presets into the window.
     pub fn sync_settings(&self) {
         let ui = self.ui();
+        let prefs = ui.global::<Prefs>();
         let s = self.settings.borrow();
         let list = targets(s.custom_bytes);
         let items: Vec<PresetItem> = list
@@ -154,7 +155,7 @@ impl App {
         ui.set_target_text(bytes(list[index].bytes).into());
 
         let discord = s.style == "discord";
-        ui.set_style_index(discord as i32);
+        prefs.set_style_index(discord as i32);
         let (options, index): (&[&str], i32) = if discord {
             (
                 &["Match", "Light", "Ash", "Dark", "Onyx"],
@@ -177,36 +178,36 @@ impl App {
             )
         };
         let options: Vec<SharedString> = options.iter().map(|o| (*o).into()).collect();
-        ui.set_theme_options(ModelRc::new(VecModel::from(options)));
-        ui.set_theme_index(index);
-        ui.set_output_index(match s.output.as_str() {
+        prefs.set_theme_options(ModelRc::new(VecModel::from(options)));
+        prefs.set_theme_index(index);
+        prefs.set_output_index(match s.output.as_str() {
             "beside" => 1,
             "custom" => 2,
             "replace" => 3,
             _ => 0,
         });
-        ui.set_output_dir(s.output_dir.as_str().into());
-        ui.set_gpu(s.gpu);
-        ui.set_auto_hide(s.auto_hide);
-        ui.set_start_with_windows(s.start_with_windows);
-        ui.set_low_memory(s.low_memory);
-        ui.set_video_index(match s.video_codec {
+        prefs.set_output_dir(s.output_dir.as_str().into());
+        prefs.set_gpu(s.gpu);
+        prefs.set_auto_hide(s.auto_hide);
+        prefs.set_start_with_windows(s.start_with_windows);
+        prefs.set_low_memory(s.low_memory);
+        prefs.set_video_index(match s.video_codec {
             VideoCodec::H264 => 0,
             VideoCodec::H265 => 1,
             VideoCodec::Av1 => 2,
         });
-        ui.set_audio_index(match s.audio_format {
+        prefs.set_audio_index(match s.audio_format {
             AudioFormat::Auto => 0,
             AudioFormat::Mp3 => 1,
             AudioFormat::Opus => 2,
         });
-        ui.set_image_index(match s.image_format {
+        prefs.set_image_index(match s.image_format {
             ImageFormat::Auto => 0,
             ImageFormat::Jpeg => 1,
             ImageFormat::Webp => 2,
         });
-        ui.set_archive_index((s.archive_format == ArchiveFormat::SevenZ) as i32);
-        ui.set_custom_mb((s.custom_bytes / (1024 * 1024)) as i32);
+        prefs.set_archive_index((s.archive_format == ArchiveFormat::SevenZ) as i32);
+        prefs.set_custom_mb((s.custom_bytes / (1024 * 1024)) as i32);
         drop(s);
         self.apply_theme();
     }
@@ -409,27 +410,8 @@ fn main() -> Result<(), slint::PlatformError> {
     // tidy old outputs.
     {
         let engine = app.engine.clone();
-        let w = ui.as_weak();
         std::thread::spawn(move || {
-            let none = engine.hw_encoders().is_empty();
-            // Which newer codecs this PC's GPU can encode (else they run on the CPU, slower).
-            let hevc = !engine.hw_encoders_for(VideoCodec::H265).is_empty();
-            let av1 = !engine.hw_encoders_for(VideoCodec::Av1).is_empty();
-            let w2 = w.clone();
-            let _ = w2.upgrade_in_event_loop(move |ui| {
-                ui.set_hevc_gpu(hevc);
-                ui.set_av1_gpu(av1);
-            });
-            let _ = w.upgrade_in_event_loop(move |ui| {
-                ui.set_gpu_text(
-                    if none {
-                        "No GPU found — uses the CPU"
-                    } else {
-                        ""
-                    }
-                    .into(),
-                )
-            });
+            engine.hw_encoders();
             output::clean(None);
         });
     }
@@ -489,6 +471,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // ── Buttons ──
     {
+        let prefs = ui.global::<Prefs>();
         let a = app.clone();
         ui.on_choose_file(move || a.pick(false, |app, p| app.open(p)));
         let a = app.clone();
@@ -569,13 +552,13 @@ fn main() -> Result<(), slint::PlatformError> {
             _ => a.close(),
         });
         let a = app.clone();
-        ui.on_set_style(move |i| {
+        prefs.on_set_style(move |i| {
             a.settings.borrow_mut().style = if i == 1 { "discord" } else { "kompacter" }.into();
             a.save();
             a.sync_settings();
         });
         let a = app.clone();
-        ui.on_set_theme(move |i| {
+        prefs.on_set_theme(move |i| {
             let mut s = a.settings.borrow_mut();
             if s.style == "discord" {
                 s.discord_theme =
@@ -588,7 +571,7 @@ fn main() -> Result<(), slint::PlatformError> {
             a.sync_settings();
         });
         let a = app.clone();
-        ui.on_set_output(move |i| {
+        prefs.on_set_output(move |i| {
             let i = i.clamp(0, 3) as usize;
             if i == 2 && a.settings.borrow().output_dir.is_empty() {
                 a.pick(true, set_custom_dir);
@@ -599,33 +582,33 @@ fn main() -> Result<(), slint::PlatformError> {
             a.sync_settings();
         });
         let a = app.clone();
-        ui.on_choose_folder(move || a.pick(true, set_custom_dir));
-        ui.on_open_outputs(|| {
+        prefs.on_choose_folder(move || a.pick(true, set_custom_dir));
+        prefs.on_open_outputs(|| {
             if let Ok(d) = output::app_dir() {
                 sys::open_folder(&d);
             }
         });
         let a = app.clone();
-        ui.on_set_gpu(move |on| {
+        prefs.on_set_gpu(move |on| {
             a.settings.borrow_mut().gpu = on;
             a.save();
             a.sync_settings();
         });
         let a = app.clone();
-        ui.on_set_auto_hide(move |on| {
+        prefs.on_set_auto_hide(move |on| {
             a.settings.borrow_mut().auto_hide = on;
             a.save();
             a.sync_settings();
         });
         let a = app.clone();
-        ui.on_set_start(move |on| {
+        prefs.on_set_start(move |on| {
             sys::set_start_with_windows(on);
             a.settings.borrow_mut().start_with_windows = sys::starts_with_windows();
             a.save();
             a.sync_settings();
         });
         let a = app.clone();
-        ui.on_set_low_memory(move |on| {
+        prefs.on_set_low_memory(move |on| {
             a.settings.borrow_mut().low_memory = on;
             a.save();
             a.sync_settings();
@@ -638,28 +621,28 @@ fn main() -> Result<(), slint::PlatformError> {
             });
         });
         let a = app.clone();
-        ui.on_set_video(move |i| {
+        prefs.on_set_video(move |i| {
             a.settings.borrow_mut().video_codec =
                 [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1][i.clamp(0, 2) as usize];
             a.save();
             a.sync_settings();
         });
         let a = app.clone();
-        ui.on_set_audio(move |i| {
+        prefs.on_set_audio(move |i| {
             a.settings.borrow_mut().audio_format =
                 [AudioFormat::Auto, AudioFormat::Mp3, AudioFormat::Opus][i.clamp(0, 2) as usize];
             a.save();
             a.sync_settings();
         });
         let a = app.clone();
-        ui.on_set_image(move |i| {
+        prefs.on_set_image(move |i| {
             a.settings.borrow_mut().image_format =
                 [ImageFormat::Auto, ImageFormat::Jpeg, ImageFormat::Webp][i.clamp(0, 2) as usize];
             a.save();
             a.sync_settings();
         });
         let a = app.clone();
-        ui.on_set_archive(move |i| {
+        prefs.on_set_archive(move |i| {
             a.settings.borrow_mut().archive_format = if i == 1 {
                 ArchiveFormat::SevenZ
             } else {
@@ -669,7 +652,7 @@ fn main() -> Result<(), slint::PlatformError> {
             a.sync_settings();
         });
         let a = app.clone();
-        ui.on_set_custom_mb(move |mb| {
+        prefs.on_set_custom_mb(move |mb| {
             let mb = (mb as u64).clamp(1, 4096);
             a.settings.borrow_mut().custom_bytes = mb * 1024 * 1024;
             a.save();

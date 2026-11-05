@@ -47,17 +47,7 @@ pub(crate) fn fit(
     if ctx.image_format == ImageFormat::Auto && v.codec != "mjpeg" {
         let lossless = with_ext(out_base, "webp");
         let (tw, th) = even(w * base_scale, h * base_scale);
-        let mut a = args([
-            "-noautorotate".into(),
-            "-i".into(),
-            info.path.clone().into_os_string(),
-        ]);
-        a.extend(args(["-frames:v", "1", "-vf"]));
-        let scale = format!("scale={tw}:{th}:flags=lanczos");
-        a.push(match turn {
-            Some(t) => format!("{t},{scale}").into(),
-            None => scale.into(),
-        });
+        let mut a = still_args(info, turn, tw, th);
         a.extend(args([
             "-c:v",
             "libwebp",
@@ -84,18 +74,7 @@ pub(crate) fn fit(
     let encode = |i: usize, dest: &Path| -> Result<u64> {
         let (s, qi) = ladder[i];
         let (tw, th) = even(w * base_scale * s, h * base_scale * s);
-        // `-noautorotate`: never let ffmpeg turn it too (newer builds might), we do it once.
-        let mut a = args([
-            "-noautorotate".into(),
-            "-i".into(),
-            info.path.clone().into_os_string(),
-        ]);
-        a.extend(args(["-frames:v", "1", "-vf"]));
-        let scale = format!("scale={tw}:{th}:flags=lanczos");
-        a.push(match turn {
-            Some(t) => format!("{t},{scale}").into(),
-            None => scale.into(),
-        });
+        let mut a = still_args(info, turn, tw, th);
         if webp {
             a.extend(args(["-c:v", "libwebp", "-quality"]));
             a.push(WEBP_Q[qi].to_string().into());
@@ -147,6 +126,23 @@ pub(crate) fn fit(
 fn even(w: f64, h: f64) -> (u32, u32) {
     let e = |v: f64| ((v.round() as u32) / 2 * 2).max(2);
     (e(w), e(h))
+}
+
+/// One still frame of the picture, turned upright (`turn`) and scaled to `tw`×`th`.
+/// `-noautorotate`: ffmpeg never turns it on its own (newer builds might), we do it once.
+fn still_args(info: &MediaInfo, turn: Option<&str>, tw: u32, th: u32) -> Vec<std::ffi::OsString> {
+    let mut a = args([
+        "-noautorotate".into(),
+        "-i".into(),
+        info.path.clone().into_os_string(),
+    ]);
+    a.extend(args(["-frames:v", "1", "-vf"]));
+    let scale = format!("scale={tw}:{th}:flags=lanczos");
+    a.push(match turn {
+        Some(t) => format!("{t},{scale}").into(),
+        None => scale.into(),
+    });
+    a
 }
 
 /// EXIF orientation (1–8) of a JPEG photo; 1 (upright) when there is none.

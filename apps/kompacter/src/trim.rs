@@ -187,7 +187,7 @@ impl App {
                 if v.fits {
                     format!("Fits {}", bytes(target))
                 } else {
-                    "Too long — trim more".into()
+                    "Too long, trim more".into()
                 }
                 .into(),
             );
@@ -199,7 +199,7 @@ impl App {
             self.set_details(rows);
             ui.set_trim_big(
                 est.audio_kbps
-                    .map_or("—".into(), |k| format!("{k} kbps"))
+                    .map_or("Too long".into(), |k| format!("{k} kbps"))
                     .into(),
             );
             ui.set_trim_grade(0);
@@ -208,7 +208,7 @@ impl App {
                 if ok {
                     format!("Fits {}", bytes(target))
                 } else {
-                    "Too long — trim more".into()
+                    "Too long, trim more".into()
                 }
                 .into(),
             );

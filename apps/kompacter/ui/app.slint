@@ -5,11 +5,12 @@
 // corners, soft shadow, grows up out of the taskbar and folds back down. Without (Low-memory
 // mode, or no GPU) the card fills a plain window and Rust slides the window in and out.
 
-import { Theme, Fx, Icon, AppLogo, Btn, IconBtn, Kbd, Switch, Seg, Appear, Tip } from "theme.slint";
+import { Theme, Fx, Icon, AppLogo, Btn, IconBtn, Kbd, Switch, Seg, Appear, Tip, Dropdown } from "theme.slint";
 import { Icons } from "icons.slint";
 import { Mood, Blob, DropZone, Press, Sparks } from "stage.slint";
+import { Prefs, SettingsView, PresetItem } from "settings.slint";
 
-export { Theme, Fx }
+export { Theme, Fx, Prefs, PresetItem }
 
 export enum View { idle, reading, big, trim, busy, done, error, settings }
 
@@ -19,12 +20,6 @@ export struct DetailRow {
     value: string,
 }
 
-export struct PresetItem {
-    name: string,
-    note: string,
-    size: string,
-    brand: string,
-}
 
 /// The tray icon (left click opens, right click shows the menu).
 export component Tray inherits SystemTrayIcon {
@@ -64,106 +59,6 @@ component Sub inherits Text {
     color: Theme.label-2;
     horizontal-alignment: center;
     wrap: word-wrap;
-}
-
-/// A group row in settings: label + optional small text + something on the right.
-component Cell inherits Rectangle {
-    in property <string> label;
-    in property <string> small;
-    in property <bool> first;
-    in property <bool> clickable;
-    callback clicked;
-    min-height: root.small != "" ? 56px : 44px;
-    background: ta.has-hover && root.clickable ? Theme.fill : transparent;
-    animate background { duration: 120ms; }
-    if !root.first: Rectangle {
-        x: 12px;
-        y: 0;
-        width: parent.width - 12px;
-        height: 1px;
-        background: Theme.sep;
-    }
-    ta := TouchArea {
-        enabled: root.clickable;
-        mouse-cursor: root.clickable ? pointer : default;
-        clicked => { root.clicked(); }
-    }
-    HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 10px;
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            Text {
-                text: root.label;
-                font-size: 14px;
-                color: Theme.label;
-                overflow: elide;
-            }
-            if root.small != "": Text {
-                text: root.small;
-                font-size: 12px;
-                color: Theme.label-2;
-                overflow: elide;
-            }
-        }
-        @children
-    }
-}
-
-component Group inherits Rectangle {
-    border-radius: 12px;
-    background: Theme.group;
-    clip: true;
-    VerticalLayout {
-        @children
-    }
-}
-
-/// A format choice in settings: name, segmented options, one line on the trade-off.
-component FormatRow inherits VerticalLayout {
-    in property <string> label;
-    in property <[string]> options;
-    in property <int> index;
-    in property <string> note;
-    callback picked(int);
-    spacing: 4px;
-    padding-bottom: 6px;
-    Text {
-        text: root.label;
-        font-size: 13px;
-        font-weight: 600;
-        color: Theme.label;
-    }
-    Seg {
-        options: root.options;
-        index: root.index;
-        picked(i) => { root.picked(i); }
-    }
-    Text {
-        text: root.note;
-        font-size: 12px;
-        color: Theme.label-2;
-        wrap: word-wrap;
-    }
-}
-
-component GroupTitle inherits Text {
-    font-size: 12px;
-    font-weight: 600;
-    color: Theme.label-2;
-}
-
-component Check inherits Rectangle {
-    in property <bool> on;
-    width: 18px;
-    Icon {
-        d: Icons.check;
-        color: Theme.accent-text;
-        opacity: root.on ? 1 : 0;
-        animate opacity { duration: 120ms; }
-    }
 }
 
 /// Quality chip: a word and an arrow. Click to open the details below it.
@@ -271,24 +166,7 @@ export component AppWindow inherits Window {
 
     in property <string> error-text;
 
-    in property <int> style-index;
-    in property <int> theme-index;
-    in property <[string]> theme-options: ["System", "Light", "Dark"];
-    in property <int> output-index;
-    in property <string> output-dir;
-    in property <bool> gpu;
-    in property <string> gpu-text;
-    in property <bool> auto-hide;
-    in property <bool> start-with-windows;
-    in property <bool> low-memory;
     // Formats.
-    in property <int> video-index;
-    in property <int> audio-index;
-    in property <int> image-index;
-    in property <int> archive-index;
-    in property <bool> hevc-gpu: true;
-    in property <bool> av1-gpu: true;
-    in property <int> custom-mb;
 
     // ── Calls into Rust ──
     callback choose-file();
@@ -306,20 +184,6 @@ export component AppWindow inherits Window {
     callback close-trim();
     callback trim-changed();
     callback trim-compress();
-    callback set-style(int);
-    callback set-theme(int);
-    callback set-output(int);
-    callback choose-folder();
-    callback open-outputs();
-    callback set-gpu(bool);
-    callback set-auto-hide(bool);
-    callback set-start(bool);
-    callback set-low-memory(bool);
-    callback set-custom-mb(int);
-    callback set-video(int);
-    callback set-audio(int);
-    callback set-image(int);
-    callback set-archive(int);
     callback escape();
 
     property <length> inset: Fx.glass ? 12px : 0;
@@ -1176,215 +1040,11 @@ export component AppWindow inherits Window {
             }
 
             // ── Settings ──
-            if root.view == View.settings: Appear {
-                width: 360px;
-                height: 600px;
-                IconBtn {
-                    x: 8px;
-                    y: 14px;
-                    icon: Icons.back;
-                    clicked => { root.close-settings(); }
-                }
-                Text {
-                    x: 48px;
-                    y: 12px;
-                    height: 36px;
-                    text: "Settings";
-                    font-size: 19px;
-                    font-weight: 650;
-                    color: Theme.label;
-                    vertical-alignment: center;
-                }
-                Flickable {
-                    x: 0;
-                    y: 54px;
-                    width: 360px;
-                    height: 546px;
-                    VerticalLayout {
-                        padding-left: 20px;
-                        padding-right: 20px;
-                        padding-bottom: 20px;
-                        spacing: 6px;
-
-                        GroupTitle { text: "TARGET"; }
-                        Group {
-                            for p[i] in root.presets: Cell {
-                                label: p.name;
-                                first: i == 0;
-                                clickable: true;
-                                clicked => { root.select-preset(i); }
-                                AppLogo {
-                                    brand: p.brand;
-                                    y: (parent.height - self.height) / 2;
-                                }
-                                if p.brand == "custom": Rectangle {
-                                    width: 64px;
-                                    height: 28px;
-                                    y: (parent.height - self.height) / 2;
-                                    border-radius: 7px;
-                                    background: Theme.fill;
-                                    TextInput {
-                                        x: 8px;
-                                        width: parent.width - 16px;
-                                        text: root.custom-mb;
-                                        input-type: number;
-                                        horizontal-alignment: right;
-                                        vertical-alignment: center;
-                                        color: Theme.label;
-                                        font-size: 14px;
-                                        accepted => { root.set-custom-mb(self.text.to-float()); }
-                                        edited => {
-                                            if (self.text.is-float()) {
-                                                root.set-custom-mb(self.text.to-float());
-                                            }
-                                        }
-                                    }
-                                }
-                                Text {
-                                    text: p.brand == "custom" ? "MB" : p.size;
-                                    font-size: 14px;
-                                    color: Theme.label-2;
-                                    vertical-alignment: center;
-                                }
-                                Check { on: i == root.preset-index; }
-                            }
-                        }
-
-                        GroupTitle { text: "STYLE"; }
-                        Seg {
-                            options: ["Kompacter", "Discord"];
-                            index: root.style-index;
-                            picked(i) => { root.set-style(i); }
-                        }
-                        Seg {
-                            options: root.theme-options;
-                            index: root.theme-index;
-                            picked(i) => { root.set-theme(i); }
-                        }
-
-                        GroupTitle { text: "SAVE TO"; }
-                        Group {
-                            Cell {
-                                label: "Kompacter folder";
-                                small: "Deleted after 7 days";
-                                first: true;
-                                clickable: true;
-                                clicked => { root.set-output(0); }
-                                Btn {
-                                    text: "Open";
-                                    plain: true;
-                                    y: (parent.height - self.height) / 2;
-                                    clicked => { root.open-outputs(); }
-                                }
-                                Check { on: root.output-index == 0; }
-                            }
-                            Cell {
-                                label: "Next to the original";
-                                clickable: true;
-                                clicked => { root.set-output(1); }
-                                Check { on: root.output-index == 1; }
-                            }
-                            Cell {
-                                label: "Pick a folder";
-                                small: root.output-dir;
-                                clickable: true;
-                                clicked => { root.set-output(2); }
-                                Btn {
-                                    text: "Choose…";
-                                    plain: true;
-                                    y: (parent.height - self.height) / 2;
-                                    clicked => { root.choose-folder(); }
-                                }
-                                Check { on: root.output-index == 2; }
-                            }
-                            Cell {
-                                label: "Replace the original";
-                                small: "Original goes to the Recycle Bin";
-                                clickable: true;
-                                clicked => { root.set-output(3); }
-                                Check { on: root.output-index == 3; }
-                            }
-                        }
-
-                        // Formats: the default of each works for everyone; the line under it
-                        // says what the choice trades.
-                        GroupTitle { text: "FORMATS"; }
-                        FormatRow {
-                            label: "Video";
-                            options: ["H.264", "H.265", "AV1"];
-                            index: root.video-index;
-                            note: root.video-index == 0 ? "Most compatible · previews everywhere"
-                                : root.video-index == 1 ? "Smaller files · some PCs only download it" + (root.hevc-gpu ? "" : " · slow here (no GPU support)")
-                                : "Smallest files, best quality · older phones may not play it" + (root.av1-gpu ? "" : " · slow here (no GPU support)");
-                            picked(i) => { root.set-video(i); }
-                        }
-                        FormatRow {
-                            label: "Audio";
-                            options: ["Auto", "MP3", "Opus"];
-                            index: root.audio-index;
-                            note: root.audio-index == 0 ? "MP3, or Opus when the limit is tight"
-                                : root.audio-index == 1 ? "Plays everywhere"
-                                : "Sounds better at the same size · a few players can't open it";
-                            picked(i) => { root.set-audio(i); }
-                        }
-                        FormatRow {
-                            label: "Images";
-                            options: ["Auto", "JPEG", "WebP"];
-                            index: root.image-index;
-                            note: root.image-index == 0 ? "Lossless first, then JPEG · transparency stays"
-                                : root.image-index == 1 ? "Opens everywhere · transparent pictures stay WebP"
-                                : "Smaller than JPEG · keeps transparency";
-                            picked(i) => { root.set-image(i); }
-                        }
-                        FormatRow {
-                            label: "Folders & files";
-                            options: ["Zip", "7z"];
-                            index: root.archive-index;
-                            note: root.archive-index == 0 ? "Opens everywhere"
-                                : "Smaller · opens on Windows 11, or with 7-Zip";
-                            picked(i) => { root.set-archive(i); }
-                        }
-
-                        GroupTitle { text: "GENERAL"; }
-                        Group {
-                            Cell {
-                                label: "GPU encoding";
-                                small: root.gpu-text;
-                                first: true;
-                                Switch {
-                                    checked: root.gpu;
-                                    y: (parent.height - self.height) / 2;
-                                    toggled(on) => { root.set-gpu(on); }
-                                }
-                            }
-                            Cell {
-                                label: "Auto-hide";
-                                Switch {
-                                    checked: root.auto-hide;
-                                    y: (parent.height - self.height) / 2;
-                                    toggled(on) => { root.set-auto-hide(on); }
-                                }
-                            }
-                            Cell {
-                                label: "Start with Windows";
-                                Switch {
-                                    checked: root.start-with-windows;
-                                    y: (parent.height - self.height) / 2;
-                                    toggled(on) => { root.set-start(on); }
-                                }
-                            }
-                            Cell {
-                                label: "Low-memory mode";
-                                small: "Simpler animations · restarts Kompacter";
-                                Switch {
-                                    checked: root.low-memory;
-                                    y: (parent.height - self.height) / 2;
-                                    toggled(on) => { root.set-low-memory(on); }
-                                }
-                            }
-                        }
-                    }
-                }
+            if root.view == View.settings: SettingsView {
+                presets: root.presets;
+                preset-index: root.preset-index;
+                select-preset(i) => { root.select-preset(i); }
+                close-settings => { root.close-settings(); }
             }
         }
     }

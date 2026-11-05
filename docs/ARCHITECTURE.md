@@ -27,6 +27,9 @@
   GPU, Slint falls back to CPU drawing by itself and the animations stay on.
 - The CPU renderer can't round or cut gradient shapes, so the blob body, its gloss and the
   press heads are pre-drawn images (`tools/art.py` makes `ui/*.png`).
+- UI files: `ui/app.slint` (window, screens), `ui/settings.slint` (Settings screen and the
+  `Prefs` global it reads and calls), `ui/stage.slint` (blob, press), `ui/theme.slint`
+  (colors, buttons, dropdown, switch).
 - `src/flow.rs` (file → compress → clipboard), `src/trim.rs` (trimmer, live estimates),
   `src/motion.rs` (open/close, eyes, press, marching dashes), `src/sys.rs` (Windows bits).
 - Platform code lives in `src/sys.rs` (Windows now; macOS/Linux get their own part later).
@@ -49,6 +52,7 @@
 | `jobs::image` | JPEG, or WebP when transparent; steps quality then size down until it fits. Caps at 4096 px. |
 | `jobs::folder` | Shares the size budget across media files by original size, shrinks them, zips (media stored, others deflated). If it can't fit in one zip, packs it into several zips that each fit. |
 | `jobs::split` | Too long for one good file: cuts video/audio into equal parts that each fit (up to 10). |
+| `jobs::docs` | PDFs and Office files (docx, pptx, xlsx, OpenDocument): shrinks the photos inside and keeps a normal document; falls back to an archive. |
 | `jobs::cut` | Keep-quality trim: stream copy, no re-encode (snaps to keyframes). |
 
 Public API: `Engine::probe`, `Engine::estimate` (live numbers), `Engine::compress` (does the work).

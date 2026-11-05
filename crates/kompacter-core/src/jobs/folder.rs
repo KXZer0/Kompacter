@@ -12,8 +12,11 @@ use zip::CompressionMethod;
 use super::{fit_media, name_of, with_ext, Ctx};
 use crate::error::{Error, Result};
 use crate::ffmpeg::{scaled, Progress};
-use crate::probe::{probe, MediaKind};
+use crate::probe::{probe, MediaInfo, MediaKind};
 use crate::ArchiveFormat;
+
+/// A file in the folder: (path relative to the folder, absolute path).
+type RelAbs = (PathBuf, PathBuf);
 
 /// One file in a zip: (name inside the zip, file on disk, stored without compressing).
 type Entry = (String, PathBuf, bool);
@@ -30,26 +33,19 @@ pub(crate) fn fit(
     progress: Progress,
 ) -> Result<PathBuf> {
     let root = name_of(dir);
-    let mut files = Vec::new();
-    walk(dir, Path::new(""), &mut files)?;
-    let infos = files
-        .iter()
-        .map(|(_, abs)| probe(ctx.ff, abs))
-        .collect::<Result<Vec<_>>>()?;
+    let (files, infos) = list(ctx, dir)?;
 
     let total: u64 = infos.iter().map(|i| i.size_bytes).sum();
     let usable = (target as f64 * ZIP_SLACK) as u64;
-    let is_media =
-        |k: MediaKind| matches!(k, MediaKind::Video | MediaKind::Audio | MediaKind::Image);
     let fixed: u64 = infos
         .iter()
-        .filter(|i| !is_media(i.kind))
+        .filter(|i| !shrinkable(i))
         .map(|i| i.size_bytes)
         .sum::<u64>()
         + PER_ENTRY_OVERHEAD * infos.len() as u64;
     let media_total: u64 = infos
         .iter()
-        .filter(|i| is_media(i.kind))
+        .filter(|i| shrinkable(i))
         .map(|i| i.size_bytes)
         .sum();
     let needs_shrink = total + PER_ENTRY_OVERHEAD * infos.len() as u64 > usable;
@@ -74,7 +70,7 @@ pub(crate) fn fit(
         };
         let mut chosen = abs.clone();
         let mut zip_name = rel.clone();
-        if needs_shrink && is_media(info.kind) && info.size_bytes > share {
+        if needs_shrink && shrinkable(info) && info.size_bytes > share {
             let out_base = staging.path().join(format!("{i}"));
             let mut p = scaled(&mut *progress, slice(i as f32), slice(i as f32 + 1.0));
             // If one file can't be shrunk, keep the original; the final size check decides.
@@ -123,15 +119,8 @@ pub(crate) fn fit_parts(
     progress: Progress,
 ) -> Result<Vec<PathBuf>> {
     let root = name_of(dir);
-    let mut files = Vec::new();
-    walk(dir, Path::new(""), &mut files)?;
-    let infos = files
-        .iter()
-        .map(|(_, abs)| probe(ctx.ff, abs))
-        .collect::<Result<Vec<_>>>()?;
+    let (files, infos) = list(ctx, dir)?;
     let usable = (target as f64 * ZIP_SLACK) as u64;
-    let is_media =
-        |k: MediaKind| matches!(k, MediaKind::Video | MediaKind::Audio | MediaKind::Image);
 
     let staging = tempfile::tempdir()?;
     // (name in zip, file, stored, size)
@@ -143,7 +132,7 @@ pub(crate) fn fit_parts(
         let mut zip_name = rel.clone();
         let mut size = info.size_bytes;
         if size + PER_ENTRY_OVERHEAD > usable {
-            if !is_media(info.kind) {
+            if !shrinkable(info) {
                 // One document bigger than a whole part can't be split into usable pieces.
                 return Err(Error::DoesNotFit {
                     what: name_of(abs),
@@ -294,8 +283,29 @@ fn write_zip(out: &Path, entries: &[Entry]) -> Result<()> {
     Ok(())
 }
 
+/// Already-compressed media: stored in archives as-is.
+fn is_media(k: MediaKind) -> bool {
+    matches!(k, MediaKind::Video | MediaKind::Audio | MediaKind::Image)
+}
+
+/// Media and documents (PDF, Office) can be shrunk; everything else is packed as-is.
+fn shrinkable(i: &MediaInfo) -> bool {
+    is_media(i.kind) || super::docs::kind(&i.path).is_some()
+}
+
+/// Every file in the folder (relative and absolute path) with its probe.
+fn list(ctx: &Ctx, dir: &Path) -> Result<(Vec<RelAbs>, Vec<MediaInfo>)> {
+    let mut files = Vec::new();
+    walk(dir, Path::new(""), &mut files)?;
+    let infos = files
+        .iter()
+        .map(|(_, abs)| probe(ctx.ff, abs))
+        .collect::<Result<Vec<_>>>()?;
+    Ok((files, infos))
+}
+
 /// Recursively list files as (relative path, absolute path), skipping hidden files.
-fn walk(dir: &Path, rel: &Path, out: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
+fn walk(dir: &Path, rel: &Path, out: &mut Vec<RelAbs>) -> Result<()> {
     let mut items: Vec<_> = std::fs::read_dir(dir)?.collect::<io::Result<_>>()?;
     items.sort_by_key(|e| e.file_name());
     for e in items {

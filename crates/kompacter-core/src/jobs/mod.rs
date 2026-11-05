@@ -1,6 +1,7 @@
 //! One module per kind of input. Each job writes `<out_base>.<ext>` and returns that path.
 
 pub(crate) mod audio;
+pub(crate) mod docs;
 pub(crate) mod folder;
 pub(crate) mod image;
 pub(crate) mod split;
@@ -43,7 +44,16 @@ pub(crate) fn fit_media(
         MediaKind::Audio => audio::fit(ctx, info, trim, target, out_base, progress),
         MediaKind::Image => image::fit(ctx, info, target, out_base, progress),
         MediaKind::Folder => folder::fit(ctx, &info.path, target, out_base, progress),
-        MediaKind::Other => folder::zip_single(&info.path, target, out_base, ctx.archive),
+        MediaKind::Other => match docs::kind(&info.path) {
+            // PDFs and Office files: shrink the pictures inside, keep it a document.
+            // If that can't reach the limit, pack it like any other file.
+            Some(doc) => match docs::fit(ctx, &info.path, doc, target, out_base, progress) {
+                Err(Error::Cancelled) => Err(Error::Cancelled),
+                Err(_) => folder::zip_single(&info.path, target, out_base, ctx.archive),
+                ok => ok,
+            },
+            None => folder::zip_single(&info.path, target, out_base, ctx.archive),
+        },
     }
 }
 

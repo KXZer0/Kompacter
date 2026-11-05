@@ -97,11 +97,6 @@ impl App {
         ui.set_over_text(
             if over {
                 format!("{} too big", bytes(size - target))
-            } else if folder {
-                format!(
-                    "Fits — packed as .{}",
-                    self.settings.borrow().archive_format.ext()
-                )
             } else {
                 "Fits".into()
             }
@@ -128,7 +123,7 @@ impl App {
         ui.set_split_count(c.estimate.parts.unwrap_or(0) as i32);
         ui.set_foot_text(
             if too_long {
-                "Too long for good quality — trim or split it"
+                "Too long for good quality"
             } else {
                 ""
             }
@@ -310,7 +305,7 @@ impl App {
         } else if parts > 0 {
             format!("{parts} files · each under {}", bytes(target))
         } else if !copied {
-            "Couldn't copy it — drag it from the folder".into()
+            "Couldn't copy it, drag it from the folder".into()
         } else {
             details.join(" · ")
         };

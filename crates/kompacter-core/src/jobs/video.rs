@@ -53,6 +53,11 @@ pub(crate) fn fit(
     if plan.fps + 0.01 < v.fps {
         filters.push(format!("fps={:.3}", plan.fps));
     }
+    // Tight budget: grain and sensor noise eat bits without adding anything, so smooth
+    // them lightly first (fast, after scaling). Plenty of bits: leave it untouched.
+    if plan.quality != crate::Quality::Great {
+        filters.push("hqdn3d=1.5:1.5:6:6".into());
+    }
     let job = Job {
         ctx,
         info,

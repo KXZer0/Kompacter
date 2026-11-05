@@ -252,6 +252,100 @@ export component Switch inherits Rectangle {
     }
 }
 
+/// Apple-style pop-up button: shows the current choice with up/down chevrons; click to
+/// pick from a small menu (checkmark on the current one).
+export component Dropdown inherits Rectangle {
+    in property <[string]> options;
+    in property <int> index;
+    callback picked(int);
+    height: 28px;
+    width: row.preferred-width;
+    border-radius: 7px;
+    background: ta.has-hover || ta.pressed ? Theme.fill-hover : Theme.fill;
+    animate background { duration: 120ms; }
+    transform-scale: ta.pressed ? 0.96 : 1;
+    animate transform-scale { duration: 220ms; easing: ease-out-back; }
+    row := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 6px;
+        spacing: 4px;
+        alignment: center;
+        Text {
+            text: root.options[root.index];
+            font-size: 13px;
+            font-weight: 500;
+            color: Theme.label;
+            vertical-alignment: center;
+        }
+        Icon {
+            d: "M8.5 10L12 6.5L15.5 10M8.5 14L12 17.5L15.5 14";
+            size: 15px;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { menu.show(); }
+    }
+    menu := PopupWindow {
+        // Opens over the button, right-aligned, like a macOS pop-up menu.
+        x: root.width - 180px;
+        y: -4px;
+        width: 180px;
+        Rectangle {
+            property <bool> on;
+            Timer {
+                interval: 16ms;
+                running: !parent.on;
+                triggered => { parent.on = true; }
+            }
+            border-radius: 10px;
+            background: Theme.pop;
+            border-width: 1px;
+            border-color: Theme.pop-border;
+            drop-shadow-blur: 16px;
+            drop-shadow-offset-y: 5px;
+            drop-shadow-color: Theme.shadow;
+            opacity: self.on ? 1 : 0;
+            animate opacity { duration: 120ms; }
+            transform-origin: { x: self.width, y: 0 };
+            transform-scale: self.on || !Fx.rich ? 1 : 0.95;
+            animate transform-scale { duration: 220ms; easing: ease-out-back; }
+            VerticalLayout {
+                padding: 4px;
+                for opt[i] in root.options: Rectangle {
+                    height: 28px;
+                    border-radius: 6px;
+                    background: item.has-hover ? Theme.accent : transparent;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 10px;
+                        spacing: 6px;
+                        Icon {
+                            d: Icons.check;
+                            size: 14px;
+                            y: (parent.height - self.height) / 2;
+                            color: item.has-hover ? white : Theme.label;
+                            opacity: i == root.index ? 1 : 0;
+                        }
+                        Text {
+                            text: opt;
+                            font-size: 13px;
+                            color: item.has-hover ? white : Theme.label;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    item := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.picked(i); }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Segmented control: one of a few options, with a sliding thumb.
 export component Seg inherits Rectangle {
     in property <[string]> options;
