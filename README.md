@@ -4,7 +4,7 @@ Compress any file, any time. With better quality and more for those apps. All lo
 
 Copy a file that's too big for Discord (or email, or any app with an upload limit), and Kompacter shrinks it to fit, puts it back on your clipboard, and you paste. Videos, audio, images, whole folders. Nothing is uploaded anywhere: every byte stays on your PC.
 
-> Status: early development. The compression engine and CLI work; the desktop app is next.
+> Status: early development. The compression engine (with GPU support) and CLI work; the desktop app has a first working cut. See `apps/desktop/README.md`.
 
 ## Why
 
@@ -26,6 +26,8 @@ Copy a file that's too big for Discord (or email, or any app with an upload limi
 crates/
   kompacter-core/   compression engine (Rust library): probe, plan, video/audio/image/folder jobs
   kompacter-cli/    `kompacter` command-line tool on top of the engine
+apps/
+  desktop/          Tauri 2 tray app (tray, flyout, drag & drop, clipboard)
 docs/
   ARCHITECTURE.md   how the pieces fit together
   ROADMAP.md        phases, hooks/triggers plan, open decisions

@@ -74,28 +74,36 @@
   --pouch-a:#cfe2ff; --pouch-b:#7aa9ff; --pouch-c:#3d6fff; --m1:#6c717a; --m2:#b8bdc5; --m3:#f4f6f9; --m4:#9ba0a9; --m5:#555960;
   --chat-bg:#1d1e1b; --chat-side:#252622; --chat-line:rgba(255,255,255,.08); --chat-text:#ecebe6; --chat-muted:#a9a69d; --chat-input:#2e2f2b; --chat-accent:#4fd1bd;
 }
-/* Style: Discord-like palette (colors only, same shapes). Placed after the base themes so it wins. */
-:root[data-style="discord"]{
-  --mat:rgba(242,243,245,.9); --mat-strong:rgba(255,255,255,.96); --group:#ffffff;
-  --fill:rgba(79,84,92,.12); --fill-2:rgba(79,84,92,.22); --fill-hover:rgba(79,84,92,.18); --sep:rgba(79,84,92,.2);
-  --label:#060607; --label-2:#4e5058; --label-3:#5c5e66;
-  --accent:#4752c4; --accent-text:#4752c4; --accent-soft:rgba(88,101,242,.14); --focus:rgba(88,101,242,.6);
-  --pouch-a:#e6e8ff; --pouch-b:#9aa4ff; --pouch-c:#5865f2;
+/* ── Style: Discord-like palettes (colors only, same shapes). One token block per Discord theme.
+   approximate — sample from the real app before shipping ── */
+:root[data-style="discord"][data-dt="light"]{
+  --mat:rgba(247,247,248,.94); --mat-strong:rgba(255,255,255,.97); --group:#ffffff; --fill:#ebebed; --fill-2:#dcdce0; --fill-hover:#e2e2e5;
+  --sep:rgba(46,47,52,.14); --hair:rgba(0,0,0,.08); --label:#2e2f34; --label-2:#5c5e66; --label-3:#5c5e66;
+  --accent:#4752c4; --on-accent:#fff; --pouch-c:#5865f2; --accent-text:#4752c4; --accent-soft:rgba(88,101,242,.14); --focus:rgba(88,101,242,.6); --pouch-a:#e6e8ff; --pouch-b:#9aa4ff;
+  --ok:#1a7f37; --ok-soft:rgba(26,127,55,.12); --bad:#d70015; --bad-soft:rgba(215,0,21,.1);
 }
-@media (prefers-color-scheme: dark){ :root[data-style="discord"]:not([data-theme="light"]){
-  --mat:rgba(43,45,49,.94); --mat-strong:rgba(49,51,56,.97); --group:#313338;
-  --fill:#1e1f22; --fill-2:#3f4147; --fill-hover:#35373c; --sep:rgba(78,80,88,.7);
-  --label:#f2f3f5; --label-2:#b5bac1; --label-3:#a8adb5;
-  --accent:#4752c4; --accent-text:#949cf7; --accent-soft:rgba(88,101,242,.24); --focus:rgba(148,156,247,.75);
-  --pouch-a:#d6daff; --pouch-b:#8891f2; --pouch-c:#5865f2;
-}}
-:root[data-style="discord"][data-theme="dark"]{
-  --mat:rgba(43,45,49,.94); --mat-strong:rgba(49,51,56,.97); --group:#313338;
-  --fill:#1e1f22; --fill-2:#3f4147; --fill-hover:#35373c; --sep:rgba(78,80,88,.7);
-  --label:#f2f3f5; --label-2:#b5bac1; --label-3:#a8adb5;
-  --accent:#4752c4; --accent-text:#949cf7; --accent-soft:rgba(88,101,242,.24); --focus:rgba(148,156,247,.75);
-  --pouch-a:#d6daff; --pouch-b:#8891f2; --pouch-c:#5865f2;
+:root[data-style="discord"][data-dt="ash"]{
+  --mat:rgba(43,44,49,.95); --mat-strong:rgba(50,51,57,.97); --group:#323339; --fill:#26272b; --fill-2:#3d3e45; --fill-hover:#36373d;
+  --sep:rgba(255,255,255,.08); --hair:rgba(255,255,255,.08); --label:#ffffff; --label-2:#c4c5cb; --label-3:#b0b1b8;
+  --accent:#4752c4; --on-accent:#fff; --pouch-c:#5865f2; --accent-text:#a5acff; --accent-soft:rgba(88,101,242,.26); --focus:rgba(165,172,255,.75); --pouch-a:#d6daff; --pouch-b:#8891f2;
+  --ok:#3ba55c; --ok-soft:rgba(59,165,92,.18); --bad:#f2777a; --bad-soft:rgba(242,119,122,.16); --warn:#f0b232; --warn-soft:rgba(240,178,50,.14);
+  --shadow:0 0 0 .5px rgba(255,255,255,.1),0 10px 30px rgba(0,0,0,.45),0 30px 80px -20px rgba(0,0,0,.65); --shadow-sm:0 0 0 .5px rgba(255,255,255,.1),0 4px 14px rgba(0,0,0,.4);
 }
+:root[data-style="discord"][data-dt="dark"]{
+  --mat:rgba(26,27,30,.95); --mat-strong:rgba(31,32,36,.97); --group:#1f2024; --fill:#141517; --fill-2:#2c2d32; --fill-hover:#25262a;
+  --sep:rgba(255,255,255,.08); --hair:rgba(255,255,255,.08); --label:#f2f3f5; --label-2:#b5bac1; --label-3:#a8adb5;
+  --accent:#4752c4; --on-accent:#fff; --pouch-c:#5865f2; --accent-text:#a5acff; --accent-soft:rgba(88,101,242,.24); --focus:rgba(165,172,255,.75); --pouch-a:#d6daff; --pouch-b:#8891f2;
+  --ok:#3ba55c; --ok-soft:rgba(59,165,92,.18); --bad:#f2777a; --bad-soft:rgba(242,119,122,.16); --warn:#f0b232; --warn-soft:rgba(240,178,50,.14);
+  --shadow:0 0 0 .5px rgba(255,255,255,.1),0 10px 30px rgba(0,0,0,.45),0 30px 80px -20px rgba(0,0,0,.65); --shadow-sm:0 0 0 .5px rgba(255,255,255,.1),0 4px 14px rgba(0,0,0,.4);
+}
+:root[data-style="discord"][data-dt="onyx"]{
+  --mat:rgba(7,7,9,.96); --mat-strong:rgba(12,12,14,.98); --group:#0c0c0e; --fill:rgba(255,255,255,.08); --fill-2:rgba(255,255,255,.14); --fill-hover:rgba(255,255,255,.12);
+  --sep:rgba(255,255,255,.09); --hair:rgba(255,255,255,.1); --label:#ffffff; --label-2:#b5b7bd; --label-3:#a3a5ab;
+  --accent:#4752c4; --on-accent:#fff; --pouch-c:#5865f2; --accent-text:#a5acff; --accent-soft:rgba(88,101,242,.22); --focus:rgba(165,172,255,.8); --pouch-a:#d6daff; --pouch-b:#8891f2;
+  --ok:#3ba55c; --ok-soft:rgba(59,165,92,.18); --bad:#f2777a; --bad-soft:rgba(242,119,122,.16); --warn:#f0b232; --warn-soft:rgba(240,178,50,.14);
+  --shadow:0 0 0 .5px rgba(255,255,255,.1),0 10px 30px rgba(0,0,0,.45),0 30px 80px -20px rgba(0,0,0,.65); --shadow-sm:0 0 0 .5px rgba(255,255,255,.1),0 4px 14px rgba(0,0,0,.4);
+}
+:root[data-style="discord"]:is([data-dt="ash"],[data-dt="dark"],[data-dt="onyx"]) .b-slack{color:#e3b6e6}
 @supports (transition-timing-function: linear(0, 1)){
   :root{ --spring:linear(0, .16, .44 12.5%, .7 20%, .88 27.5%, .98 35%, 1.03 42.5%, 1.045 50%, 1.04 60%, 1.017 72.5%, 1.003 85%, 1); }
 }
@@ -356,6 +364,8 @@ li[data-s="ok"] .qstat{color:var(--ok)}
 .seg[data-i="1"] .thumb-ind{transform:translateX(100%)}
 .seg[data-n="3"] .thumb-ind{width:calc(33.333% - 1.33px)}
 .seg[data-n="3"][data-i="2"] .thumb-ind{transform:translateX(200%)}
+.seg[data-n="4"] .thumb-ind{width:calc(25% - 1px);transform:translateX(calc(var(--i,0) * 100%))}
+.seg[aria-disabled="true"]{opacity:.45;pointer-events:none}
 .seg [aria-checked="true"]{font-weight:600}
 .readout{margin-top:12px;padding:14px 16px;border-radius:var(--r-lg);background:var(--group);display:grid;grid-template-columns:1fr auto;align-items:end;gap:2px 12px}
 .ro-lbl{font-size:12px;color:var(--label-2)}
@@ -713,9 +723,18 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
           </div>
 
           <h3 class="grp-h" id="g-theme">Appearance</h3>
+          <div id="kTheme">
           <div class="seg" id="setTheme" role="radiogroup" aria-labelledby="g-theme" data-i="0" data-n="3" style="margin-top:0">
             <span class="thumb-ind" aria-hidden="true"></span>
             <button role="radio" aria-checked="true" data-v="system">System</button><button role="radio" aria-checked="false" tabindex="-1" data-v="light">Light</button><button role="radio" aria-checked="false" tabindex="-1" data-v="dark">Dark</button>
+          </div>
+          </div>
+          <div id="dTheme" hidden>
+            <div class="seg" id="setDT" role="radiogroup" aria-label="Discord theme" data-i="2" data-n="4" style="margin-top:0">
+              <span class="thumb-ind" aria-hidden="true"></span>
+              <button role="radio" aria-checked="false" tabindex="-1" data-v="light">Light</button><button role="radio" aria-checked="false" tabindex="-1" data-v="ash">Ash</button><button role="radio" aria-checked="true" data-v="dark">Dark</button><button role="radio" aria-checked="false" tabindex="-1" data-v="onyx">Onyx</button>
+            </div>
+            <div class="grp" style="margin-top:8px"><div class="cell"><div class="grow" id="l-match">Match Windows<small>Light ↔ Dark with your Windows setting</small></div><span class="sw-state" aria-hidden="true"></span><button class="switch" role="switch" aria-checked="false" aria-labelledby="l-match" id="swMatch"><span class="knob"></span></button></div></div>
           </div>
           <h3 class="grp-h" id="g-style">Accent / style</h3>
           <div class="seg" id="setStyle" role="radiogroup" aria-labelledby="g-style" aria-describedby="styleNote" data-i="0" data-n="2" style="margin-top:0">
@@ -779,9 +798,18 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
       <button data-scn="notif">Clip saved</button><button data-scn="ctx">Right-click</button>
     </div>
     <div class="sw-label" id="sw-th">Theme</div>
+    <div id="swK">
     <div class="seg" id="swTheme" role="radiogroup" aria-labelledby="sw-th" data-i="0" data-n="3">
       <span class="thumb-ind" aria-hidden="true"></span>
       <button role="radio" aria-checked="true" data-v="system">System</button><button role="radio" aria-checked="false" tabindex="-1" data-v="light">Light</button><button role="radio" aria-checked="false" tabindex="-1" data-v="dark">Dark</button>
+    </div>
+    </div>
+    <div id="swD" hidden>
+      <div class="seg" id="swDT" role="radiogroup" aria-label="Discord theme" data-i="2" data-n="4">
+        <span class="thumb-ind" aria-hidden="true"></span>
+        <button role="radio" aria-checked="false" tabindex="-1" data-v="light">Light</button><button role="radio" aria-checked="false" tabindex="-1" data-v="ash">Ash</button><button role="radio" aria-checked="true" data-v="dark">Dark</button><button role="radio" aria-checked="false" tabindex="-1" data-v="onyx">Onyx</button>
+      </div>
+      <label class="sw-check"><input type="checkbox" id="swMatchChk"> Match Windows (Light ↔ Dark)</label>
     </div>
     <div class="sw-label" id="sw-st">Style</div>
     <div class="seg" id="swStyle" role="radiogroup" aria-labelledby="sw-st" data-i="0" data-n="2">
@@ -1117,7 +1145,7 @@ $('#trimBack').addEventListener('click', () => { renderBig(); show('big'); });
 /* Radio-style segmented controls */
 function setRadio(g, v) {
   const items = $$('[role="radio"]', g);
-  items.forEach((b, i) => { const on = b.dataset.v === v; b.setAttribute('aria-checked', on); b.tabIndex = on ? 0 : -1; if (on) g.dataset.i = i; });
+  items.forEach((b, i) => { const on = b.dataset.v === v; b.setAttribute('aria-checked', on); b.tabIndex = on ? 0 : -1; if (on) { g.dataset.i = i; g.style.setProperty('--i', i); } });
 }
 $$('.seg[role="radiogroup"]').forEach(g => {
   g.addEventListener('click', e => { const b = e.target.closest('[role="radio"]'); if (b) { setRadio(g, b.dataset.v); g.dispatchEvent(new CustomEvent('pick', { detail: b.dataset.v })); } });
@@ -1338,7 +1366,24 @@ hotBtn.addEventListener('keydown', e => {
 
 /* Theme + motion */
 function setTheme(v) { if (v === 'system') delete html.dataset.theme; else html.dataset.theme = v; setRadio($('#swTheme'), v); setRadio($('#setTheme'), v); }
-function setStyle(v) { if (v === 'kompacter') delete html.dataset.style; else html.dataset.style = v; setRadio($('#swStyle'), v); setRadio($('#setStyle'), v); }
+const mqDark = matchMedia('(prefers-color-scheme: dark)');
+const DT = { theme: 'dark', match: false }; // Discord's own theme (Light / Ash / Dark / Onyx)
+function applyDT() {
+  const disc = html.dataset.style === 'discord';
+  $('#kTheme').hidden = disc; $('#dTheme').hidden = !disc; $('#swK').hidden = disc; $('#swD').hidden = !disc;
+  if (!disc) { delete html.dataset.dt; return; }
+  const v = DT.match ? (mqDark.matches ? 'dark' : 'light') : DT.theme;
+  html.dataset.dt = v;
+  ['#setDT', '#swDT'].forEach(id => { setRadio($(id), v); $(id).setAttribute('aria-disabled', DT.match); });
+  $('#swMatch').setAttribute('aria-checked', DT.match); $('#swMatch').parentElement.querySelector('.sw-state').textContent = DT.match ? 'On' : 'Off';
+  $('#swMatchChk').checked = DT.match;
+}
+mqDark.addEventListener('change', applyDT);
+function setStyle(v) { if (v === 'kompacter') delete html.dataset.style; else html.dataset.style = v; setRadio($('#swStyle'), v); setRadio($('#setStyle'), v); applyDT(); }
+$('#setDT').addEventListener('pick', e => { DT.theme = e.detail; applyDT(); });
+$('#swDT').addEventListener('pick', e => { DT.theme = e.detail; applyDT(); });
+$('#swMatch').addEventListener('click', () => { DT.match = $('#swMatch').getAttribute('aria-checked') === 'true'; applyDT(); });
+$('#swMatchChk').addEventListener('change', e => { DT.match = e.target.checked; applyDT(); });
 $('#swStyle').addEventListener('pick', e => setStyle(e.detail));
 $('#setStyle').addEventListener('pick', e => setStyle(e.detail));
 $('#swTheme').addEventListener('pick', e => setTheme(e.detail));
@@ -1396,6 +1441,7 @@ clock(); setInterval(clock, 30000);
 renderPresetList(); setPreset('d20'); renderHot();
 const qs = new URLSearchParams(location.search);
 if (qs.get('theme')) setTheme(qs.get('theme'));
+if (qs.get('dt')) DT.theme = qs.get('dt');
 if (qs.get('style')) setStyle(qs.get('style'));
 if (qs.get('rm')) { html.classList.add('rm'); $('#rmToggle').checked = true; }
 const start = qs.get('s') || 'idle';

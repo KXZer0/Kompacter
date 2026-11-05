@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kompacter</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="flyout" id="flyout" data-state="idle">
+    <header>
+      <select id="preset" aria-label="Upload limit"></select>
+      <button class="icon" id="close" aria-label="Hide Kompacter">✕</button>
+    </header>
+
+    <section class="stage" id="zone" aria-label="Drop a file here">
+      <svg class="dash" aria-hidden="true"><rect x="1" y="1" rx="20" ry="20"></rect></svg>
+      <div class="press top" aria-hidden="true"><i class="pole"></i><i class="collar"></i><i class="body"></i><i class="plate"></i></div>
+      <div class="blob" id="blob" aria-hidden="true"><span class="eyes"></span><span class="mouth"></span></div>
+      <div class="press bottom" aria-hidden="true"><i class="plate"></i><i class="body"></i><i class="collar"></i><i class="pole"></i></div>
+    </section>
+
+    <section class="info" aria-live="polite">
+      <h1 id="title">Drop a file</h1>
+      <p id="detail">It shrinks to fit and lands on your clipboard.</p>
+    </section>
+
+    <footer>
+      <button class="primary" id="go" hidden>Compress</button>
+      <button id="cancel" hidden>Cancel</button>
+      <button id="again" hidden>Done</button>
+    </footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

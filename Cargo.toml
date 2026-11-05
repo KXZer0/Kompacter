@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/kompacter-core", "crates/kompacter-cli"]
+# The desktop app needs platform webview libraries, so it builds on its own.
+exclude = ["apps/desktop/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

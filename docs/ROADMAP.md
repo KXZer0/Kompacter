@@ -5,7 +5,7 @@
 | Phase | Goal | Status |
 |---|---|---|
 | 0. UI mockups | Clickable mockup of popup, trimmer, settings; iterate on look | In progress |
-| 1. Engine | Rust library + CLI: probe, fit video/audio/image/folder, trim, estimates | **Working**, needs GPU + polish |
+| 1. Engine | Rust library + CLI: probe, fit video/audio/image/folder, trim, estimates, GPU | **Working** |
 | 2. App shell | Tauri 2 tray app: popup, drag & drop, result on clipboard, settings | Next |
 | 3. Triggers | Right-click menu, hotkey, paste guard, heads-up on copy, per-app profiles | |
 | 4. Trimmer + extras | Live trimmer, GPU encoding, pre-compress on copy, clip-folder watcher, queue | |
