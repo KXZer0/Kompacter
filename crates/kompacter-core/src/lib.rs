@@ -6,6 +6,7 @@
 
 pub mod error;
 pub mod ffmpeg;
+pub mod formats;
 pub mod gpu;
 mod jobs;
 pub mod plan;
@@ -21,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 pub use error::{Error, Result};
 pub use ffmpeg::Ffmpeg;
+pub use formats::{ArchiveFormat, AudioFormat, ImageFormat, VideoCodec};
 pub use gpu::Encoder;
 pub use jobs::split::MAX_PARTS;
 pub use plan::{Quality, Trim, VideoPlan};
@@ -61,6 +63,10 @@ pub struct Options {
     /// When it can't fit (well) in one file: video/audio are cut into equal parts and
     /// folders into several zips, each under the target (see `Estimate::parts`).
     pub split: bool,
+    pub video_codec: VideoCodec,
+    pub audio_format: AudioFormat,
+    pub image_format: ImageFormat,
+    pub archive: ArchiveFormat,
 }
 
 impl Options {
@@ -73,6 +79,10 @@ impl Options {
             speed: Speed::Balanced,
             gpu: true,
             split: false,
+            video_codec: VideoCodec::H264,
+            audio_format: AudioFormat::Auto,
+            image_format: ImageFormat::Auto,
+            archive: ArchiveFormat::Zip,
         }
     }
 }
@@ -114,20 +124,31 @@ pub struct Estimate {
 #[derive(Debug, Clone, Default)]
 pub struct Engine {
     ff: Ffmpeg,
-    encoders: OnceLock<Vec<Encoder>>,
+    /// Working hardware encoders per video codec (H.264, H.265, AV1), found on first use.
+    encoders: [OnceLock<Vec<Encoder>>; 3],
 }
 
 impl Engine {
     pub fn new(ff: Ffmpeg) -> Self {
         Engine {
             ff,
-            encoders: OnceLock::new(),
+            encoders: Default::default(),
         }
     }
 
     /// Hardware encoders that work on this PC, best first. Detected once, then cached.
     pub fn hw_encoders(&self) -> &[Encoder] {
-        self.encoders.get_or_init(|| gpu::detect(&self.ff))
+        self.hw_encoders_for(VideoCodec::H264)
+    }
+
+    /// Hardware encoders for this codec that work on this PC, best first (cached).
+    pub fn hw_encoders_for(&self, codec: VideoCodec) -> &[Encoder] {
+        let i = match codec {
+            VideoCodec::H264 => 0,
+            VideoCodec::H265 => 1,
+            VideoCodec::Av1 => 2,
+        };
+        self.encoders[i].get_or_init(|| gpu::detect(&self.ff, codec))
     }
 
     /// `count` small JPEG frames across a video, for the trimmer's filmstrip.
@@ -155,19 +176,23 @@ impl Engine {
                 v.height,
                 v.fps,
                 info.audio.is_some(),
+                opts.video_codec.efficiency(),
             )),
             _ => None,
         };
         let audio_kbps = (info.kind == MediaKind::Audio)
             .then(|| plan::plan_audio_kbps(target, seconds))
             .flatten();
-        let parts = split_count(info, seconds, target);
+        let parts = split_count(info, seconds, target, opts.video_codec.efficiency());
         Ok(Estimate {
             kind: info.kind,
             original_bytes: info.size_bytes,
             target_bytes: target,
             seconds,
-            fits_as_is: trim.is_none() && info.size_bytes <= target,
+            // A folder can't be sent as-is: it always gets packed into one file.
+            fits_as_is: trim.is_none()
+                && info.size_bytes <= target
+                && info.kind != MediaKind::Folder,
             keep_quality_bytes,
             video,
             audio_kbps,
@@ -187,7 +212,7 @@ impl Engine {
         let trim = resolve_trim(&info, opts.trim)?;
         let target = opts.target_bytes;
 
-        if trim.is_none() && info.size_bytes <= target {
+        if trim.is_none() && info.size_bytes <= target && info.kind != MediaKind::Folder {
             progress(1.0);
             return Ok(outcome(
                 &info,
@@ -203,13 +228,21 @@ impl Engine {
             ff: &self.ff,
             cancel,
             speed: opts.speed,
-            encoders: if opts.gpu { self.hw_encoders() } else { &[] },
+            encoders: if opts.gpu {
+                self.hw_encoders_for(opts.video_codec)
+            } else {
+                &[]
+            },
+            codec: opts.video_codec,
+            audio_format: opts.audio_format,
+            image_format: opts.image_format,
+            archive: opts.archive,
         };
         if opts.split && opts.mode == Mode::Fit {
             let parts = match info.kind {
                 MediaKind::Video | MediaKind::Audio => {
                     let secs = trim.map_or(info.duration, |t| t.len());
-                    split_count(&info, secs, target).map(|n| {
+                    split_count(&info, secs, target, opts.video_codec.efficiency()).map(|n| {
                         jobs::split::media(&ctx, &info, trim, n, target, &out_base, progress)
                     })
                 }
@@ -265,10 +298,18 @@ fn outcome(info: &MediaInfo, path: PathBuf, size: u64, target: u64, untouched: b
 
 /// How many equal parts a video/audio needs so each fits at a decent quality: `None` when
 /// one file is already fine, otherwise 2…`MAX_PARTS` (`MAX_PARTS` if even that isn't great).
-fn split_count(info: &MediaInfo, seconds: f64, target: u64) -> Option<u32> {
+fn split_count(info: &MediaInfo, seconds: f64, target: u64, efficiency: f64) -> Option<u32> {
     let good = |secs: f64| match (info.kind, &info.video) {
         (MediaKind::Video, Some(v)) => {
-            let p = plan::plan_video(target, secs, v.width, v.height, v.fps, info.audio.is_some());
+            let p = plan::plan_video(
+                target,
+                secs,
+                v.width,
+                v.height,
+                v.fps,
+                info.audio.is_some(),
+                efficiency,
+            );
             p.fits && p.quality != Quality::Low
         }
         (MediaKind::Audio, _) => plan::plan_audio_kbps(target, secs).is_some_and(|k| k >= 64),

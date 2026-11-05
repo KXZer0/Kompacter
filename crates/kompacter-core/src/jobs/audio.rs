@@ -1,4 +1,5 @@
-//! Audio: MP3 for compatibility; Opus when the budget is tiny (it sounds far better there).
+//! Audio: MP3 for compatibility; Opus when the budget is tiny (it sounds far better there),
+//! unless the user picked one of them.
 
 use std::path::{Path, PathBuf};
 
@@ -7,6 +8,7 @@ use crate::error::{Error, Result};
 use crate::ffmpeg::{args, Progress};
 use crate::plan::{plan_audio_kbps, Trim};
 use crate::probe::MediaInfo;
+use crate::AudioFormat;
 
 pub(crate) fn fit(
     ctx: &Ctx,
@@ -18,10 +20,15 @@ pub(crate) fn fit(
 ) -> Result<PathBuf> {
     let secs = trim.map(|t| t.len()).unwrap_or(info.duration);
     let kbps = plan_audio_kbps(target, secs).ok_or(Error::TooLong { seconds: secs })?;
-    let (codec, ext) = if kbps >= 64 {
-        ("libmp3lame", "mp3")
-    } else {
+    let opus = match ctx.audio_format {
+        AudioFormat::Auto => kbps < 64,
+        AudioFormat::Mp3 => false,
+        AudioFormat::Opus => true,
+    };
+    let (codec, ext) = if opus {
         ("libopus", "ogg")
+    } else {
+        ("libmp3lame", "mp3")
     };
 
     let out = with_ext(out_base, ext);

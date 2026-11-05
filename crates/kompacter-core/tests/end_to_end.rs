@@ -276,3 +276,185 @@ fn sideways_phone_photo_comes_out_upright() {
         v.height
     );
 }
+
+#[test]
+fn h265_and_av1_hit_the_target() {
+    use kompacter_core::VideoCodec;
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("clip.mp4");
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=854x480:rate=30:duration=4",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=4",
+            "-vf",
+            "noise=alls=30:allf=t",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "12",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "aac",
+            "-shortest",
+        ],
+        &src,
+    );
+    let engine = Engine::default();
+    for codec in [VideoCodec::H265, VideoCodec::Av1] {
+        let target = 400 * KB;
+        let mut opts = Options::new(target);
+        opts.gpu = false;
+        opts.video_codec = codec;
+        let res = run(&engine, &src, &opts);
+        assert!(res.fits, "{codec:?}: {} bytes", res.output_bytes);
+        let v = engine.probe(&res.path).unwrap().video.unwrap();
+        let want = if codec == VideoCodec::H265 {
+            "hevc"
+        } else {
+            "av1"
+        };
+        assert_eq!(v.codec, want);
+    }
+}
+
+#[test]
+fn seven_z_beats_zip_on_documents() {
+    use kompacter_core::ArchiveFormat;
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("notes");
+    std::fs::create_dir(&folder).unwrap();
+    // Text compresses well: 600 KB of slightly varied lines.
+    let text: String = (0..12_000)
+        .map(|i| format!("line {i}: the quick brown fox {}\n", i % 97))
+        .collect();
+    std::fs::write(folder.join("a.txt"), &text).unwrap();
+    std::fs::write(folder.join("b.txt"), text.replace("fox", "dog")).unwrap();
+    let engine = Engine::default();
+    // Just under the folder's size, so it has to be packed (and easily fits once packed).
+    let limit = 1024 * KB;
+    let size = |archive| {
+        let mut o = Options::new(limit);
+        o.archive = archive;
+        let res = run(&engine, &folder, &o);
+        assert!(res.fits);
+        res.output_bytes
+    };
+    let (zip, sevenz) = (size(ArchiveFormat::Zip), size(ArchiveFormat::SevenZ));
+    assert!(sevenz < zip, "7z {sevenz} vs zip {zip}");
+}
+
+/// A big photo as raw RGB pixels (noisy, so it doesn't compress on its own).
+fn noisy_rgb(w: usize, h: usize) -> Vec<u8> {
+    let mut x: u64 = 99;
+    (0..w * h * 3)
+        .map(|i| {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((i % 256) as u8 / 2).wrapping_add((x >> 59) as u8)
+        })
+        .collect()
+}
+
+#[test]
+fn pdf_photos_are_shrunk_and_it_stays_a_pdf() {
+    use lopdf::{dictionary, Document, Object, Stream};
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("scan.pdf");
+    let (w, h) = (2400, 1800);
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let mut img = Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image",
+            "Width" => w as i64, "Height" => h as i64,
+            "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8,
+        },
+        noisy_rgb(w, h),
+    );
+    img.compress().unwrap();
+    let img_id = doc.add_object(img);
+    let content = doc.add_object(Stream::new(
+        dictionary! {},
+        b"q 600 0 0 450 0 0 cm /Im1 Do Q".to_vec(),
+    ));
+    let page = doc.add_object(dictionary! {
+        "Type" => "Page", "Parent" => pages_id, "Contents" => content,
+        "MediaBox" => vec![0.into(), 0.into(), 600.into(), 450.into()],
+        "Resources" => dictionary! { "XObject" => dictionary! { "Im1" => img_id } },
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1,
+        }),
+    );
+    let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog);
+    doc.save(&src).unwrap();
+
+    let size = std::fs::metadata(&src).unwrap().len();
+    let engine = Engine::default();
+    let res = run(&engine, &src, &Options::new(size / 4));
+    assert!(res.fits, "{} of {size}", res.output_bytes);
+    assert_eq!(res.path.extension().unwrap(), "pdf");
+    let out = Document::load(&res.path).unwrap();
+    assert_eq!(out.get_pages().len(), 1);
+}
+
+#[test]
+fn office_pictures_are_shrunk_and_it_stays_a_document() {
+    use std::io::Write;
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let photo = dir.path().join("photo.jpg");
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=3000x2000:rate=1:duration=1",
+            "-vf",
+            "noise=alls=60:allf=t",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+        ],
+        &photo,
+    );
+    let src = dir.path().join("report.docx");
+    let mut z = zip::ZipWriter::new(std::fs::File::create(&src).unwrap());
+    let opts = zip::write::SimpleFileOptions::default();
+    z.start_file("[Content_Types].xml", opts).unwrap();
+    z.write_all(b"<Types/>").unwrap();
+    z.start_file("word/document.xml", opts).unwrap();
+    z.write_all(b"<w:document/>").unwrap();
+    z.start_file("word/media/image1.jpeg", opts).unwrap();
+    z.write_all(&std::fs::read(&photo).unwrap()).unwrap();
+    z.finish().unwrap();
+
+    let size = std::fs::metadata(&src).unwrap().len();
+    let engine = Engine::default();
+    let res = run(&engine, &src, &Options::new(size / 3));
+    assert!(res.fits, "{} of {size}", res.output_bytes);
+    assert_eq!(res.path.extension().unwrap(), "docx");
+    let mut out = zip::ZipArchive::new(std::fs::File::open(&res.path).unwrap()).unwrap();
+    assert!(out.by_name("word/document.xml").is_ok());
+    assert!(out.by_name("word/media/image1.jpeg").is_ok());
+}

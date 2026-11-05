@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicBool;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use kompacter_core::size::{human, parse_size, PRESETS};
-use kompacter_core::{Engine, Mode, Options, Speed, Trim};
+use kompacter_core::{ArchiveFormat, Engine, Mode, Options, Speed, Trim, VideoCodec};
 
 #[derive(Parser)]
 #[command(
@@ -39,6 +39,9 @@ enum Cmd {
         /// Output folder (default: next to the input).
         #[arg(short, long)]
         out: Option<PathBuf>,
+        /// Make parts that each fit when one file can't (video, audio, folders).
+        #[arg(long)]
+        split: bool,
     },
     /// Show what we'd do (resolution, bitrate, quality) without encoding. Prints JSON.
     Estimate {
@@ -65,6 +68,26 @@ struct Common {
     /// Trim end, in seconds.
     #[arg(long)]
     end: Option<f64>,
+    /// Video codec: h264 (most compatible), h265 (smaller), av1 (smallest).
+    #[arg(long, value_enum, default_value_t = CodecArg::H264)]
+    codec: CodecArg,
+    /// Archive for folders and other files: zip (opens everywhere) or 7z (smaller).
+    #[arg(long, value_enum, default_value_t = ArchiveArg::Zip)]
+    archive: ArchiveArg,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum CodecArg {
+    H264,
+    H265,
+    Av1,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ArchiveArg {
+    Zip,
+    #[value(name = "7z")]
+    SevenZ,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -77,6 +100,15 @@ enum SpeedArg {
 impl Common {
     fn options(&self) -> Result<Options> {
         let mut o = Options::new(parse_size(&self.target)?);
+        o.video_codec = match self.codec {
+            CodecArg::H264 => VideoCodec::H264,
+            CodecArg::H265 => VideoCodec::H265,
+            CodecArg::Av1 => VideoCodec::Av1,
+        };
+        o.archive = match self.archive {
+            ArchiveArg::Zip => ArchiveFormat::Zip,
+            ArchiveArg::SevenZ => ArchiveFormat::SevenZ,
+        };
         if self.start.is_some() || self.end.is_some() {
             let t = Trim::new(self.start.unwrap_or(0.0), self.end.unwrap_or(f64::MAX))
                 .map_err(anyhow::Error::msg)?;
@@ -96,12 +128,15 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Encoders => {
-            let found = engine.hw_encoders();
-            if found.is_empty() {
-                println!("No working GPU encoder found; using the CPU (x264).");
-            }
-            for e in found {
-                println!("{:<20} {}", e.label(), e.ffmpeg_name());
+            for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
+                let found = engine.hw_encoders_for(codec);
+                if found.is_empty() {
+                    println!("{:<6} no working GPU encoder; uses the CPU", codec.label());
+                }
+                for e in found {
+                    let name = e.ffmpeg_name(codec).unwrap_or("-");
+                    println!("{:<6} {:<20} {name}", codec.label(), e.label());
+                }
             }
         }
         Cmd::Probe { input } => {
@@ -120,9 +155,11 @@ fn main() -> Result<()> {
             speed,
             cpu,
             out,
+            split,
         } => {
             let mut opts = common.options()?;
             opts.out_dir = out;
+            opts.split = split;
             opts.gpu = !cpu;
             opts.mode = if keep_quality {
                 Mode::KeepQuality

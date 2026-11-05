@@ -5,11 +5,12 @@
 // corners, soft shadow, grows up out of the taskbar and folds back down. Without (Low-memory
 // mode, or no GPU) the card fills a plain window and Rust slides the window in and out.
 
-import { Theme, Fx, Icon, AppLogo, Btn, IconBtn, Kbd, Switch, Seg, Appear, Tip } from "theme.slint";
+import { Theme, Fx, Icon, AppLogo, Btn, IconBtn, Kbd, Switch, Seg, Appear, Tip, Dropdown } from "theme.slint";
 import { Icons } from "icons.slint";
 import { Mood, Blob, DropZone, Press, Sparks } from "stage.slint";
+import { Prefs, SettingsView, PresetItem } from "settings.slint";
 
-export { Theme, Fx }
+export { Theme, Fx, Prefs, PresetItem }
 
 export enum View { idle, reading, big, trim, busy, done, error, settings }
 
@@ -19,12 +20,6 @@ export struct DetailRow {
     value: string,
 }
 
-export struct PresetItem {
-    name: string,
-    note: string,
-    size: string,
-    brand: string,
-}
 
 /// The tray icon (left click opens, right click shows the menu).
 export component Tray inherits SystemTrayIcon {
@@ -64,78 +59,6 @@ component Sub inherits Text {
     color: Theme.label-2;
     horizontal-alignment: center;
     wrap: word-wrap;
-}
-
-/// A group row in settings: label + optional small text + something on the right.
-component Cell inherits Rectangle {
-    in property <string> label;
-    in property <string> small;
-    in property <bool> first;
-    in property <bool> clickable;
-    callback clicked;
-    min-height: root.small != "" ? 56px : 44px;
-    background: ta.has-hover && root.clickable ? Theme.fill : transparent;
-    animate background { duration: 120ms; }
-    if !root.first: Rectangle {
-        x: 12px;
-        y: 0;
-        width: parent.width - 12px;
-        height: 1px;
-        background: Theme.sep;
-    }
-    ta := TouchArea {
-        enabled: root.clickable;
-        mouse-cursor: root.clickable ? pointer : default;
-        clicked => { root.clicked(); }
-    }
-    HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 10px;
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            Text {
-                text: root.label;
-                font-size: 14px;
-                color: Theme.label;
-                overflow: elide;
-            }
-            if root.small != "": Text {
-                text: root.small;
-                font-size: 12px;
-                color: Theme.label-2;
-                overflow: elide;
-            }
-        }
-        @children
-    }
-}
-
-component Group inherits Rectangle {
-    border-radius: 12px;
-    background: Theme.group;
-    clip: true;
-    VerticalLayout {
-        @children
-    }
-}
-
-component GroupTitle inherits Text {
-    font-size: 12px;
-    font-weight: 600;
-    color: Theme.label-2;
-}
-
-component Check inherits Rectangle {
-    in property <bool> on;
-    width: 18px;
-    Icon {
-        d: Icons.check;
-        color: Theme.accent-text;
-        opacity: root.on ? 1 : 0;
-        animate opacity { duration: 120ms; }
-    }
 }
 
 /// Quality chip: a word and an arrow. Click to open the details below it.
@@ -243,17 +166,7 @@ export component AppWindow inherits Window {
 
     in property <string> error-text;
 
-    in property <int> style-index;
-    in property <int> theme-index;
-    in property <[string]> theme-options: ["System", "Light", "Dark"];
-    in property <int> output-index;
-    in property <string> output-dir;
-    in property <bool> gpu;
-    in property <string> gpu-text;
-    in property <bool> auto-hide;
-    in property <bool> start-with-windows;
-    in property <bool> low-memory;
-    in property <int> custom-mb;
+    // Formats.
 
     // ── Calls into Rust ──
     callback choose-file();
@@ -271,16 +184,6 @@ export component AppWindow inherits Window {
     callback close-trim();
     callback trim-changed();
     callback trim-compress();
-    callback set-style(int);
-    callback set-theme(int);
-    callback set-output(int);
-    callback choose-folder();
-    callback open-outputs();
-    callback set-gpu(bool);
-    callback set-auto-hide(bool);
-    callback set-start(bool);
-    callback set-low-memory(bool);
-    callback set-custom-mb(int);
     callback escape();
 
     property <length> inset: Fx.glass ? 12px : 0;
@@ -1137,176 +1040,11 @@ export component AppWindow inherits Window {
             }
 
             // ── Settings ──
-            if root.view == View.settings: Appear {
-                width: 360px;
-                height: 600px;
-                IconBtn {
-                    x: 8px;
-                    y: 14px;
-                    icon: Icons.back;
-                    clicked => { root.close-settings(); }
-                }
-                Text {
-                    x: 48px;
-                    y: 12px;
-                    height: 36px;
-                    text: "Settings";
-                    font-size: 19px;
-                    font-weight: 650;
-                    color: Theme.label;
-                    vertical-alignment: center;
-                }
-                Flickable {
-                    x: 0;
-                    y: 54px;
-                    width: 360px;
-                    height: 546px;
-                    VerticalLayout {
-                        padding-left: 20px;
-                        padding-right: 20px;
-                        padding-bottom: 20px;
-                        spacing: 6px;
-
-                        GroupTitle { text: "TARGET"; }
-                        Group {
-                            for p[i] in root.presets: Cell {
-                                label: p.name;
-                                first: i == 0;
-                                clickable: true;
-                                clicked => { root.select-preset(i); }
-                                AppLogo {
-                                    brand: p.brand;
-                                    y: (parent.height - self.height) / 2;
-                                }
-                                if p.brand == "custom": Rectangle {
-                                    width: 64px;
-                                    height: 28px;
-                                    y: (parent.height - self.height) / 2;
-                                    border-radius: 7px;
-                                    background: Theme.fill;
-                                    TextInput {
-                                        x: 8px;
-                                        width: parent.width - 16px;
-                                        text: root.custom-mb;
-                                        input-type: number;
-                                        horizontal-alignment: right;
-                                        vertical-alignment: center;
-                                        color: Theme.label;
-                                        font-size: 14px;
-                                        accepted => { root.set-custom-mb(self.text.to-float()); }
-                                        edited => {
-                                            if (self.text.is-float()) {
-                                                root.set-custom-mb(self.text.to-float());
-                                            }
-                                        }
-                                    }
-                                }
-                                Text {
-                                    text: p.brand == "custom" ? "MB" : p.size;
-                                    font-size: 14px;
-                                    color: Theme.label-2;
-                                    vertical-alignment: center;
-                                }
-                                Check { on: i == root.preset-index; }
-                            }
-                        }
-
-                        GroupTitle { text: "STYLE"; }
-                        Seg {
-                            options: ["Kompacter", "Discord"];
-                            index: root.style-index;
-                            picked(i) => { root.set-style(i); }
-                        }
-                        Seg {
-                            options: root.theme-options;
-                            index: root.theme-index;
-                            picked(i) => { root.set-theme(i); }
-                        }
-
-                        GroupTitle { text: "SAVE TO"; }
-                        Group {
-                            Cell {
-                                label: "Kompacter folder";
-                                small: "Deleted after 7 days";
-                                first: true;
-                                clickable: true;
-                                clicked => { root.set-output(0); }
-                                Btn {
-                                    text: "Open";
-                                    plain: true;
-                                    y: (parent.height - self.height) / 2;
-                                    clicked => { root.open-outputs(); }
-                                }
-                                Check { on: root.output-index == 0; }
-                            }
-                            Cell {
-                                label: "Next to the original";
-                                clickable: true;
-                                clicked => { root.set-output(1); }
-                                Check { on: root.output-index == 1; }
-                            }
-                            Cell {
-                                label: "Pick a folder";
-                                small: root.output-dir;
-                                clickable: true;
-                                clicked => { root.set-output(2); }
-                                Btn {
-                                    text: "Choose…";
-                                    plain: true;
-                                    y: (parent.height - self.height) / 2;
-                                    clicked => { root.choose-folder(); }
-                                }
-                                Check { on: root.output-index == 2; }
-                            }
-                            Cell {
-                                label: "Replace the original";
-                                small: "Original goes to the Recycle Bin";
-                                clickable: true;
-                                clicked => { root.set-output(3); }
-                                Check { on: root.output-index == 3; }
-                            }
-                        }
-
-                        GroupTitle { text: "GENERAL"; }
-                        Group {
-                            Cell {
-                                label: "GPU encoding";
-                                small: root.gpu-text;
-                                first: true;
-                                Switch {
-                                    checked: root.gpu;
-                                    y: (parent.height - self.height) / 2;
-                                    toggled(on) => { root.set-gpu(on); }
-                                }
-                            }
-                            Cell {
-                                label: "Auto-hide";
-                                Switch {
-                                    checked: root.auto-hide;
-                                    y: (parent.height - self.height) / 2;
-                                    toggled(on) => { root.set-auto-hide(on); }
-                                }
-                            }
-                            Cell {
-                                label: "Start with Windows";
-                                Switch {
-                                    checked: root.start-with-windows;
-                                    y: (parent.height - self.height) / 2;
-                                    toggled(on) => { root.set-start(on); }
-                                }
-                            }
-                            Cell {
-                                label: "Low-memory mode";
-                                small: "Simpler animations · restarts Kompacter";
-                                Switch {
-                                    checked: root.low-memory;
-                                    y: (parent.height - self.height) / 2;
-                                    toggled(on) => { root.set-low-memory(on); }
-                                }
-                            }
-                        }
-                    }
-                }
+            if root.view == View.settings: SettingsView {
+                presets: root.presets;
+                preset-index: root.preset-index;
+                select-preset(i) => { root.select-preset(i); }
+                close-settings => { root.close-settings(); }
             }
         }
     }

@@ -1,0 +1,351 @@
+// The Settings screen. Its values and actions live in the `Prefs` global, which Rust fills
+// and listens to (see `sync_settings` in src/main.rs); add a setting here and there.
+
+import { Theme, Icon, AppLogo, Btn, IconBtn, Switch, Seg, Appear, Dropdown } from "theme.slint";
+import { Icons } from "icons.slint";
+
+export struct PresetItem {
+    name: string,
+    note: string,
+    size: string,
+    brand: string,
+}
+
+export global Prefs {
+    in property <int> style-index;
+    in property <int> theme-index;
+    in property <[string]> theme-options: ["System", "Light", "Dark"];
+    in property <int> output-index;
+    in property <string> output-dir;
+    in property <bool> gpu;
+    in property <bool> auto-hide;
+    in property <bool> start-with-windows;
+    in property <bool> low-memory;
+    in property <int> custom-mb;
+    in property <int> video-index;
+    in property <int> audio-index;
+    in property <int> image-index;
+    in property <int> archive-index;
+
+    callback set-style(int);
+    callback set-theme(int);
+    callback set-output(int);
+    callback choose-folder();
+    callback open-outputs();
+    callback set-gpu(bool);
+    callback set-auto-hide(bool);
+    callback set-start(bool);
+    callback set-low-memory(bool);
+    callback set-custom-mb(int);
+    callback set-video(int);
+    callback set-audio(int);
+    callback set-image(int);
+    callback set-archive(int);
+}
+
+/// A group row in settings: label + optional small text + something on the right.
+component Cell inherits Rectangle {
+    in property <string> label;
+    in property <string> small;
+    in property <bool> first;
+    in property <bool> clickable;
+    callback clicked;
+    min-height: root.small != "" ? 56px : 44px;
+    background: ta.has-hover && root.clickable ? Theme.fill : transparent;
+    animate background { duration: 120ms; }
+    if !root.first: Rectangle {
+        x: 12px;
+        y: 0;
+        width: parent.width - 12px;
+        height: 1px;
+        background: Theme.sep;
+    }
+    ta := TouchArea {
+        enabled: root.clickable;
+        mouse-cursor: root.clickable ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.label;
+                font-size: 14px;
+                color: Theme.label;
+                overflow: elide;
+            }
+            if root.small != "": Text {
+                text: root.small;
+                font-size: 12px;
+                color: Theme.label-2;
+                overflow: elide;
+            }
+        }
+        @children
+    }
+}
+
+component Group inherits Rectangle {
+    border-radius: 12px;
+    background: Theme.group;
+    clip: true;
+    VerticalLayout {
+        @children
+    }
+}
+
+component GroupTitle inherits Text {
+    font-size: 12px;
+    font-weight: 600;
+    color: Theme.label-2;
+}
+
+component Check inherits Rectangle {
+    in property <bool> on;
+    width: 18px;
+    Icon {
+        d: Icons.check;
+        color: Theme.accent-text;
+        opacity: root.on ? 1 : 0;
+        animate opacity { duration: 120ms; }
+    }
+}
+
+export component SettingsView inherits Rectangle {
+    in property <[PresetItem]> presets;
+    in property <int> preset-index;
+    callback select-preset(int);
+    callback close-settings();
+    width: 360px;
+    height: 600px;
+    Appear {
+
+    width: 360px;
+    height: 600px;
+    IconBtn {
+        x: 8px;
+        y: 14px;
+        icon: Icons.back;
+        clicked => { root.close-settings(); }
+    }
+    Text {
+        x: 48px;
+        y: 12px;
+        height: 36px;
+        text: "Settings";
+        font-size: 19px;
+        font-weight: 650;
+        color: Theme.label;
+        vertical-alignment: center;
+    }
+    Flickable {
+        x: 0;
+        y: 54px;
+        width: 360px;
+        height: 546px;
+        VerticalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-bottom: 20px;
+            spacing: 6px;
+
+            GroupTitle { text: "TARGET"; }
+            Group {
+                for p[i] in root.presets: Cell {
+                    label: p.name;
+                    first: i == 0;
+                    clickable: true;
+                    clicked => { root.select-preset(i); }
+                    AppLogo {
+                        brand: p.brand;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    if p.brand == "custom": Rectangle {
+                        width: 64px;
+                        height: 28px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 7px;
+                        background: Theme.fill;
+                        TextInput {
+                            x: 8px;
+                            width: parent.width - 16px;
+                            text: Prefs.custom-mb;
+                            input-type: number;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                            color: Theme.label;
+                            font-size: 14px;
+                            accepted => { Prefs.set-custom-mb(self.text.to-float()); }
+                            edited => {
+                                if (self.text.is-float()) {
+                                    Prefs.set-custom-mb(self.text.to-float());
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        text: p.brand == "custom" ? "MB" : p.size;
+                        font-size: 14px;
+                        color: Theme.label-2;
+                        vertical-alignment: center;
+                    }
+                    Check { on: i == root.preset-index; }
+                }
+            }
+
+            GroupTitle { text: "STYLE"; }
+            Seg {
+                options: ["Kompacter", "Discord"];
+                index: Prefs.style-index;
+                picked(i) => { Prefs.set-style(i); }
+            }
+            Seg {
+                options: Prefs.theme-options;
+                index: Prefs.theme-index;
+                picked(i) => { Prefs.set-theme(i); }
+            }
+
+            GroupTitle { text: "SAVE TO"; }
+            Group {
+                Cell {
+                    label: "Kompacter folder";
+                    small: "Deleted after 7 days";
+                    first: true;
+                    clickable: true;
+                    clicked => { Prefs.set-output(0); }
+                    Btn {
+                        text: "Open";
+                        plain: true;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { Prefs.open-outputs(); }
+                    }
+                    Check { on: Prefs.output-index == 0; }
+                }
+                Cell {
+                    label: "Next to the original";
+                    clickable: true;
+                    clicked => { Prefs.set-output(1); }
+                    Check { on: Prefs.output-index == 1; }
+                }
+                Cell {
+                    label: "Pick a folder";
+                    small: Prefs.output-dir;
+                    clickable: true;
+                    clicked => { Prefs.set-output(2); }
+                    Btn {
+                        text: "Choose…";
+                        plain: true;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { Prefs.choose-folder(); }
+                    }
+                    Check { on: Prefs.output-index == 2; }
+                }
+                Cell {
+                    label: "Replace the original";
+                    small: "Original goes to the Recycle Bin";
+                    clickable: true;
+                    clicked => { Prefs.set-output(3); }
+                    Check { on: Prefs.output-index == 3; }
+                }
+            }
+
+            // Formats: the default of each works for everyone; the line under it
+            // says what the choice trades.
+            GroupTitle { text: "FORMATS"; }
+            Group {
+                Cell {
+                    label: "Video";
+                    small: Prefs.video-index == 0 ? "Most compatible, plays everywhere"
+                        : Prefs.video-index == 1 ? "Smaller files"
+                        : "Smallest files, best quality";
+                    first: true;
+                    Dropdown {
+                        options: ["H.264", "H.265", "AV1"];
+                        index: Prefs.video-index;
+                        y: (parent.height - self.height) / 2;
+                        picked(i) => { Prefs.set-video(i); }
+                    }
+                }
+                Cell {
+                    label: "Audio";
+                    small: Prefs.audio-index == 0 ? "MP3, or Opus when the limit is tight"
+                        : Prefs.audio-index == 1 ? "Plays everywhere"
+                        : "Sounds better at the same size";
+                    Dropdown {
+                        options: ["Auto", "MP3", "Opus"];
+                        index: Prefs.audio-index;
+                        y: (parent.height - self.height) / 2;
+                        picked(i) => { Prefs.set-audio(i); }
+                    }
+                }
+                Cell {
+                    label: "Images";
+                    small: Prefs.image-index == 0 ? "Lossless first, then JPEG"
+                        : Prefs.image-index == 1 ? "Opens everywhere"
+                        : "Smaller than JPEG, keeps transparency";
+                    Dropdown {
+                        options: ["Auto", "JPEG", "WebP"];
+                        index: Prefs.image-index;
+                        y: (parent.height - self.height) / 2;
+                        picked(i) => { Prefs.set-image(i); }
+                    }
+                }
+                Cell {
+                    label: "Folders & files";
+                    small: Prefs.archive-index == 0 ? "Opens everywhere"
+                        : "Smaller, needs Windows 11 or 7-Zip";
+                    Dropdown {
+                        options: ["Zip", "7z"];
+                        index: Prefs.archive-index;
+                        y: (parent.height - self.height) / 2;
+                        picked(i) => { Prefs.set-archive(i); }
+                    }
+                }
+            }
+
+            GroupTitle { text: "GENERAL"; }
+            Group {
+                Cell {
+                    label: "GPU encoding";
+                    first: true;
+                    Switch {
+                        checked: Prefs.gpu;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-gpu(on); }
+                    }
+                }
+                Cell {
+                    label: "Auto-hide";
+                    Switch {
+                        checked: Prefs.auto-hide;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-auto-hide(on); }
+                    }
+                }
+                Cell {
+                    label: "Start with Windows";
+                    Switch {
+                        checked: Prefs.start-with-windows;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-start(on); }
+                    }
+                }
+                Cell {
+                    label: "Low-memory mode";
+                    small: "Restarts Kompacter";
+                    Switch {
+                        checked: Prefs.low-memory;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-low-memory(on); }
+                    }
+                }
+            }
+        }
+    }
+
+    }
+}
