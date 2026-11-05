@@ -1,0 +1,17 @@
+[package]
+name = "kompacter-cli"
+description = "Command-line front-end for the Kompacter engine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "kompacter"
+path = "src/main.rs"
+
+[dependencies]
+kompacter-core = { path = "../kompacter-core" }
+clap.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true

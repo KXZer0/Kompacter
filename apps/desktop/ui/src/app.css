@@ -1,0 +1,69 @@
+@import "./lib/themes.css";
+
+/* ───────── Base ───────── */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body, #app { height: 100%; margin: 0; background: transparent; }
+body {
+  color: var(--label);
+  font: 14px/1.4 var(--font);
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.006em;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+button, input, select { font: inherit; color: inherit; letter-spacing: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.ic { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.ic.sm { width: 15px; height: 15px; }
+.muted { color: var(--label-2); }
+.ok { color: var(--ok); }
+.bad { color: var(--bad); }
+kbd { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 6px; background: var(--fill); font: 500 12px/20px var(--font); text-align: center; color: var(--label-2); }
+
+/* Instant press feedback */
+.press { transition: transform var(--t-fast) var(--spring), background-color var(--t-fast) var(--ease), opacity var(--t-fast); }
+.press:active { transform: scale(0.96); transition-duration: 70ms; }
+
+/* ───────── Buttons ───────── */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 0 16px; border-radius: 999px; border: 0; background: var(--fill); color: var(--label); font-weight: 500; font-size: 14px; white-space: nowrap; }
+.btn:hover { background: var(--fill-hover); }
+.btn.primary { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #000); }
+.btn.lg { min-height: 44px; font-size: 15px; padding: 0 20px; }
+.btn.plain { background: transparent; color: var(--accent-text); padding: 0 10px; }
+.btn.plain:hover { background: var(--fill); }
+.btn.block { width: 100%; }
+.btn:disabled { opacity: 0.45; pointer-events: none; }
+.icon-btn { width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--label-2); }
+.icon-btn:hover { background: var(--fill); }
+
+/* ───────── Shared view typography ───────── */
+.center { text-align: center; }
+.h1 { font-size: 19px; line-height: 24px; font-weight: 650; letter-spacing: -0.02em; margin: 0; }
+.h2 { font-size: 15px; line-height: 20px; font-weight: 600; margin: 0; }
+.sub { font-size: 13px; line-height: 18px; color: var(--label-2); margin: 4px 0 0; }
+.row { display: flex; gap: 8px; align-items: center; }
+.row.c { justify-content: center; }
+.hint { margin: 14px 0 0; font-size: 12px; color: var(--label-2); display: flex; gap: 4px; justify-content: center; align-items: center; flex-wrap: wrap; }
+.status { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; margin-top: 10px; }
+.status .ic { width: 16px; height: 16px; }
+.actions { display: grid; grid-template-columns: 1.4fr 1fr; gap: 8px; margin-top: 18px; }
+.foot-note { margin: 10px 0 0; font-size: 12px; color: var(--label-2); text-align: center; }
+
+/* ───────── Segmented control (radiogroup) ───────── */
+.seg { display: flex; padding: 2px; margin-top: 14px; border-radius: 10px; background: var(--fill); position: relative; }
+.seg button { position: relative; z-index: 1; flex: 1; min-height: 30px; border: 0; border-radius: 8px; background: transparent; font-size: 13px; font-weight: 500; color: var(--label); }
+.seg [aria-checked="true"] { font-weight: 600; }
+.seg .thumb-ind { position: absolute; top: 2px; bottom: 2px; left: 2px; width: calc((100% - 4px) / var(--n, 2)); border-radius: 8px; background: var(--mat-strong); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14), 0 0 0 0.5px rgba(0, 0, 0, 0.06); transform: translateX(calc(var(--i, 0) * 100%)); transition: transform var(--t-spring) var(--spring); }
+.seg[aria-disabled="true"] { opacity: 0.45; pointer-events: none; }
+
+/* ───────── Motion preferences ───────── */
+/* Idle loops (breathing, blinking, marching dashes) stop while the flyout is hidden. */
+html[data-hidden] *, html[data-hidden] *::before, html[data-hidden] *::after { animation-play-state: paused !important; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 120ms !important; transition-property: opacity, background-color !important; }
+}

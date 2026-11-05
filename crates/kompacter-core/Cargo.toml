@@ -1,0 +1,19 @@
+[package]
+name = "kompacter-core"
+description = "Local compression engine for Kompacter: fit any file under an upload limit."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tempfile.workspace = true
+zip.workspace = true
+ts-rs = { version = "12.0.1", optional = true }
+
+[features]
+# Generates TypeScript types for the desktop UI (`cargo test --features ts`).
+ts = ["dep:ts-rs"]

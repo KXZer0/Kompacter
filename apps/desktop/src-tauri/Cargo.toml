@@ -1,0 +1,29 @@
+[package]
+name = "kompacter-desktop"
+description = "Kompacter tray app"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Standalone: needs the platform webview, so it's kept out of the root workspace.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+kompacter-core = { path = "../../../crates/kompacter-core" }
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri-plugin-dialog = "2"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "5"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
