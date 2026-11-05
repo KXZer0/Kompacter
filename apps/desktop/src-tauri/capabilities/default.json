@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Permissions for the Kompacter flyout",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position"
+  ]
 }

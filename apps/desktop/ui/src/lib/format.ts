@@ -4,8 +4,10 @@ const GB = MB * 1024;
 
 /** "48.2 MB"-style sizes, matching the engine's binary units. */
 export function bytes(b: number): string {
-  if (b >= GB) return `${(b / GB).toFixed(2)} GB`;
-  if (b >= MB) return `${(b / MB).toFixed(1)} MB`;
+  const trim = (s: string) => s.replace(/\.0+$/, "");
+  if (b >= GB) return `${trim((b / GB).toFixed(2))} GB`;
+  if (b >= 100 * MB) return `${Math.round(b / MB)} MB`;
+  if (b >= MB) return `${trim((b / MB).toFixed(1))} MB`;
   return `${Math.round(b / KB)} KB`;
 }
 

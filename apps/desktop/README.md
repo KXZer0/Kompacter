@@ -14,7 +14,8 @@ cd apps/desktop/ui && npm install
 cd ../src-tauri && cargo tauri dev
 ```
 
-Click the tray icon, drop a file on the flyout, press **Compress**, then Ctrl+V in Discord.
+Click the tray icon, drop a file on the flyout (or **Choose File** / **Paste**), press
+**Compress**, then Ctrl+V in Discord. Video can be trimmed first, with live size estimates.
 
 Build an installer (per-user, no admin): `cargo tauri build`.
 
@@ -25,8 +26,10 @@ Build an installer (per-user, no admin): `cargo tauri build`.
 - `src-tauri/src/commands.rs`: `presets`, `inspect`, `compress` (+ `progress` events), `cancel`, `hide`
 - `src-tauri/src/clipboard.rs`: put files on the clipboard like Explorer does
 - `ui/`: the flyout, Svelte 5 + TypeScript + Vite
-  - `src/App.svelte`: flyout states (idle, too big, compressing, done, errors)
-  - `src/lib/Stage.svelte`: dashed drop zone, blob, hydraulic press
+  - `src/App.svelte`: flyout shell and view logic (idle, too big, trim, compress, done, settings)
+  - `src/lib/Stage.svelte`: dashed drop zone, blob with face, hydraulic press driven by real progress
+  - `src/lib/*View.svelte`, `Trimmer`, `FileCard`, `SizeMeter`, `PresetPill`: one component per part
+  - `src/lib/themes.css`: Kompacter and Discord (Light / Ash / Dark / Onyx) colour tokens
   - `src/lib/api.ts`: typed wrappers for the Rust commands
   - `src/lib/bindings/`: TypeScript types **generated from the Rust engine**. Don't edit by hand;
     run `npm run types` after changing engine structs.
@@ -35,6 +38,6 @@ UI checks: `npm run check` (types) and `npm run build`.
 
 ## Not yet
 
-Trimmer, folder queue and settings screens; Choose File / Paste buttons; global hotkey;
-right-click menu; paste guard; bundled ffmpeg; macOS/Linux clipboard.
-The full design lives in `design/mockup/index.html`.
+Paste guard, global hotkey and start with Windows (settings are saved, marked "coming soon");
+Explorer right-click menu; clip-folder watcher; bundled ffmpeg; real acrylic blur
+(`windowEffects`); macOS/Linux clipboard. The full design lives in `design/mockup/index.html`.

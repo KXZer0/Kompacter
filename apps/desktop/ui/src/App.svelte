@@ -1,149 +1,298 @@
-<!-- The flyout. One fixed size; the state machine below decides what it shows. -->
+<!--
+  The flyout. One calm base size (360×472); only the trimmer and settings grow taller.
+  A small state machine decides what the stage and the view below it show.
+-->
 <script lang="ts">
   import { onMount } from "svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import * as api from "./lib/api";
+  import type { Encoder } from "./lib/bindings/Encoder";
   import type { Preset } from "./lib/bindings/Preset";
+  import DoneView from "./lib/DoneView.svelte";
+  import FileCard from "./lib/FileCard.svelte";
   import { bytes, fileName } from "./lib/format";
-  import Stage, { type Mood } from "./lib/Stage.svelte";
+  import Icon from "./lib/Icon.svelte";
+  import { live, say } from "./lib/live.svelte";
+  import { flipFrom, reduced } from "./lib/motion";
+  import PresetPill from "./lib/PresetPill.svelte";
+  import { withCustom } from "./lib/presets";
+  import ProgressView from "./lib/ProgressView.svelte";
+  import QueueView from "./lib/QueueView.svelte";
+  import SettingsView from "./lib/SettingsView.svelte";
+  import { changed, loadSettings, settings } from "./lib/settings.svelte";
+  import SizeMeter from "./lib/SizeMeter.svelte";
+  import Stage, { type Mood, type StageSize } from "./lib/Stage.svelte";
+  import Trimmer, { type TrimRequest } from "./lib/Trimmer.svelte";
+  import { BASE_HEIGHT, maxHeight, setHeight } from "./lib/window";
 
+  type From = "idle" | "big" | "trim" | "queue";
   type View =
-    | { kind: "idle" }
-    | { kind: "reading"; path: string }
-    | { kind: "big"; path: string; found: api.Inspection }
-    | { kind: "busy"; path: string }
-    | { kind: "done"; result: api.Compressed }
-    | { kind: "fits"; path: string; size: number }
-    | { kind: "error"; path: string; message: string };
+    | { k: "idle" }
+    | { k: "reading"; path: string }
+    | { k: "big"; path: string; ins: api.Inspection }
+    | { k: "queue"; path: string; ins: api.Inspection }
+    | { k: "trim"; path: string; ins: api.Inspection }
+    | { k: "busy"; path: string; ins: api.Inspection; label: string; from: From }
+    | { k: "done"; result: api.Compressed; label: string }
+    | { k: "error"; path: string; message: string }
+    | { k: "settings"; back: View };
 
-  let presets = $state<Preset[]>([]);
-  let presetIndex = $state(0);
-  let view = $state<View>({ kind: "idle" });
+  let enginePresets = $state<Preset[]>([]);
+  let encoders = $state<Encoder[] | null>(null);
+  let view = $state<View>({ k: "idle" });
   let dragging = $state(false);
   let progress = $state(0);
+  let cancelling = false;
+  let stage: Stage;
+  let surface: HTMLDivElement;
 
-  const target = $derived(presets[presetIndex]?.bytes ?? 20 * 1024 * 1024);
+  const presets = $derived(withCustom(enginePresets, settings.customBytes));
+  const preset = $derived(presets.find((p) => p.id === settings.preset) ?? presets[0] ?? { id: "discord", label: "Discord", bytes: 20 * 1024 * 1024 });
+  const target = $derived(preset.bytes);
 
+  const STAGE: Partial<Record<View["k"], StageSize>> = { idle: "lg", reading: "md", big: "md", queue: "md", busy: "press", done: "lg", error: "md" };
+  const stageSize = $derived(STAGE[view.k]);
   const mood: Mood = $derived(
-    dragging ? "over"
-    : view.kind === "big" || view.kind === "error" ? "big"
-    : view.kind === "busy" || view.kind === "reading" ? "busy"
-    : view.kind === "done" || view.kind === "fits" ? "done"
+    dragging ? "hungry"
+    : view.k === "big" || view.k === "error" ? "worried"
+    : view.k === "busy" || view.k === "reading" ? "busy"
+    : view.k === "done" ? (view.result.fits ? "happy" : "worried")
     : "idle",
   );
 
+  /* ── Window height: base for everything except the trimmer and settings ── */
+  let curH = BASE_HEIGHT;
+  async function fitWindow(k: View["k"]) {
+    const h = k === "trim" ? Math.min(608, maxHeight()) : k === "settings" ? Math.min(600, maxHeight()) : BASE_HEIGHT;
+    if (h === curH) return;
+    const from = surface.getBoundingClientRect();
+    if (h < curH && !reduced())
+      await surface.animate([{ transform: "none" }, { transform: `scaleY(${h / curH})` }], { duration: 180, easing: "cubic-bezier(.3,0,.2,1)", fill: "forwards" }).finished;
+    await setHeight(h);
+    surface.getAnimations().forEach((a) => a.cancel());
+    if (h > curH) requestAnimationFrame(() => flipFrom(surface, from, "50% 100%"));
+    curH = h;
+  }
+  $effect(() => {
+    fitWindow(view.k);
+  });
+
+  /* ── Flow ── */
+  const media = (ins: api.Inspection) => {
+    const { info } = ins;
+    const parts: string[] = [];
+    if (info.duration > 0) parts.push(`${Math.floor(info.duration / 60)}:${String(Math.floor(info.duration % 60)).padStart(2, "0")}`);
+    if (info.video) parts.push(`${info.video.width}×${info.video.height}`);
+    parts.push(bytes(info.size_bytes));
+    return parts.join(" · ");
+  };
+
   async function open(path: string) {
-    view = { kind: "reading", path };
-    progress = 0;
+    if (view.k === "busy") return;
+    view = { k: "reading", path };
     try {
-      const found = await api.inspect(path, target);
-      view = found.estimate.fits_as_is
-        ? { kind: "fits", path, size: found.info.size_bytes }
-        : { kind: "big", path, found };
+      const ins = await api.inspect(path, target);
+      if (ins.info.kind === "folder") view = { k: "queue", path, ins };
+      else if (ins.estimate.fits_as_is || ins.info.kind !== "video") compress(path, ins, {}, false, "", "idle");
+      else view = { k: "big", path, ins };
     } catch (e) {
-      view = { kind: "error", path, message: String(e) };
+      view = { k: "error", path, message: String(e) };
+      say(`Couldn't read ${fileName(path)}: ${e}`);
     }
   }
 
-  async function compress(path: string) {
-    view = { kind: "busy", path };
+  async function compress(path: string, ins: api.Inspection, range: api.Range, keepQuality: boolean, label: string, from: From) {
+    const plan = ins.estimate.video;
+    label ||= keepQuality ? "Original quality" : plan ? `${plan.height}p` : ins.estimate.audio_kbps ? `${ins.estimate.audio_kbps} kbps` : "";
     progress = 0;
+    cancelling = false;
+    const quick = ins.estimate.fits_as_is && !range.start && !range.end;
+    if (!quick) view = { k: "busy", path, ins, label, from };
     try {
-      view = { kind: "done", result: await api.compress(path, target) };
+      const result = await api.compress(path, target, range, keepQuality);
+      progress = 1;
+      if (!quick) await stage.finish();
+      view = { k: "done", result, label: result.untouched ? "" : label };
+      stage.celebrate();
+      say(result.fits ? (result.copied ? `Copied ${fileName(result.path)}, ${bytes(result.output_bytes)}. Paste anywhere with Control V.` : `Saved ${bytes(result.output_bytes)}.`) : `Still too big: ${bytes(result.output_bytes)}.`);
     } catch (e) {
-      view = { kind: "error", path, message: String(e) };
+      if (cancelling) {
+        say("Compression cancelled");
+        view = from === "trim" ? { k: "trim", path, ins } : from === "queue" ? { k: "queue", path, ins } : from === "big" ? { k: "big", path, ins } : { k: "idle" };
+      } else {
+        view = { k: "error", path, message: String(e) };
+        say(`Compression failed: ${e}`);
+      }
     }
   }
 
-  function reopenCurrent() {
-    if (view.kind === "big" || view.kind === "fits" || view.kind === "error") open(view.path);
+  function cancel() {
+    cancelling = true;
+    api.cancel();
+  }
+
+  async function choose() {
+    const p = await api.pickFile().catch(() => null);
+    if (p) open(p);
+  }
+  async function paste() {
+    const files = await api.clipboardFiles().catch(() => [] as string[]);
+    if (files.length) open(files[0]);
+    else say("No copied file on the clipboard. Copy one in Explorer first.");
+  }
+
+  function selectPreset(id: string) {
+    settings.preset = id;
+    changed();
+    say(`Target set to ${bytes(presets.find((p) => p.id === id)?.bytes ?? 0)}`);
+    if (view.k === "big" || view.k === "queue") open(view.path); // re-estimate for the new limit
+  }
+  function goSettings() {
+    if (view.k === "settings") view = view.back;
+    else if (view.k !== "busy") view = { k: "settings", back: view };
+  }
+
+  function onKey(e: KeyboardEvent) {
+    if (e.defaultPrevented) return;
+    if (e.key === "Escape") {
+      if (view.k === "settings") view = view.back;
+      else if (view.k === "trim") view = { k: "big", path: view.path, ins: view.ins };
+      else api.hide().catch(() => {});
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v" && !(e.target instanceof HTMLInputElement)) {
+      e.preventDefault();
+      paste();
+    }
   }
 
   onMount(() => {
-    api.presets().then((p) => (presets = p));
-    const unlisten = [
-      api.onProgress((p) => (progress = p)),
-      getCurrentWebview().onDragDropEvent(({ payload }) => {
-        if (view.kind === "busy" || view.kind === "reading") return;
-        if (payload.type === "enter" || payload.type === "over") dragging = true;
-        else if (payload.type === "leave") dragging = false;
+    loadSettings();
+    api.presets().then((p) => (enginePresets = p)).catch(() => {});
+    api.encoders().then((e) => (encoders = e)).catch(() => (encoders = []));
+
+    const onVis = () => (document.hidden ? (document.documentElement.dataset.hidden = "") : delete document.documentElement.dataset.hidden);
+    document.addEventListener("visibilitychange", onVis);
+
+    const unProgress = api.onProgress((p) => (progress = p)).catch(() => () => {});
+    const unDrop = getCurrentWebview()
+      .onDragDropEvent(({ payload }) => {
+        if (view.k === "busy") return;
+        if (payload.type === "enter" || payload.type === "over") {
+          if (!dragging && view.k !== "idle") view = { k: "idle" };
+          dragging = true;
+          const r = devicePixelRatio || 1;
+          stage?.look(payload.position.x / r, payload.position.y / r);
+        } else if (payload.type === "leave") dragging = false;
         else if (payload.type === "drop") {
           dragging = false;
           if (payload.paths.length) open(payload.paths[0]);
         }
-      }),
-    ];
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && api.hide();
-    window.addEventListener("keydown", onKey);
+      })
+      .catch(() => () => {});
+
     return () => {
-      unlisten.forEach((u) => u.then((f) => f()));
-      window.removeEventListener("keydown", onKey);
+      document.removeEventListener("visibilitychange", onVis);
+      unProgress.then((f) => f());
+      unDrop.then((f) => f());
     };
   });
 </script>
 
-<main class="flyout">
-  <header>
-    <select bind:value={presetIndex} onchange={reopenCurrent} aria-label="Upload limit">
-      {#each presets as p, i (p.id)}
-        <option value={i}>{p.label} · {bytes(p.bytes)}</option>
-      {/each}
-    </select>
-    <button class="icon" onclick={api.hide} aria-label="Hide Kompacter">✕</button>
-  </header>
+<svelte:window onkeydown={onKey} />
 
-  <Stage {mood} {progress} />
+<div class="flyout" data-view={view.k}>
+  <div class="fly-surface" bind:this={surface}></div>
+  <div class="fly-inner">
+    <header class="fly-head">
+      <PresetPill {presets} selected={preset} onselect={selectPreset} onedit={goSettings} />
+      <span class="spacer"></span>
+      <button class="icon-btn press" aria-label="Settings" aria-pressed={view.k === "settings"} disabled={view.k === "busy"} onclick={goSettings}><Icon name="gear" /></button>
+    </header>
 
-  <section class="info" aria-live="polite">
-    {#if view.kind === "idle"}
-      <h1>Drop a file</h1>
-      <p>It shrinks to fit and lands on your clipboard.</p>
-    {:else if view.kind === "reading"}
-      <h1>{fileName(view.path)}</h1>
-      <p>Reading…</p>
-    {:else if view.kind === "big"}
-      {@const { info, estimate } = view.found}
-      <h1>{fileName(view.path)}</h1>
-      <p>
-        {bytes(info.size_bytes)} ·
-        <span class="bad">✗ {bytes(info.size_bytes - target)} over your limit</span>
-      </p>
-      {#if estimate.video}
-        <p>
-          {#if estimate.video.fits}
-            Compress makes it fit at {estimate.video.height}p · {estimate.video.quality} quality
-          {:else}
-            <span class="bad">✗ Too long to fit. Trim it first.</span>
+    <div class="fly-body">
+      <div class="stage-wrap" hidden={!stageSize}>
+        <Stage bind:this={stage} size={stageSize ?? "lg"} {mood} {dragging} {progress} showDash={view.k === "idle"} />
+      </div>
+
+      {#key view.k}
+        <div class="view-anim">
+          {#if view.k === "idle"}
+            <section class="view center" aria-labelledby="idleTitle">
+              <h2 class="h1" id="idleTitle">{dragging ? "Let go to Kompact it" : "Drop or copy a file"}</h2>
+              <p class="sub">It shrinks to fit <b>{bytes(target)}</b> and lands on your clipboard.</p>
+              <div class="row c" style:margin-top="16px">
+                <button class="btn primary press" onclick={choose}>Choose File…</button>
+                <button class="btn press" onclick={paste}><Icon name="clip" small />Paste</button>
+              </div>
+              <p class="hint">or press <kbd>Ctrl</kbd><kbd>V</kbd> here with a file copied</p>
+            </section>
+          {:else if view.k === "reading"}
+            <section class="view center">
+              <h2 class="h1 ellipsis">{fileName(view.path)}</h2>
+              <p class="sub">Reading…</p>
+            </section>
+          {:else if view.k === "big"}
+            {@const v = view}
+            {@const est = v.ins.estimate}
+            <section class="view" aria-labelledby="bigName">
+              <FileCard kind={v.ins.info.kind} name={fileName(v.path)} meta={media(v.ins)} onremove={() => (view = { k: "idle" })} />
+              <SizeMeter size={v.ins.info.size_bytes} {target} />
+              <div class="status bad"><Icon name="xc" small /><span>{bytes(v.ins.info.size_bytes - target)} over your {bytes(target)} limit</span></div>
+              <div class="actions">
+                {#if est.video && !est.video.fits}
+                  <button class="btn primary lg press" onclick={() => (view = { k: "trim", path: v.path, ins: v.ins })}><Icon name="scissors" small />Trim</button>
+                  <button class="btn lg press" onclick={() => compress(v.path, v.ins, {}, false, "", "big")}><Icon name="squeeze" small />Compress</button>
+                {:else}
+                  <button class="btn primary lg press" onclick={() => compress(v.path, v.ins, {}, false, "", "big")}><Icon name="squeeze" small />Compress</button>
+                  <button class="btn lg press" disabled={v.ins.info.duration <= 0} onclick={() => (view = { k: "trim", path: v.path, ins: v.ins })}><Icon name="scissors" small />Trim</button>
+                {/if}
+              </div>
+              <p class="foot-note">
+                {#if est.video}
+                  {est.video.fits ? `Compress makes it fit at ${est.video.height}p · ${est.video.quality} quality` : "✗ Too long to fit at a watchable quality — trim it first"}
+                {/if}
+              </p>
+            </section>
+          {:else if view.k === "queue"}
+            {@const v = view}
+            <QueueView info={v.ins.info} {target} oncompress={() => compress(v.path, v.ins, {}, false, "zip", "queue")} onremove={() => (view = { k: "idle" })} />
+          {:else if view.k === "trim"}
+            {@const v = view}
+            <Trimmer path={v.path} info={v.ins.info} {target} onback={() => (view = { k: "big", path: v.path, ins: v.ins })}
+              oncompress={(r: TrimRequest) => compress(v.path, v.ins, { start: r.start, end: r.end }, r.keepQuality, r.label, "trim")} />
+          {:else if view.k === "busy"}
+            {@const v = view}
+            <ProgressView {progress} name={fileName(v.path)} oncancel={cancel}
+              meta="{bytes(v.ins.info.size_bytes)} → ≤ {bytes(target)}{v.label ? ` · ${v.label}` : ''} · {settings.gpu && encoders?.length ? 'GPU' : 'CPU'}" />
+          {:else if view.k === "done"}
+            <DoneView result={view.result} label={view.label} onanother={() => (view = { k: "idle" })} />
+          {:else if view.k === "error"}
+            <section class="view center" aria-labelledby="errTitle">
+              <h2 class="h1" id="errTitle"><span class="bad" aria-hidden="true">✗</span> Couldn't do that</h2>
+              <p class="sub">{fileName(view.path)}: {view.message}</p>
+              <div class="row c" style:margin-top="16px"><button class="btn primary press" onclick={() => (view = { k: "idle" })}>Try another file</button></div>
+            </section>
+          {:else if view.k === "settings"}
+            <SettingsView presets={presets} {encoders} onback={goSettings} />
           {/if}
-        </p>
-      {/if}
-    {:else if view.kind === "busy"}
-      <h1>{Math.round(progress * 100)}%</h1>
-      <p>Compressing {fileName(view.path)}…</p>
-    {:else if view.kind === "done"}
-      {@const r = view.result}
-      <h1>{r.fits ? "✓ Done" : "✗ Still too big"}</h1>
-      <p>
-        {bytes(r.original_bytes)} → <span class={r.fits ? "ok" : "bad"}>{bytes(r.output_bytes)}</span>
-      </p>
-      <p>{r.copied ? "Copied. Paste it anywhere." : `Saved to ${r.path}`}</p>
-    {:else if view.kind === "fits"}
-      <h1>Already fits</h1>
-      <p>{bytes(view.size)} is under {bytes(target)}.</p>
-    {:else if view.kind === "error"}
-      <h1>{fileName(view.path)}</h1>
-      <p class="bad">✗ {view.message}</p>
-    {/if}
-  </section>
+        </div>
+      {/key}
+    </div>
+  </div>
+</div>
 
-  <footer>
-    {#if view.kind === "big"}
-      {@const path = view.path}
-      <button class="primary" onclick={() => compress(path)}>Compress</button>
-    {:else if view.kind === "busy"}
-      <button onclick={api.cancel}>Cancel</button>
-    {:else if view.kind !== "idle" && view.kind !== "reading"}
-      <button onclick={() => (view = { kind: "idle" })}>Done</button>
-    {/if}
-  </footer>
-</main>
+<div class="sr-only" aria-live="polite">{live.text}</div>
+
+<style>
+  .flyout { position: relative; height: 100%; }
+  /* Without OS acrylic behind a transparent window, use the strong material so text stays readable. */
+  .fly-surface { position: absolute; inset: 0; border-radius: var(--r-xl); background: var(--mat-strong); box-shadow: inset 0 0 0 0.5px var(--hair); transform-origin: 50% 100%; }
+  .fly-inner { position: relative; display: flex; flex-direction: column; height: 100%; }
+  .fly-head { display: flex; align-items: center; gap: 8px; padding: 14px 14px 0 16px; position: relative; z-index: 2; }
+  .spacer { flex: 1; }
+  .fly-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 6px 20px 20px; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+  .stage-wrap { flex: 1 0 auto; display: flex; flex-direction: column; }
+  [data-view="trim"] .stage-wrap, [data-view="settings"] .stage-wrap { display: none; }
+  .view-anim { flex: none; animation: viewIn 220ms var(--ease) both; }
+  @keyframes viewIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
