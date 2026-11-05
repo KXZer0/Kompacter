@@ -6,6 +6,10 @@ Copy a file that's too big for Discord (or email, or any app with an upload limi
 
 > Status: early development. The compression engine (with GPU support) and CLI work; the desktop app has a first working cut. See `apps/desktop/README.md`.
 
+## Download
+
+Grab the Windows installer from [Releases](https://github.com/KXZer0/Kompacter/releases). No admin rights needed; ffmpeg is included.
+
 ## Why
 
 - **Web compressors** upload your files to someone else's server, and you still have to download and re-attach the result.

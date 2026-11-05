@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use kompacter_core::{Engine, MediaInfo};
+use kompacter_core::{Engine, Ffmpeg, MediaInfo};
 use tauri::Manager;
 
 /// Shared by all commands. The engine caches GPU detection, so it lives for the whole run.
@@ -23,10 +23,25 @@ pub struct AppState {
     pub probes: Mutex<HashMap<(PathBuf, Option<SystemTime>), MediaInfo>>,
 }
 
+/// Installed builds ship ffmpeg next to the app (Tauri sidecar). Dev builds use the PATH.
+fn bundled_ffmpeg() -> Ffmpeg {
+    let exe = |name: &str| {
+        let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join(&file)))
+            .filter(|p| p.is_file())
+    };
+    match (exe("ffmpeg"), exe("ffprobe")) {
+        (Some(ffmpeg), Some(ffprobe)) => Ffmpeg { ffmpeg, ffprobe },
+        _ => Ffmpeg::default(),
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState {
-            engine: Arc::new(Engine::default()),
+            engine: Arc::new(Engine::new(bundled_ffmpeg())),
             cancel: Arc::new(AtomicBool::new(false)),
             probes: Mutex::new(HashMap::new()),
         })
