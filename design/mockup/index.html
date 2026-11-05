@@ -74,6 +74,28 @@
   --pouch-a:#cfe2ff; --pouch-b:#7aa9ff; --pouch-c:#3d6fff; --m1:#6c717a; --m2:#b8bdc5; --m3:#f4f6f9; --m4:#9ba0a9; --m5:#555960;
   --chat-bg:#1d1e1b; --chat-side:#252622; --chat-line:rgba(255,255,255,.08); --chat-text:#ecebe6; --chat-muted:#a9a69d; --chat-input:#2e2f2b; --chat-accent:#4fd1bd;
 }
+/* Style: Discord-like palette (colors only, same shapes). Placed after the base themes so it wins. */
+:root[data-style="discord"]{
+  --mat:rgba(242,243,245,.9); --mat-strong:rgba(255,255,255,.96); --group:#ffffff;
+  --fill:rgba(79,84,92,.12); --fill-2:rgba(79,84,92,.22); --fill-hover:rgba(79,84,92,.18); --sep:rgba(79,84,92,.2);
+  --label:#060607; --label-2:#4e5058; --label-3:#5c5e66;
+  --accent:#4752c4; --accent-text:#4752c4; --accent-soft:rgba(88,101,242,.14); --focus:rgba(88,101,242,.6);
+  --pouch-a:#e6e8ff; --pouch-b:#9aa4ff; --pouch-c:#5865f2;
+}
+@media (prefers-color-scheme: dark){ :root[data-style="discord"]:not([data-theme="light"]){
+  --mat:rgba(43,45,49,.94); --mat-strong:rgba(49,51,56,.97); --group:#313338;
+  --fill:#1e1f22; --fill-2:#3f4147; --fill-hover:#35373c; --sep:rgba(78,80,88,.7);
+  --label:#f2f3f5; --label-2:#b5bac1; --label-3:#a8adb5;
+  --accent:#4752c4; --accent-text:#949cf7; --accent-soft:rgba(88,101,242,.24); --focus:rgba(148,156,247,.75);
+  --pouch-a:#d6daff; --pouch-b:#8891f2; --pouch-c:#5865f2;
+}}
+:root[data-style="discord"][data-theme="dark"]{
+  --mat:rgba(43,45,49,.94); --mat-strong:rgba(49,51,56,.97); --group:#313338;
+  --fill:#1e1f22; --fill-2:#3f4147; --fill-hover:#35373c; --sep:rgba(78,80,88,.7);
+  --label:#f2f3f5; --label-2:#b5bac1; --label-3:#a8adb5;
+  --accent:#4752c4; --accent-text:#949cf7; --accent-soft:rgba(88,101,242,.24); --focus:rgba(148,156,247,.75);
+  --pouch-a:#d6daff; --pouch-b:#8891f2; --pouch-c:#5865f2;
+}
 @supports (transition-timing-function: linear(0, 1)){
   :root{ --spring:linear(0, .16, .44 12.5%, .7 20%, .88 27.5%, .98 35%, 1.03 42.5%, 1.045 50%, 1.04 60%, 1.017 72.5%, 1.003 85%, 1); }
 }
@@ -167,7 +189,9 @@ kbd{display:inline-block;min-width:20px;padding:0 6px;border-radius:6px;backgrou
 .flyout{position:absolute;right:12px;bottom:60px;width:360px;z-index:20;visibility:hidden;transform:translateY(14px) scale(.97);transform-origin:100% 100%;
   transition:transform var(--t-spring) var(--spring),visibility 0s var(--t-spring)}
 .flyout[data-open="true"]{visibility:visible;transform:none;transition:transform var(--t-spring) var(--spring),visibility 0s}
-.flyout.wide{width:560px}
+/* One calm base size; only Settings, Folder queue and Trimmer extend (height only). FLIP on .fly-surface animates the change. */
+.flyout{--base-h:472px}
+.flyout:not([data-view="settings"]):not([data-view="queue"]):not([data-view="trim"]) .fly-inner{height:min(var(--base-h),calc(100vh - 76px));height:min(var(--base-h),calc(100dvh - 76px))}
 .fly-surface,.fly-inner{opacity:0;transition:opacity 140ms var(--ease)}
 .flyout[data-open="true"] .fly-surface,.flyout[data-open="true"] .fly-inner{opacity:1}
 .fly-surface{position:absolute;inset:0;border-radius:var(--r-xl);background:var(--mat);backdrop-filter:blur(40px) saturate(1.9);-webkit-backdrop-filter:blur(40px) saturate(1.9);box-shadow:var(--shadow);transform-origin:100% 100%}
@@ -181,10 +205,9 @@ kbd{display:inline-block;min-width:20px;padding:0 6px;border-radius:6px;backgrou
 :root[data-theme="dark"] .b-slack{color:#e3b6e6}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .b-slack{color:#e3b6e6}}
 .menu [role^="menuitem"]:hover .app,.menu [role^="menuitem"]:focus-visible .app{color:#fff}
-.guard .b-mail,.guard .b-custom{color:#c7c7cc}
 .cell .app{margin-right:2px}
 .fly-head .spacer{flex:1}
-.fly-body{padding:6px 20px 20px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.fly-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:6px 20px 20px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
 .view.on{animation:viewIn 220ms var(--ease) both}
 @keyframes viewIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .center{text-align:center}
@@ -209,7 +232,8 @@ kbd{display:inline-block;min-width:20px;padding:0 6px;border-radius:6px;backgrou
 .preset-menu{top:48px;left:12px}
 
 /* ───────── Stage + pouch (signature) ───────── */
-.stage{position:relative;height:188px;margin:2px -4px 0;transition:none}
+.stage{position:relative;flex:1 0 auto;height:188px;margin:2px -4px 0;transition:none}
+.view{flex:none}
 .stage[data-size="md"]{height:112px}
 .stage[data-size="press"]{height:252px;overflow:hidden;margin:2px -20px 12px}
 .stage[data-size="press"] .shadow{opacity:0}
@@ -379,26 +403,6 @@ label.cell:has(input:focus-visible){outline:3px solid var(--focus);outline-offse
 fieldset{border:0;margin:0;padding:0;min-width:0}
 fieldset:disabled{opacity:.45}
 
-/* ───────── Paste guard (island) ───────── */
-.guard{position:absolute;top:52px;left:50%;width:min(372px,calc(100% - 24px));transform:translateX(-50%);padding:14px 14px 12px 16px;border-radius:22px;background:var(--mat-dark);color:#f5f5f7;box-shadow:0 0 0 .5px rgba(255,255,255,.18),0 12px 40px rgba(0,0,0,.35);z-index:5;
-  backdrop-filter:blur(30px) saturate(1.6);-webkit-backdrop-filter:blur(30px) saturate(1.6);transform-origin:50% 0}
-.guard .gh{display:flex;align-items:center;gap:8px;font-size:12px;color:#c7c7cc}
-.guard .gh .logo{width:18px;height:18px}
-.guard .x{margin-left:auto;width:26px;height:26px;color:#c7c7cc}
-.guard .x:hover{background:rgba(255,255,255,.12)}
-.guard .gt{margin:8px 0 2px;font-size:15px;font-weight:600;line-height:20px}
-.guard .gs{margin:0;font-size:12px;color:#c7c7cc}
-.guard .ga{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
-.guard .btn{min-height:32px;padding:0 13px;font-size:13px;background:rgba(255,255,255,.14);color:#fff}
-.guard .btn:hover{background:rgba(255,255,255,.2)}
-.guard .btn.primary{background:#0071e3}
-.guard .btn.ghost{background:transparent;color:#c7c7cc}
-.gbar{height:4px;border-radius:2px;background:rgba(255,255,255,.18);margin:12px 0 4px;overflow:hidden}
-.gbar i{display:block;height:100%;background:#4da3ff;transform-origin:0 50%;transform:scaleX(0)}
-.guard[data-state="work"] .gbar i{transform:scaleX(1);transition:transform 2.2s cubic-bezier(.3,.1,.3,1)}
-.guard:not([data-state="ask"]) .ask-only,.guard:not([data-state="work"]) .work-only,.guard:not([data-state="done"]) .done-only{display:none}
-.guard .gk{margin-left:auto;align-self:center;font-size:11px;color:#a1a1a8}
-.guard .gk kbd{background:rgba(255,255,255,.12);color:#d1d1d6;font-size:11px;line-height:18px}
 
 /* ───────── Notification banner ───────── */
 .notif{position:absolute;right:12px;top:12px;width:356px;padding:12px 14px 14px;border-radius:20px;background:var(--mat);backdrop-filter:blur(40px) saturate(1.9);-webkit-backdrop-filter:blur(40px) saturate(1.9);box-shadow:var(--shadow);z-index:25}
@@ -451,6 +455,7 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
   body.paste-mode .chat{top:64px}
   .flyout,.flyout.wide{left:16px;right:16px;width:auto;bottom:60px}
   .fly-inner{max-height:calc(100dvh - 128px)}
+  .flyout:not([data-view="settings"]):not([data-view="queue"]):not([data-view="trim"]) .fly-inner{height:min(var(--base-h),calc(100dvh - 128px))}
   .notif{left:16px;right:16px;width:auto;top:64px}
   .switcher{left:16px;right:16px;top:12px;bottom:auto;width:auto}
   .sw-grid{grid-template-columns:1fr 1fr 1fr}
@@ -532,23 +537,6 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
           <input id="chatInput" placeholder="Message #clips — try Ctrl+V to paste clip.mp4" autocomplete="off">
         </div>
 
-        <!-- Paste guard island: role=status, never takes focus -->
-        <div class="guard" id="guard" data-state="ask" hidden aria-label="Kompacter paste guard">
-          <div class="gh"><svg class="ic logo"><use href="#i-logo"/></svg>Kompacter
-            <button class="icon-btn x press" id="gClose" aria-label="Cancel paste"><svg class="ic sm"><use href="#i-x"/></svg></button></div>
-          <div role="status" aria-live="polite">
-            <p class="gt ask-only">clip.mp4 is 48 MB — over your <span class="gApp"></span> <span class="lim">20 MB</span> limit</p>
-            <p class="gs ask-only">Paste is on hold. Nothing has been sent.</p>
-            <p class="gt work-only">Compressing clip.mp4…</p>
-            <p class="gt done-only"><span aria-hidden="true">✓</span> Pasted — clip.mp4 · <span id="gOut">19.4 MB</span></p>
-          </div>
-          <div class="gbar work-only" aria-hidden="true"><i></i></div>
-          <div class="ga ask-only">
-            <button class="btn primary press" id="gCompress">Compress &amp; paste</button>
-            <button class="btn press" id="gTrim">Trim</button>
-            <button class="btn ghost press" id="gAnyway">Paste anyway</button>
-          </div>
-        </div>
       </div>
     </div>
   </section>
@@ -655,9 +643,21 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
           <button class="btn press" id="cancelBtn" style="margin-top:16px">Cancel</button>
         </section>
 
+        <!-- Paste guard: opened by a too-big Ctrl+V in a chat app. Never moves focus; announced via the live region. -->
+        <section class="view center" data-view="guard" aria-labelledby="guardTitle">
+          <h2 class="h1" id="guardTitle">Hold on — clip.mp4 is 48 MB</h2>
+          <p class="sub">Over your <span class="gApp"></span> <b class="lim">20 MB</b> limit. The paste is on hold — nothing was sent.</p>
+          <button class="btn primary lg block press" id="gCompress" style="margin-top:16px"><svg class="ic sm"><use href="#i-squeeze"/></svg>Compress &amp; paste</button>
+          <div class="actions" style="margin-top:8px;grid-template-columns:1fr 1fr">
+            <button class="btn lg press" id="gTrim"><svg class="ic sm"><use href="#i-scissors"/></svg>Trim</button>
+            <button class="btn lg plain press" id="gAnyway">Paste anyway</button>
+          </div>
+          <p class="hint"><kbd>Alt</kbd><kbd>Enter</kbd> compress &amp; paste · <kbd>Esc</kbd> cancel</p>
+        </section>
+
         <!-- Done -->
         <section class="view center" data-view="done" aria-labelledby="doneTitle">
-          <h2 class="h1 done-title" id="doneTitle"><svg class="ic"><use href="#i-okc"/></svg>Copied — paste anywhere</h2>
+          <h2 class="h1 done-title" id="doneTitle"><svg class="ic"><use href="#i-okc"/></svg><span id="doneText">Copied — paste anywhere</span></h2>
           <p class="sub" id="doneSub"></p>
           <p class="hint"><kbd>Ctrl</kbd><kbd>V</kbd> in any chat</p>
           <div class="row c" style="margin-top:14px">
@@ -717,6 +717,12 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
             <span class="thumb-ind" aria-hidden="true"></span>
             <button role="radio" aria-checked="true" data-v="system">System</button><button role="radio" aria-checked="false" tabindex="-1" data-v="light">Light</button><button role="radio" aria-checked="false" tabindex="-1" data-v="dark">Dark</button>
           </div>
+          <h3 class="grp-h" id="g-style">Accent / style</h3>
+          <div class="seg" id="setStyle" role="radiogroup" aria-labelledby="g-style" aria-describedby="styleNote" data-i="0" data-n="2" style="margin-top:0">
+            <span class="thumb-ind" aria-hidden="true"></span>
+            <button role="radio" aria-checked="true" data-v="kompacter">Kompacter</button><button role="radio" aria-checked="false" tabindex="-1" data-v="discord">Discord</button>
+          </div>
+          <p class="explain" id="styleNote">Auto-matches Discord’s theme when we can detect it.</p>
           <p class="privacy"><svg class="ic sm"><use href="#i-lock"/></svg>Everything runs on this PC. No account, no uploads.</p>
         </section>
       </div>
@@ -777,6 +783,11 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
       <span class="thumb-ind" aria-hidden="true"></span>
       <button role="radio" aria-checked="true" data-v="system">System</button><button role="radio" aria-checked="false" tabindex="-1" data-v="light">Light</button><button role="radio" aria-checked="false" tabindex="-1" data-v="dark">Dark</button>
     </div>
+    <div class="sw-label" id="sw-st">Style</div>
+    <div class="seg" id="swStyle" role="radiogroup" aria-labelledby="sw-st" data-i="0" data-n="2">
+      <span class="thumb-ind" aria-hidden="true"></span>
+      <button role="radio" aria-checked="true" data-v="kompacter">Kompacter</button><button role="radio" aria-checked="false" tabindex="-1" data-v="discord">Discord</button>
+    </div>
     <label class="sw-check"><input type="checkbox" id="rmToggle"> Simulate reduced motion</label>
   </div>
 </nav>
@@ -812,7 +823,7 @@ const FILES = {
     ['IMG_2041.jpg', 6.1, 1.3, 210], ['IMG_2042.jpg', 5.8, 1.2, 30], ['IMG_2047.heic', 4.9, 1.1, 330],
     ['IMG_2050.jpg', 7.4, 1.6, 160], ['pano_lake.jpg', 9.6, 2.3, 190], ['screenshot.png', 4.6, 1.4, 260]] },
 };
-const S = { open: false, view: 'idle', file: FILES.clip, preset: PRESETS[0], a: 0, b: 62, active: 'a', mode: 'keep', trimFor: null, back: 'idle', result: null, hot: { ctrl: true, shift: true, alt: false, key: 'K' } };
+const S = { paste: false, open: false, view: 'idle', file: FILES.clip, preset: PRESETS[0], a: 0, b: 62, active: 'a', mode: 'keep', trimFor: null, back: 'idle', result: null, hot: { ctrl: true, shift: true, alt: false, key: 'K' } };
 const L = () => S.preset.mb;
 const fmt = mb => { if (mb >= 100) return Math.round(mb) + ' MB'; const r = Math.round(mb * 10) / 10; return (Number.isInteger(r) ? r : r.toFixed(1)) + ' MB'; };
 const fmtT = (s, dec) => { const m = Math.floor(s / 60), r = s - m * 60; return m + ':' + (dec ? r.toFixed(1).padStart(4, '0') : String(Math.floor(r)).padStart(2, '0')); };
@@ -879,8 +890,8 @@ function burst() { if (reduced()) return; const s = $('#sparks'); s.classList.re
 
 /* ───── Flyout + views ───── */
 const fly = $('#flyout'), surface = $('#flySurface'), stage = $('#stage'), tray = $('#trayBtn');
-const STAGE = { idle: 'lg', big: 'md', queue: 'md', progress: 'press', done: 'lg' };
-const MOOD = { idle: 'idle', big: 'worried', queue: 'idle', progress: 'busy', done: 'happy' };
+const STAGE = { guard: 'md', idle: 'lg', big: 'md', queue: 'md', progress: 'press', done: 'lg' };
+const MOOD = { guard: 'worried', idle: 'idle', big: 'worried', queue: 'idle', progress: 'busy', done: 'happy' };
 function animateFrom(el, from) { // shared-element / FLIP
   if (reduced() || !from || !from.width) return;
   const to = el.getBoundingClientRect(); if (!to.width) return;
@@ -911,7 +922,8 @@ function openFly(view) {
   if (view) show(view);
 }
 function closeFly() {
-  if (!S.open) return; S.open = false; closePresetMenu(); setDrag(false);
+  if (!S.open) return;
+  if (S.paste && (S.view === 'guard' || S.view === 'trim')) endPaste(null, 'Paste cancelled'); S.open = false; closePresetMenu(); setDrag(false);
   const had = fly.contains(document.activeElement);
   fly.dataset.open = 'false'; fly.inert = true; tray.setAttribute('aria-expanded', 'false');
   if (had) tray.focus();
@@ -1192,7 +1204,7 @@ function stopProgress(keepBlob) {
 }
 $('#cancelBtn').addEventListener('click', () => {
   stopProgress(); say('Compression cancelled');
-  if (S.prevView === 'trim') openTrim(); else if (S.prevView === 'big') { renderBig(); show('big'); } else show('idle');
+  if (S.prevView === 'guard') show('guard'); else if (S.prevView === 'trim') openTrim(); else if (S.prevView === 'big') { renderBig(); show('big'); } else show('idle');
 });
 
 function finishDone(o = {}) {
@@ -1200,6 +1212,8 @@ function finishDone(o = {}) {
   if (o.already) sub = `${f.name} is ${fmt(f.size)} — already fits, copied as-is`;
   else if (f.kind === 'folder') { const after = f.items.reduce((s, i) => s + i[2], 0); sub = `${f.name}.zip · ${fmt(after)} · ${f.items.length} image${f.items.length > 1 ? 's' : ''}`; }
   else { const r = S.result; sub = `${f.name} · ${fmt(r.out)} · ${r.label} · ${(f.size / r.out).toFixed(1)}× smaller`; }
+  $('#doneText').textContent = S.paste ? 'Pasted into the chat' : 'Copied — paste anywhere';
+  if (S.paste) { endPaste('ok'); sub = sub.replace(/^clip\.mp4/, 'clip.mp4 sent') }
   $('#doneSub').textContent = sub; $('#doneNote').textContent = '';
   show('done');
   if (o.pop) { sp.v.sx = sp.v.sy = 1; sp.to({ sx: 1, sy: 1 }); setPs(.05); pouchEl.style.opacity = ''; requestAnimationFrame(() => requestAnimationFrame(() => pouchEl.style.removeProperty('--ps'))); }
@@ -1257,37 +1271,31 @@ menuKeys(ctx, closeCtx);
 ctx.addEventListener('click', e => { const b = e.target.closest('[role="menuitem"]'); if (!b) return; const a = b.dataset.act, f = ctxFile; closeCtx();
   if (a === 'kompact') loadFile(f); else if (a === 'trim') { S.file = FILES[f]; openTrim(); } else say(`${b.textContent.trim()} — not part of this mockup`); });
 
-/* ───── Paste guard ───── */
-const guard = $('#guard'), attach = $('#attach'); let gT = 0;
+/* ───── Paste guard (in the flyout) ───── */
+const attach = $('#attach'), chatInput = $('#chatInput');
+const pastedSize = () => fmt(Math.min(L() * .97, 19.4 * L() / 20, 46));
 function setAttach(state) {
   if (!state) { attach.hidden = true; return; }
   attach.hidden = false;
   const m = { held: `${icon('film')}<span>clip.mp4 · 48 MB</span><span class="tag">${icon('clock')}On hold</span>`,
-    ok: `${icon('film')}<span>clip.mp4 · ${fmt(Math.min(L() * .97, 19.4 * L() / 20, 46))}</span><span class="tag ok">${icon('okc')}Fits</span>`,
+    ok: `${icon('film')}<span>clip.mp4 · ${pastedSize()}</span><span class="tag ok">${icon('okc')}Fits</span>`,
     over: `${icon('film')}<span>clip.mp4 · 48 MB</span><span class="tag bad">${icon('xc')}Over ${fmt(L())}</span>` };
   attach.innerHTML = m[state];
 }
 function showGuard() {
-  closeFly(); hideNotif(); clearTimeout(gT);
+  hideNotif(); stopAll();
   document.body.classList.add('paste-mode');
-  guard.dataset.state = 'ask'; guard.hidden = false; setAttach('held');
-  if (!reduced()) guard.animate([{ transform: 'translateX(-50%) scale(.42,.3)', opacity: 0, borderRadius: '40px' }, { transform: 'translateX(-50%)', opacity: 1, borderRadius: '22px' }], { duration: 300, easing: SPRING_EASE });
-  say(`Kompacter: clip.mp4 is 48 MB, over your ${fmt(L())} limit. Paste is on hold. Alt+Enter compresses and pastes.`);
+  S.paste = true; S.file = FILES.clip; setAttach('held');
+  openFly('guard'); // openFly never moves focus: the chat input keeps it
+  say(`Kompacter: clip.mp4 is 48 MB, over your ${S.preset.short} ${fmt(L())} limit. Paste is on hold. Alt+Enter compresses and pastes, Escape cancels.`);
 }
-function hideGuard(now) {
-  clearTimeout(gT); if (guard.hidden) return;
-  if (now || reduced()) { guard.hidden = true; return; }
-  guard.animate([{ opacity: 1, transform: 'translateX(-50%)' }, { opacity: 0, transform: 'translateX(-50%) scale(.6,.4)' }], { duration: 180, easing: 'ease-in' }).onfinish = () => guard.hidden = true;
-}
-function guardCompress() {
-  guard.dataset.state = 'work'; say('Compressing clip.mp4');
-  gT = setTimeout(() => { guard.dataset.state = 'done'; $('#gOut').textContent = fmt(Math.min(L() * .97, 19.4 * L() / 20, 46)); setAttach('ok'); say(`Pasted clip.mp4, ${fmt(Math.min(L() * .97, 19.4 * L() / 20, 46))}`); gT = setTimeout(() => hideGuard(), 2400); }, 2300);
-}
+function hideGuard() { if (S.view === 'guard' && S.open) closeFly(); }
+function endPaste(state, msg) { S.paste = false; setAttach(state); if (msg) say(msg); }
+const guardCompress = () => startCompress({ from: 'guard' });
 $('#gCompress').addEventListener('click', guardCompress);
-$('#gTrim').addEventListener('click', () => { hideGuard(); setAttach(null); S.file = FILES.clip; openTrim(); });
-$('#gAnyway').addEventListener('click', () => { hideGuard(); setAttach('over'); say('Pasted original 48 MB file'); });
-$('#gClose').addEventListener('click', () => { hideGuard(); setAttach(null); say('Paste cancelled'); });
-const chatInput = $('#chatInput');
+$('#gTrim').addEventListener('click', () => { S.file = FILES.clip; openTrim(); });
+$('#gAnyway').addEventListener('click', () => { endPaste('over', 'Pasted the original 48 MB file'); closeFly(); chatInput.focus(); });
+
 chatInput.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') { e.preventDefault(); showGuard(); } });
 chatInput.addEventListener('paste', e => { e.preventDefault(); showGuard(); });
 
@@ -1330,6 +1338,9 @@ hotBtn.addEventListener('keydown', e => {
 
 /* Theme + motion */
 function setTheme(v) { if (v === 'system') delete html.dataset.theme; else html.dataset.theme = v; setRadio($('#swTheme'), v); setRadio($('#setTheme'), v); }
+function setStyle(v) { if (v === 'kompacter') delete html.dataset.style; else html.dataset.style = v; setRadio($('#swStyle'), v); setRadio($('#setStyle'), v); }
+$('#swStyle').addEventListener('pick', e => setStyle(e.detail));
+$('#setStyle').addEventListener('pick', e => setStyle(e.detail));
 $('#swTheme').addEventListener('pick', e => setTheme(e.detail));
 $('#setTheme').addEventListener('pick', e => setTheme(e.detail));
 $('#rmToggle').addEventListener('change', e => html.classList.toggle('rm', e.target.checked));
@@ -1339,20 +1350,20 @@ document.addEventListener('keydown', e => {
   if (recording) return;
   const h = S.hot;
   if (e.key.toUpperCase() === h.key && !!e.ctrlKey === h.ctrl && !!e.shiftKey === h.shift && !!e.altKey === h.alt) { e.preventDefault(); S.open ? closeFly() : openFly(S.view); return; }
-  if (e.altKey && e.key === 'Enter' && !guard.hidden && guard.dataset.state === 'ask') { e.preventDefault(); guardCompress(); return; }
+  if (e.altKey && e.key === 'Enter' && S.open && S.view === 'guard') { e.preventDefault(); guardCompress(); return; }
   if (e.key === 'Escape') { if (!ctx.hidden) closeCtx(true); else if (!pMenu.hidden) closePresetMenu(true); else if (S.open) closeFly(); }
 });
 document.addEventListener('pointerdown', e => {
   const t = e.target;
   if (!pMenu.hidden && !t.closest('#presetMenu,#presetBtn')) closePresetMenu();
   if (!ctx.hidden && !t.closest('#ctx')) closeCtx();
-  if (S.open && !t.closest('#flyout,#trayBtn,#switcher,.dicon,#ctx,#notif,#guard')) closeFly();
+  if (S.open && !t.closest('#flyout,#trayBtn,#switcher,.dicon,#ctx,#notif')) closeFly();
 });
 
 /* ───── Reviewer switcher ───── */
 function stopAll() { stopProgress(); stopQueue(); }
 function resetAll() {
-  stopAll(); setDrag(false); hideGuard(true); notif.hidden = true; closeCtx(); closePresetMenu();
+  stopAll(); setDrag(false); S.paste = false; notif.hidden = true; closeCtx(); closePresetMenu();
   document.body.classList.remove('paste-mode'); setAttach(null);
 }
 const SCN = {
@@ -1385,6 +1396,7 @@ clock(); setInterval(clock, 30000);
 renderPresetList(); setPreset('d20'); renderHot();
 const qs = new URLSearchParams(location.search);
 if (qs.get('theme')) setTheme(qs.get('theme'));
+if (qs.get('style')) setStyle(qs.get('style'));
 if (qs.get('rm')) { html.classList.add('rm'); $('#rmToggle').checked = true; }
 const start = qs.get('s') || 'idle';
 if (SCN[start]) { resetAll(); SCN[start](); const b = $(`#swGrid [data-scn="${start}"]`); if (b) b.setAttribute('aria-current', 'true'); }
