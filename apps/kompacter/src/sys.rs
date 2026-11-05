@@ -392,8 +392,8 @@ mod imp {
                 );
                 DeleteDC(dc);
                 // BGRA → RGBA. Old-style icons have no alpha: then everything is opaque.
-                let has_alpha = px.chunks_exact(4).any(|p| p[3] != 0);
-                for p in px.chunks_exact_mut(4) {
+                let has_alpha = px.as_chunks::<4>().0.iter().any(|p| p[3] != 0);
+                for p in px.as_chunks_mut::<4>().0 {
                     p.swap(0, 2);
                     if !has_alpha {
                         p[3] = 255;
