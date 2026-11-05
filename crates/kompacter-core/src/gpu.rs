@@ -1,4 +1,4 @@
-//! Hardware H.264 encoders. ffmpeg builds often *list* NVENC/QSV/AMF even when the PC has
+//! Hardware video encoders (H.264, H.265, AV1). ffmpeg builds often *list* NVENC/QSV/AMF even when the PC has
 //! no such GPU, so each candidate is checked with a tiny real encode before it's trusted.
 
 use std::process::Stdio;
@@ -6,6 +6,7 @@ use std::process::Stdio;
 use serde::Serialize;
 
 use crate::ffmpeg::Ffmpeg;
+use crate::VideoCodec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -21,13 +22,23 @@ pub enum Encoder {
 }
 
 impl Encoder {
-    pub fn ffmpeg_name(self) -> &'static str {
-        match self {
-            Encoder::Nvenc => "h264_nvenc",
-            Encoder::Qsv => "h264_qsv",
-            Encoder::Amf => "h264_amf",
-            Encoder::VideoToolbox => "h264_videotoolbox",
-        }
+    /// ffmpeg's name for this GPU's encoder of `codec` (`None`: this GPU family has none).
+    pub fn ffmpeg_name(self, codec: VideoCodec) -> Option<&'static str> {
+        use VideoCodec::*;
+        Some(match (self, codec) {
+            (Encoder::Nvenc, H264) => "h264_nvenc",
+            (Encoder::Nvenc, H265) => "hevc_nvenc",
+            (Encoder::Nvenc, Av1) => "av1_nvenc",
+            (Encoder::Qsv, H264) => "h264_qsv",
+            (Encoder::Qsv, H265) => "hevc_qsv",
+            (Encoder::Qsv, Av1) => "av1_qsv",
+            (Encoder::Amf, H264) => "h264_amf",
+            (Encoder::Amf, H265) => "hevc_amf",
+            (Encoder::Amf, Av1) => "av1_amf",
+            (Encoder::VideoToolbox, H264) => "h264_videotoolbox",
+            (Encoder::VideoToolbox, H265) => "hevc_videotoolbox",
+            (Encoder::VideoToolbox, Av1) => return None,
+        })
     }
 
     pub fn label(self) -> &'static str {
@@ -97,21 +108,22 @@ fn candidates() -> &'static [Encoder] {
     }
 }
 
-/// Hardware encoders that actually work on this machine, best first. Takes ~0.5 s per
-/// candidate, so callers should cache it (`Engine` does).
-pub fn detect(ff: &Ffmpeg) -> Vec<Encoder> {
+/// Hardware encoders for `codec` that actually work on this machine, best first. Takes
+/// ~0.5 s per candidate, so callers should cache it (`Engine` does). Older GPUs often have
+/// H.264 but no AV1; the test encode finds out.
+pub fn detect(ff: &Ffmpeg, codec: VideoCodec) -> Vec<Encoder> {
     candidates()
         .iter()
         .copied()
-        .filter(|e| works(ff, *e))
+        .filter(|e| e.ffmpeg_name(codec).is_some_and(|name| works(ff, *e, name)))
         .collect()
 }
 
-fn works(ff: &Ffmpeg, enc: Encoder) -> bool {
+fn works(ff: &Ffmpeg, enc: Encoder, name: &str) -> bool {
     crate::ffmpeg::command(&ff.ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-nostdin"])
         .args(["-f", "lavfi", "-i", "color=black:s=256x256:r=30:d=0.2"])
-        .args(["-c:v", enc.ffmpeg_name(), "-pix_fmt", enc.pix_fmt()])
+        .args(["-c:v", name, "-pix_fmt", enc.pix_fmt()])
         .args(["-f", "null", "-"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())

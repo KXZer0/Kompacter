@@ -6,7 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use kompacter_core::{MediaKind, Options, Quality};
+use kompacter_core::{MediaKind, Quality};
 use slint::{Image, ModelRc, Rgb8Pixel, SharedPixelBuffer, VecModel};
 
 use crate::format::{bytes, clock};
@@ -93,7 +93,7 @@ impl App {
             ui.set_trim_frame(frames[i.min(frames.len() - 1)].clone());
         }
 
-        let mut opts = Options::new(target);
+        let mut opts = self.options(target);
         opts.trim = kompacter_core::Trim::new(a, b).ok();
         let Ok(est) = self.engine.estimate(&c.info, &opts) else {
             return;

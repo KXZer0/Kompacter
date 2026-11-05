@@ -13,6 +13,7 @@ use super::{fit_media, name_of, with_ext, Ctx};
 use crate::error::{Error, Result};
 use crate::ffmpeg::{scaled, Progress};
 use crate::probe::{probe, MediaKind};
+use crate::ArchiveFormat;
 
 /// One file in a zip: (name inside the zip, file on disk, stored without compressing).
 type Entry = (String, PathBuf, bool);
@@ -95,8 +96,8 @@ pub(crate) fn fit(
         entries.push((name, chosen, is_media(info.kind)));
     }
 
-    let out = with_ext(out_base, "zip");
-    write_zip(&out, &entries)?;
+    let out = with_ext(out_base, ctx.archive.ext());
+    write_archive(&out, &entries, ctx.archive)?;
     progress(1.0);
     let size = std::fs::metadata(&out)?.len();
     if size > target {
@@ -199,15 +200,13 @@ pub(crate) fn fit_parts(
     }
     let mut out = Vec::new();
     for (i, (_, items)) in bins.iter().enumerate() {
+        let ext = ctx.archive.ext();
         let path = if parts == 1 {
-            with_ext(out_base, "zip")
+            with_ext(out_base, ext)
         } else {
-            with_ext(
-                &super::split::part_base(out_base, i as u32 + 1, parts),
-                "zip",
-            )
+            with_ext(&super::split::part_base(out_base, i as u32 + 1, parts), ext)
         };
-        write_zip(&path, items)?;
+        write_archive(&path, items, ctx.archive)?;
         if std::fs::metadata(&path)?.len() > target {
             return Err(Error::DoesNotFit {
                 what: root,
@@ -221,10 +220,15 @@ pub(crate) fn fit_parts(
     Ok(out)
 }
 
-/// Non-media files (documents, code, ...): deflate them into a zip and hope it fits.
-pub(crate) fn zip_single(path: &Path, target: u64, out_base: &Path) -> Result<PathBuf> {
-    let out = with_ext(out_base, "zip");
-    write_zip(&out, &[(name_of(path), path.to_path_buf(), false)])?;
+/// Non-media files (documents, programs, ...): pack them into an archive and hope it fits.
+pub(crate) fn zip_single(
+    path: &Path,
+    target: u64,
+    out_base: &Path,
+    archive: ArchiveFormat,
+) -> Result<PathBuf> {
+    let out = with_ext(out_base, archive.ext());
+    write_archive(&out, &[(name_of(path), path.to_path_buf(), false)], archive)?;
     let size = std::fs::metadata(&out)?.len();
     if size > target {
         let _ = std::fs::remove_file(&out);
@@ -237,7 +241,39 @@ pub(crate) fn zip_single(path: &Path, target: u64, out_base: &Path) -> Result<Pa
     Ok(out)
 }
 
-fn write_zip(out: &Path, entries: &[(String, PathBuf, bool)]) -> Result<()> {
+fn write_archive(out: &Path, entries: &[Entry], format: ArchiveFormat) -> Result<()> {
+    match format {
+        ArchiveFormat::Zip => write_zip(out, entries),
+        ArchiveFormat::SevenZ => write_7z(out, entries),
+    }
+}
+
+/// 7z: LZMA2 (level 6: much smaller than zip for documents and programs, ~100 MB of RAM
+/// while working); media is stored as-is, since it's already compressed.
+fn write_7z(out: &Path, entries: &[Entry]) -> Result<()> {
+    use sevenz_rust2::encoder_options::{EncoderOptions, Lzma2Options};
+    use sevenz_rust2::{ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod};
+    let err = |e: sevenz_rust2::Error| io::Error::other(e.to_string());
+    let mut w = ArchiveWriter::create(out).map_err(err)?;
+    for (name, file, stored) in entries {
+        let method = if *stored {
+            EncoderConfiguration::new(EncoderMethod::COPY)
+        } else {
+            EncoderConfiguration::new(EncoderMethod::LZMA2)
+                .with_options(EncoderOptions::Lzma2(Lzma2Options::from_level(6)))
+        };
+        w.set_content_methods(vec![method]);
+        w.push_archive_entry(
+            ArchiveEntry::from_path(file, name.clone()),
+            Some(File::open(file)?),
+        )
+        .map_err(err)?;
+    }
+    w.finish()?;
+    Ok(())
+}
+
+fn write_zip(out: &Path, entries: &[Entry]) -> Result<()> {
     let mut zip = zip::ZipWriter::new(File::create(out)?);
     for (name, file, stored) in entries {
         // Media is already compressed: storing it is faster and no bigger.
@@ -248,6 +284,8 @@ fn write_zip(out: &Path, entries: &[(String, PathBuf, bool)]) -> Result<()> {
         };
         let opts = SimpleFileOptions::default()
             .compression_method(method)
+            // Smallest deflate (a little slower, still opens everywhere).
+            .compression_level((!*stored).then_some(9))
             .large_file(std::fs::metadata(file)?.len() >= u32::MAX as u64);
         zip.start_file(name.as_str(), opts)?;
         io::copy(&mut File::open(file)?, &mut zip)?;

@@ -23,7 +23,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use kompacter_core::size::PRESETS;
-use kompacter_core::{Engine, Estimate, MediaInfo, MediaKind};
+use kompacter_core::{
+    ArchiveFormat, AudioFormat, Engine, Estimate, ImageFormat, MediaInfo, MediaKind, Options,
+    VideoCodec,
+};
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
@@ -114,6 +117,19 @@ impl App {
         list.into_iter().nth(i).expect("presets")
     }
 
+    /// Options for `target` with the user's formats, for compressing and for estimates
+    /// (the codec changes what quality a size buys).
+    pub fn options(&self, target: u64) -> Options {
+        let s = self.settings.borrow();
+        let mut o = Options::new(target);
+        o.video_codec = s.video_codec;
+        o.audio_format = s.audio_format;
+        o.image_format = s.image_format;
+        o.archive = s.archive_format;
+        o.gpu = s.gpu;
+        o
+    }
+
     pub fn save(&self) {
         settings::save(&self.settings.borrow());
     }
@@ -174,6 +190,22 @@ impl App {
         ui.set_auto_hide(s.auto_hide);
         ui.set_start_with_windows(s.start_with_windows);
         ui.set_low_memory(s.low_memory);
+        ui.set_video_index(match s.video_codec {
+            VideoCodec::H264 => 0,
+            VideoCodec::H265 => 1,
+            VideoCodec::Av1 => 2,
+        });
+        ui.set_audio_index(match s.audio_format {
+            AudioFormat::Auto => 0,
+            AudioFormat::Mp3 => 1,
+            AudioFormat::Opus => 2,
+        });
+        ui.set_image_index(match s.image_format {
+            ImageFormat::Auto => 0,
+            ImageFormat::Jpeg => 1,
+            ImageFormat::Webp => 2,
+        });
+        ui.set_archive_index((s.archive_format == ArchiveFormat::SevenZ) as i32);
         ui.set_custom_mb((s.custom_bytes / (1024 * 1024)) as i32);
         drop(s);
         self.apply_theme();
@@ -380,6 +412,14 @@ fn main() -> Result<(), slint::PlatformError> {
         let w = ui.as_weak();
         std::thread::spawn(move || {
             let none = engine.hw_encoders().is_empty();
+            // Which newer codecs this PC's GPU can encode (else they run on the CPU, slower).
+            let hevc = !engine.hw_encoders_for(VideoCodec::H265).is_empty();
+            let av1 = !engine.hw_encoders_for(VideoCodec::Av1).is_empty();
+            let w2 = w.clone();
+            let _ = w2.upgrade_in_event_loop(move |ui| {
+                ui.set_hevc_gpu(hevc);
+                ui.set_av1_gpu(av1);
+            });
             let _ = w.upgrade_in_event_loop(move |ui| {
                 ui.set_gpu_text(
                     if none {
@@ -596,6 +636,37 @@ fn main() -> Result<(), slint::PlatformError> {
                     a.restart();
                 }
             });
+        });
+        let a = app.clone();
+        ui.on_set_video(move |i| {
+            a.settings.borrow_mut().video_codec =
+                [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1][i.clamp(0, 2) as usize];
+            a.save();
+            a.sync_settings();
+        });
+        let a = app.clone();
+        ui.on_set_audio(move |i| {
+            a.settings.borrow_mut().audio_format =
+                [AudioFormat::Auto, AudioFormat::Mp3, AudioFormat::Opus][i.clamp(0, 2) as usize];
+            a.save();
+            a.sync_settings();
+        });
+        let a = app.clone();
+        ui.on_set_image(move |i| {
+            a.settings.borrow_mut().image_format =
+                [ImageFormat::Auto, ImageFormat::Jpeg, ImageFormat::Webp][i.clamp(0, 2) as usize];
+            a.save();
+            a.sync_settings();
+        });
+        let a = app.clone();
+        ui.on_set_archive(move |i| {
+            a.settings.borrow_mut().archive_format = if i == 1 {
+                ArchiveFormat::SevenZ
+            } else {
+                ArchiveFormat::Zip
+            };
+            a.save();
+            a.sync_settings();
         });
         let a = app.clone();
         ui.on_set_custom_mb(move |mb| {

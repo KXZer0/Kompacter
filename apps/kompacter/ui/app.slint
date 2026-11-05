@@ -121,6 +121,34 @@ component Group inherits Rectangle {
     }
 }
 
+/// A format choice in settings: name, segmented options, one line on the trade-off.
+component FormatRow inherits VerticalLayout {
+    in property <string> label;
+    in property <[string]> options;
+    in property <int> index;
+    in property <string> note;
+    callback picked(int);
+    spacing: 4px;
+    padding-bottom: 6px;
+    Text {
+        text: root.label;
+        font-size: 13px;
+        font-weight: 600;
+        color: Theme.label;
+    }
+    Seg {
+        options: root.options;
+        index: root.index;
+        picked(i) => { root.picked(i); }
+    }
+    Text {
+        text: root.note;
+        font-size: 12px;
+        color: Theme.label-2;
+        wrap: word-wrap;
+    }
+}
+
 component GroupTitle inherits Text {
     font-size: 12px;
     font-weight: 600;
@@ -253,6 +281,13 @@ export component AppWindow inherits Window {
     in property <bool> auto-hide;
     in property <bool> start-with-windows;
     in property <bool> low-memory;
+    // Formats.
+    in property <int> video-index;
+    in property <int> audio-index;
+    in property <int> image-index;
+    in property <int> archive-index;
+    in property <bool> hevc-gpu: true;
+    in property <bool> av1-gpu: true;
     in property <int> custom-mb;
 
     // ── Calls into Rust ──
@@ -281,6 +316,10 @@ export component AppWindow inherits Window {
     callback set-start(bool);
     callback set-low-memory(bool);
     callback set-custom-mb(int);
+    callback set-video(int);
+    callback set-audio(int);
+    callback set-image(int);
+    callback set-archive(int);
     callback escape();
 
     property <length> inset: Fx.glass ? 12px : 0;
@@ -1265,6 +1304,45 @@ export component AppWindow inherits Window {
                                 clicked => { root.set-output(3); }
                                 Check { on: root.output-index == 3; }
                             }
+                        }
+
+                        // Formats: the default of each works for everyone; the line under it
+                        // says what the choice trades.
+                        GroupTitle { text: "FORMATS"; }
+                        FormatRow {
+                            label: "Video";
+                            options: ["H.264", "H.265", "AV1"];
+                            index: root.video-index;
+                            note: root.video-index == 0 ? "Most compatible · previews everywhere"
+                                : root.video-index == 1 ? "Smaller files · some PCs only download it" + (root.hevc-gpu ? "" : " · slow here (no GPU support)")
+                                : "Smallest files, best quality · older phones may not play it" + (root.av1-gpu ? "" : " · slow here (no GPU support)");
+                            picked(i) => { root.set-video(i); }
+                        }
+                        FormatRow {
+                            label: "Audio";
+                            options: ["Auto", "MP3", "Opus"];
+                            index: root.audio-index;
+                            note: root.audio-index == 0 ? "MP3, or Opus when the limit is tight"
+                                : root.audio-index == 1 ? "Plays everywhere"
+                                : "Sounds better at the same size · a few players can't open it";
+                            picked(i) => { root.set-audio(i); }
+                        }
+                        FormatRow {
+                            label: "Images";
+                            options: ["Auto", "JPEG", "WebP"];
+                            index: root.image-index;
+                            note: root.image-index == 0 ? "Lossless first, then JPEG · transparency stays"
+                                : root.image-index == 1 ? "Opens everywhere · transparent pictures stay WebP"
+                                : "Smaller than JPEG · keeps transparency";
+                            picked(i) => { root.set-image(i); }
+                        }
+                        FormatRow {
+                            label: "Folders & files";
+                            options: ["Zip", "7z"];
+                            index: root.archive-index;
+                            note: root.archive-index == 0 ? "Opens everywhere"
+                                : "Smaller · opens on Windows 11, or with 7-Zip";
+                            picked(i) => { root.set-archive(i); }
                         }
 
                         GroupTitle { text: "GENERAL"; }

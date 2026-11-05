@@ -92,6 +92,8 @@ pub fn plan_video(
     src_h: u32,
     src_fps: f64,
     has_audio: bool,
+    // Bits the codec needs for the same look, relative to H.264 (AV1 ≈ 0.55).
+    efficiency: f64,
 ) -> VideoPlan {
     let total = budget_kbps(target_bytes, seconds);
     let audio = if has_audio { audio_kbps_for(total) } else { 0 };
@@ -106,7 +108,8 @@ pub fn plan_video(
         let w = (sw as f64 * h as f64 / sh as f64).round() as u32;
         (even(w), even(h))
     };
-    let bpp = |w: u32, h: u32, f: f64| video * 1000.0 / (w as f64 * h as f64 * f);
+    // Judged as if it were H.264, so a more efficient codec earns a better grade.
+    let bpp = |w: u32, h: u32, f: f64| video * 1000.0 / (w as f64 * h as f64 * f) / efficiency;
 
     for &h in &rungs {
         let (w, h) = size_for(h);
@@ -160,7 +163,7 @@ mod tests {
 
     #[test]
     fn short_clip_keeps_1080p() {
-        let p = plan_video(20 * MB, 15.0, 1920, 1080, 30.0, true);
+        let p = plan_video(20 * MB, 15.0, 1920, 1080, 30.0, true, 1.0);
         assert_eq!((p.width, p.height), (1920, 1080));
         assert!(p.fits);
         assert_ne!(p.quality, Quality::Low);
@@ -168,22 +171,22 @@ mod tests {
 
     #[test]
     fn long_clip_drops_resolution() {
-        let p = plan_video(20 * MB, 180.0, 1920, 1080, 30.0, true);
+        let p = plan_video(20 * MB, 180.0, 1920, 1080, 30.0, true, 1.0);
         assert!(p.height < 1080, "got {}p", p.height);
         assert!(p.fits);
     }
 
     #[test]
     fn huge_clip_does_not_fit() {
-        let p = plan_video(20 * MB, 4.0 * 3600.0, 1920, 1080, 60.0, true);
+        let p = plan_video(20 * MB, 4.0 * 3600.0, 1920, 1080, 60.0, true, 1.0);
         assert!(!p.fits);
         assert_eq!(p.quality, Quality::Low);
     }
 
     #[test]
     fn trimming_improves_quality() {
-        let long = plan_video(20 * MB, 120.0, 1920, 1080, 30.0, true);
-        let short = plan_video(20 * MB, 20.0, 1920, 1080, 30.0, true);
+        let long = plan_video(20 * MB, 120.0, 1920, 1080, 30.0, true, 1.0);
+        let short = plan_video(20 * MB, 20.0, 1920, 1080, 30.0, true, 1.0);
         assert!(short.video_kbps > long.video_kbps);
         assert!(short.height >= long.height);
     }
@@ -191,7 +194,7 @@ mod tests {
     #[test]
     fn total_bitrate_stays_under_target() {
         let secs = 62.0;
-        let p = plan_video(20 * MB, secs, 1920, 1080, 30.0, true);
+        let p = plan_video(20 * MB, secs, 1920, 1080, 30.0, true, 1.0);
         let bytes = (p.video_kbps + p.audio_kbps) as f64 * 1000.0 / 8.0 * secs;
         assert!(bytes < (20 * MB) as f64);
     }

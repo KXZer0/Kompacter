@@ -1,5 +1,6 @@
-//! Images: JPEG (or WebP when there's transparency), stepping quality and size down
-//! until the result fits. Huge photos are capped at 4096 px on the long side first.
+//! Images: lossless first when the picture isn't already a JPEG (WebP lossless keeps every
+//! pixel and is ~25% smaller than PNG), then JPEG (or WebP when there's transparency, or
+//! when the user picked WebP), stepping quality and size down until the result fits. Huge photos are capped at 4096 px on the long side first.
 //! Phone photos are often stored sideways with an EXIF "orientation" tag; ffmpeg doesn't
 //! apply it to stills, so we read it ourselves and turn the picture upright.
 
@@ -9,6 +10,7 @@ use super::{file_size, name_of, with_ext, Ctx};
 use crate::error::{Error, Result};
 use crate::ffmpeg::{args, Progress};
 use crate::probe::MediaInfo;
+use crate::ImageFormat;
 
 const MAX_SIDE: f64 = 4096.0;
 const SCALES: [f64; 5] = [1.0, 0.75, 0.5, 0.35, 0.25];
@@ -37,8 +39,41 @@ pub(crate) fn fit(
         (v.width.max(1) as f64, v.height.max(1) as f64)
     };
     let base_scale = (MAX_SIDE / w.max(h)).min(1.0);
-    let webp = info.has_alpha;
+    // Transparency never becomes JPEG (JPEG can't hold it).
+    let webp = info.has_alpha || ctx.image_format == ImageFormat::Webp;
     let out = with_ext(out_base, if webp { "webp" } else { "jpg" });
+
+    // Lossless first (Auto), unless it's already a JPEG: identical pixels, often enough.
+    if ctx.image_format == ImageFormat::Auto && v.codec != "mjpeg" {
+        let lossless = with_ext(out_base, "webp");
+        let (tw, th) = even(w * base_scale, h * base_scale);
+        let mut a = args([
+            "-noautorotate".into(),
+            "-i".into(),
+            info.path.clone().into_os_string(),
+        ]);
+        a.extend(args(["-frames:v", "1", "-vf"]));
+        let scale = format!("scale={tw}:{th}:flags=lanczos");
+        a.push(match turn {
+            Some(t) => format!("{t},{scale}").into(),
+            None => scale.into(),
+        });
+        a.extend(args([
+            "-c:v",
+            "libwebp",
+            "-lossless",
+            "1",
+            "-compression_level",
+            "6",
+        ]));
+        a.push(lossless.clone().into());
+        ctx.ff.run(&a, 0.0, &mut |_| {}, ctx.cancel)?;
+        if file_size(&lossless)? <= target {
+            progress(1.0);
+            return Ok(lossless);
+        }
+        let _ = std::fs::remove_file(&lossless);
+    }
 
     // Every (scale, quality) pair, best-looking first. Size shrinks (roughly) along this
     // ladder, so a binary search finds the best one that fits in ~5 encodes instead of 20.

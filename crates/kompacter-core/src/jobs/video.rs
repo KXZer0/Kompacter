@@ -1,6 +1,7 @@
-//! Video: H.264 + AAC in MP4 aimed at an exact size. Plays inline everywhere.
-//! Uses a hardware encoder when one works (single pass, fast), otherwise two-pass x264.
-//! If the GPU encode fails for any reason, it falls back to x264 automatically.
+//! Video: MP4 (H.264, H.265 or AV1 video + AAC audio) aimed at an exact size.
+//! Uses a hardware encoder for the chosen codec when one works (single pass, fast);
+//! otherwise the CPU: two-pass x264, or x265 / SVT-AV1. If the GPU encode fails for any
+//! reason, the CPU path takes over automatically.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -11,7 +12,7 @@ use crate::ffmpeg::{args, scaled, Progress};
 use crate::gpu::Encoder;
 use crate::plan::{plan_video, Trim, VideoPlan};
 use crate::probe::MediaInfo;
-use crate::Speed;
+use crate::{Speed, VideoCodec};
 
 /// Hardware encoders tend to overshoot a bit more, so they aim lower at first.
 const HW_HEADROOM: f64 = 0.92;
@@ -29,7 +30,15 @@ pub(crate) fn fit(
         .as_ref()
         .ok_or_else(|| Error::Unsupported("no video stream".into()))?;
     let secs = trim.map(|t| t.len()).unwrap_or(info.duration);
-    let plan = plan_video(target, secs, v.width, v.height, v.fps, info.audio.is_some());
+    let plan = plan_video(
+        target,
+        secs,
+        v.width,
+        v.height,
+        v.fps,
+        info.audio.is_some(),
+        ctx.codec.efficiency(),
+    );
     if !plan.fits {
         return Err(Error::TooLong { seconds: secs });
     }
@@ -62,7 +71,10 @@ pub(crate) fn fit(
             Err(_) => progress(0.0),
         }
     }
-    job.run_x264(plan, progress)
+    match ctx.codec {
+        VideoCodec::H264 => job.run_x264(plan, progress),
+        codec => job.run_cpu_single(codec, plan, progress),
+    }
 }
 
 struct Job<'a> {
@@ -82,7 +94,10 @@ impl Job<'_> {
         let mut last = 0;
         for attempt in 0..2 {
             let mut a = self.head();
-            a.extend(args(["-c:v", enc.ffmpeg_name(), "-pix_fmt", enc.pix_fmt()]));
+            let name = enc
+                .ffmpeg_name(self.ctx.codec)
+                .ok_or_else(|| Error::Unsupported("no GPU encoder for this codec".into()))?;
+            a.extend(args(["-c:v", name, "-pix_fmt", enc.pix_fmt()]));
             a.extend(args(enc.rate_args(plan.video_kbps)));
             self.tail(&mut a, &plan);
             let (from, to) = if attempt == 0 { (0.0, 1.0) } else { (0.5, 1.0) };
@@ -153,6 +168,61 @@ impl Job<'_> {
         Err(self.too_big(last))
     }
 
+    /// H.265 (x265) or AV1 (SVT-AV1) on the CPU: one pass aimed at the bitrate, with one
+    /// retry at a lower bitrate if it overshoots.
+    fn run_cpu_single(
+        &self,
+        codec: VideoCodec,
+        mut plan: VideoPlan,
+        progress: Progress,
+    ) -> Result<PathBuf> {
+        let mut last = 0;
+        for attempt in 0..2 {
+            let mut a = self.head();
+            let kbps = plan.video_kbps;
+            match codec {
+                VideoCodec::Av1 => {
+                    // SVT-AV1 presets: lower = slower and smaller.
+                    let preset = match self.ctx.speed {
+                        Speed::Fast => "10",
+                        Speed::Balanced => "8",
+                        Speed::Quality => "6",
+                    };
+                    a.extend(args(["-c:v", "libsvtav1", "-preset", preset]));
+                    a.extend(args(["-svtav1-params", "rc=1"]));
+                }
+                _ => {
+                    let preset = match self.ctx.speed {
+                        Speed::Fast => "veryfast",
+                        Speed::Balanced => "fast",
+                        Speed::Quality => "slow",
+                    };
+                    a.extend(args(["-c:v", "libx265", "-preset", preset]));
+                    a.extend(args(["-x265-params", "log-level=error"]));
+                }
+            }
+            a.extend(args(["-pix_fmt", "yuv420p", "-b:v"]));
+            a.push(format!("{kbps}k").into());
+            a.extend(args(["-maxrate"]));
+            a.push(format!("{}k", kbps * 3 / 2).into());
+            a.extend(args(["-bufsize"]));
+            a.push(format!("{}k", kbps * 2).into());
+            self.tail(&mut a, &plan);
+            let (from, to) = if attempt == 0 { (0.0, 1.0) } else { (0.6, 1.0) };
+            self.ctx.ff.run(
+                &a,
+                self.secs,
+                &mut scaled(&mut *progress, from, to),
+                self.ctx.cancel,
+            )?;
+            match self.check(&mut plan)? {
+                Ok(p) => return Ok(p),
+                Err(size) => last = size,
+            }
+        }
+        Err(self.too_big(last))
+    }
+
     /// Input, trim and the video stream + filters.
     fn head(&self) -> Vec<OsString> {
         let mut a = input_args(&self.info.path, self.trim);
@@ -168,6 +238,10 @@ impl Job<'_> {
         if self.info.audio.is_some() {
             a.extend(args(["-map", "0:a:0", "-c:a", "aac", "-b:a"]));
             a.push(format!("{}k", plan.audio_kbps).into());
+        }
+        if self.ctx.codec == VideoCodec::H265 {
+            // The tag Apple devices (and most players) expect for H.265 in MP4.
+            a.extend(args(["-tag:v", "hvc1"]));
         }
         a.extend(args(["-movflags", "+faststart"]));
         a.push(self.out.clone().into());

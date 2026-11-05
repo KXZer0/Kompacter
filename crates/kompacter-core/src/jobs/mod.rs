@@ -15,14 +15,18 @@ use crate::ffmpeg::{Ffmpeg, Progress};
 use crate::gpu::Encoder;
 use crate::plan::Trim;
 use crate::probe::{MediaInfo, MediaKind};
-use crate::Speed;
+use crate::{ArchiveFormat, AudioFormat, ImageFormat, Speed, VideoCodec};
 
 pub(crate) struct Ctx<'a> {
     pub ff: &'a Ffmpeg,
     pub cancel: &'a AtomicBool,
     pub speed: Speed,
-    /// Working hardware encoders, best first. Empty = CPU only.
+    /// Working hardware encoders for `codec`, best first. Empty = CPU only.
     pub encoders: &'a [Encoder],
+    pub codec: VideoCodec,
+    pub audio_format: AudioFormat,
+    pub image_format: ImageFormat,
+    pub archive: ArchiveFormat,
 }
 
 /// Compress one media file to fit `target` bytes.
@@ -39,7 +43,7 @@ pub(crate) fn fit_media(
         MediaKind::Audio => audio::fit(ctx, info, trim, target, out_base, progress),
         MediaKind::Image => image::fit(ctx, info, target, out_base, progress),
         MediaKind::Folder => folder::fit(ctx, &info.path, target, out_base, progress),
-        MediaKind::Other => folder::zip_single(&info.path, target, out_base),
+        MediaKind::Other => folder::zip_single(&info.path, target, out_base, ctx.archive),
     }
 }
 

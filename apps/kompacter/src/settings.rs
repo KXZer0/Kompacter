@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use kompacter_core::{ArchiveFormat, AudioFormat, ImageFormat, VideoCodec};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +29,12 @@ pub struct Settings {
     /// Hide the flyout when it loses focus (not while a file is dragged over it).
     pub auto_hide: bool,
     pub start_with_windows: bool,
+    /// Output formats ("h264" | "h265" | "av1", "auto" | "mp3" | "opus",
+    /// "auto" | "jpeg" | "webp", "zip" | "7z").
+    pub video_codec: VideoCodec,
+    pub audio_format: AudioFormat,
+    pub image_format: ImageFormat,
+    pub archive_format: ArchiveFormat,
 }
 
 impl Default for Settings {
@@ -44,6 +51,10 @@ impl Default for Settings {
             output_dir: String::new(),
             auto_hide: true,
             start_with_windows: false,
+            video_codec: VideoCodec::default(),
+            audio_format: AudioFormat::default(),
+            image_format: ImageFormat::default(),
+            archive_format: ArchiveFormat::default(),
         }
     }
 }

@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use kompacter_core::{MediaKind, Mode, Options, Outcome, Trim};
+use kompacter_core::{MediaKind, Mode, Outcome, Trim};
 use slint::winit_030::WinitWindowAccessor;
 use slint::ComponentHandle;
 
@@ -28,14 +28,13 @@ impl App {
 
         let engine = self.engine.clone();
         let target = self.target().bytes;
+        let opts = self.options(target);
         let weak = Rc::downgrade(self);
         let p = path.clone();
         run(
             move || {
                 let info = engine.probe(&p).map_err(|e| e.to_string())?;
-                let estimate = engine
-                    .estimate(&info, &Options::new(target))
-                    .map_err(|e| e.to_string())?;
+                let estimate = engine.estimate(&info, &opts).map_err(|e| e.to_string())?;
                 Ok::<_, String>((info, estimate))
             },
             move |r| {
@@ -99,7 +98,10 @@ impl App {
             if over {
                 format!("{} too big", bytes(size - target))
             } else if folder {
-                "Fits — gets zipped".into()
+                format!(
+                    "Fits — packed as .{}",
+                    self.settings.borrow().archive_format.ext()
+                )
             } else {
                 "Fits".into()
             }
@@ -109,7 +111,7 @@ impl App {
         // The button says what it will do; a line appears only as a warning.
         let plan = c.estimate.video.as_ref();
         let label = if folder {
-            "Compress & zip".to_string()
+            format!("Compress & {}", self.settings.borrow().archive_format.ext())
         } else {
             match plan {
                 Some(v) if v.fits => format!("Compress to {}p", v.height),
@@ -153,9 +155,8 @@ impl App {
 
         let prefs = self.settings.borrow().clone();
         let target = self.target().bytes;
-        let mut opts = Options::new(target);
+        let mut opts = self.options(target);
         opts.mode = if keep { Mode::KeepQuality } else { Mode::Fit };
-        opts.gpu = prefs.gpu;
         opts.split = split;
         self.last_range.set(range);
         if let Some((a, b)) = range {

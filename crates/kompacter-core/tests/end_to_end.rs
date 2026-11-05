@@ -276,3 +276,79 @@ fn sideways_phone_photo_comes_out_upright() {
         v.height
     );
 }
+
+#[test]
+fn h265_and_av1_hit_the_target() {
+    use kompacter_core::VideoCodec;
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("clip.mp4");
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=854x480:rate=30:duration=4",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=4",
+            "-vf",
+            "noise=alls=30:allf=t",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "12",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "aac",
+            "-shortest",
+        ],
+        &src,
+    );
+    let engine = Engine::default();
+    for codec in [VideoCodec::H265, VideoCodec::Av1] {
+        let target = 400 * KB;
+        let mut opts = Options::new(target);
+        opts.gpu = false;
+        opts.video_codec = codec;
+        let res = run(&engine, &src, &opts);
+        assert!(res.fits, "{codec:?}: {} bytes", res.output_bytes);
+        let v = engine.probe(&res.path).unwrap().video.unwrap();
+        let want = if codec == VideoCodec::H265 {
+            "hevc"
+        } else {
+            "av1"
+        };
+        assert_eq!(v.codec, want);
+    }
+}
+
+#[test]
+fn seven_z_beats_zip_on_documents() {
+    use kompacter_core::ArchiveFormat;
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("notes");
+    std::fs::create_dir(&folder).unwrap();
+    // Text compresses well: 600 KB of slightly varied lines.
+    let text: String = (0..12_000)
+        .map(|i| format!("line {i}: the quick brown fox {}\n", i % 97))
+        .collect();
+    std::fs::write(folder.join("a.txt"), &text).unwrap();
+    std::fs::write(folder.join("b.txt"), text.replace("fox", "dog")).unwrap();
+    let engine = Engine::default();
+    // Just under the folder's size, so it has to be packed (and easily fits once packed).
+    let limit = 1024 * KB;
+    let size = |archive| {
+        let mut o = Options::new(limit);
+        o.archive = archive;
+        let res = run(&engine, &folder, &o);
+        assert!(res.fits);
+        res.output_bytes
+    };
+    let (zip, sevenz) = (size(ArchiveFormat::Zip), size(ArchiveFormat::SevenZ));
+    assert!(sevenz < zip, "7z {sevenz} vs zip {zip}");
+}

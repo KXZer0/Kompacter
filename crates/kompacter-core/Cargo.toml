@@ -12,4 +12,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true
 zip.workspace = true
+# 7z archives (LZMA2), for the "7z" archive format. Compression only.
+sevenz-rust2 = { version = "0.24", default-features = false, features = ["compress", "util"] }
 
