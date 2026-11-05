@@ -87,6 +87,8 @@ pub struct App {
     pub settings: RefCell<Settings>,
     pub current: RefCell<Option<Current>>,
     pub result: RefCell<Option<PathBuf>>,
+    /// The trim range of the last compress (so "Split into parts" can reuse it).
+    pub last_range: Cell<Option<(f64, f64)>>,
     pub started: Cell<Option<Instant>>,
     /// A file dialog is open: don't auto-hide while the user picks.
     pub modal: Cell<bool>,
@@ -357,6 +359,7 @@ fn main() -> Result<(), slint::PlatformError> {
         settings: RefCell::new(prefs),
         current: RefCell::new(None),
         result: RefCell::new(None),
+        last_range: Cell::new(None),
         started: Cell::new(None),
         modal: Cell::new(false),
         auto_hidden: Cell::new(None),
@@ -465,7 +468,12 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
         let a = app.clone();
-        ui.on_compress(move || a.compress(None, false));
+        ui.on_compress(move || a.compress(None, false, false));
+        let a = app.clone();
+        ui.on_split(move || {
+            let range = a.last_range.get();
+            a.compress(range, false, true)
+        });
         let a = app.clone();
         ui.on_cancel(move || a.cancel.store(true, Ordering::Relaxed));
         let a = app.clone();
@@ -634,7 +642,7 @@ fn set_custom_dir(app: &Rc<App>, dir: PathBuf) {
     app.sync_settings();
 }
 
-/// Dev builds only: `KOMPACTER_DEMO=big|trim|busy|done|error|settings|drag|discord`
+/// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord`
 /// shows a screen with sample data, for screenshots.
 #[cfg(debug_assertions)]
 fn demo(app: &Rc<App>, which: &str) {
@@ -679,6 +687,22 @@ fn demo(app: &Rc<App>, which: &str) {
     ])));
     match which {
         "big" => ui.set_view(View::Big),
+        "split" => {
+            ui.set_split_count(3);
+            ui.set_view(View::Big);
+        }
+        "toobig" => {
+            ui.set_done_ok(false);
+            ui.set_done_split(true);
+            ui.set_done_title("Still too big".into());
+            ui.set_done_sub("48 MB · too big for one file".into());
+            ui.set_view(View::Done);
+        }
+        "parts" => {
+            ui.set_done_title("Copied 3 parts".into());
+            ui.set_done_sub("3 files · each under 20 MB".into());
+            ui.set_view(View::Done);
+        }
         "trim" => {
             ui.set_win_h(624.0);
             ui.set_view(View::Trim);

@@ -213,6 +213,10 @@ export component AppWindow inherits Window {
     in property <string> foot-text;
     in property <bool> can-trim;
     in property <bool> trim-first;
+    /// Too long for one good file: how many parts would each fit well (0 = don't offer).
+    in property <int> split-count;
+    /// The result was still too big, and splitting can help.
+    in property <bool> done-split;
 
     // Trimmer.
     in property <float> trim-dur: 1;
@@ -255,6 +259,7 @@ export component AppWindow inherits Window {
     callback choose-file();
     callback paste();
     callback compress();
+    callback split();
     callback cancel();
     callback remove-file();
     callback show-in-folder();
@@ -708,7 +713,38 @@ export component AppWindow inherits Window {
                     font-weight: 600;
                     color: root.over-ok ? Theme.ok : Theme.bad;
                 }
-                HorizontalLayout {
+                // Too long for one good file: trim it, or split it into parts that each fit.
+                if root.split-count > 1: HorizontalLayout {
+                    y: 152px;
+                    height: 44px;
+                    spacing: 8px;
+                    Btn {
+                        text: "Trim";
+                        icon: Icons.scissors;
+                        primary: true;
+                        large: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.open-trim(); }
+                    }
+                    Btn {
+                        text: "Split into " + root.split-count;
+                        large: true;
+                        horizontal-stretch: 1;
+                        tip: root.split-count + " files, each under " + root.target-text;
+                        clicked => { root.split(); }
+                    }
+                }
+                if root.split-count > 1: HorizontalLayout {
+                    y: 206px;
+                    height: 36px;
+                    alignment: center;
+                    Btn {
+                        text: "Compress anyway";
+                        plain: true;
+                        clicked => { root.compress(); }
+                    }
+                }
+                if root.split-count <= 1: HorizontalLayout {
                     y: 152px;
                     height: 44px;
                     spacing: 8px;
@@ -736,7 +772,7 @@ export component AppWindow inherits Window {
                         clicked => { root.open-trim(); }
                     }
                 }
-                if root.foot-text != "": Text {
+                if root.foot-text != "" && root.split-count <= 1: Text {
                     y: 206px;
                     width: parent.width;
                     text: root.foot-text;
@@ -1046,7 +1082,12 @@ export component AppWindow inherits Window {
                     height: 36px;
                     spacing: 8px;
                     alignment: center;
-                    Btn {
+                    if root.done-split: Btn {
+                        text: "Split into parts";
+                        primary: true;
+                        clicked => { root.split(); }
+                    }
+                    if !root.done-split: Btn {
                         text: "Show in Folder";
                         icon: Icons.open;
                         clicked => { root.show-in-folder(); }

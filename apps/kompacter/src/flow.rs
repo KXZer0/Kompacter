@@ -52,7 +52,7 @@ impl App {
                             estimate,
                         });
                         if direct {
-                            app.compress(None, false);
+                            app.compress(None, false, false);
                         } else {
                             app.show_big();
                         }
@@ -122,9 +122,11 @@ impl App {
         ui.set_compress_label(label.into());
         ui.set_can_trim(can_trim);
         ui.set_trim_first(can_trim && too_long);
+        // Too long to look good in one file: offer splitting it into parts.
+        ui.set_split_count(c.estimate.parts.unwrap_or(0) as i32);
         ui.set_foot_text(
             if too_long {
-                "Too long for good quality — trim it first"
+                "Too long for good quality — trim or split it"
             } else {
                 ""
             }
@@ -135,8 +137,8 @@ impl App {
     }
 
     /// Compress the current file. `range` trims it; `keep` keeps the original quality
-    /// (a cut without re-encoding).
-    pub fn compress(self: &Rc<Self>, range: Option<(f64, f64)>, keep: bool) {
+    /// (a cut without re-encoding); `split` makes parts that each fit when one can't.
+    pub fn compress(self: &Rc<Self>, range: Option<(f64, f64)>, keep: bool, split: bool) {
         let ui = self.ui();
         let cur = self.current.borrow();
         let Some(c) = cur.as_ref() else { return };
@@ -154,6 +156,8 @@ impl App {
         let mut opts = Options::new(target);
         opts.mode = if keep { Mode::KeepQuality } else { Mode::Fit };
         opts.gpu = prefs.gpu;
+        opts.split = split;
+        self.last_range.set(range);
         if let Some((a, b)) = range {
             opts.trim = Trim::new(a, b).ok();
         }
@@ -198,7 +202,13 @@ impl App {
                 if !out.untouched && prefs.output == "replace" {
                     out.path = output::replace_original(&out.path, &path)?;
                 }
-                let copied = out.fits && sys::copy_files(std::slice::from_ref(&out.path)).is_ok();
+                // All parts go on the clipboard together: one paste attaches them all.
+                let files = if out.parts.is_empty() {
+                    vec![out.path.clone()]
+                } else {
+                    out.parts.clone()
+                };
+                let copied = out.fits && sys::copy_files(&files).is_ok();
                 output::clean(Some(&out.path));
                 Ok::<_, String>((out, copied))
             },
@@ -260,13 +270,22 @@ impl App {
     fn done(self: &Rc<Self>, out: Outcome, copied: bool, height: Option<u32>, keep: bool) {
         ETA.with(|e| *e.borrow_mut() = None);
         let ui = self.ui();
-        let title = if !out.fits {
-            "Still too big"
-        } else if copied {
-            "Copied"
-        } else {
-            "Saved"
+        let parts = out.parts.len();
+        let title = match (out.fits, copied, parts) {
+            (false, _, _) => "Still too big".to_string(),
+            (true, true, 0) => "Copied".into(),
+            (true, true, n) => format!("Copied {n} parts"),
+            (true, false, 0) => "Saved".into(),
+            (true, false, n) => format!("Saved {n} parts"),
         };
+        // A folder, video or audio that's still too big can be split into parts.
+        let can_split = !out.fits
+            && parts == 0
+            && matches!(
+                out.kind,
+                MediaKind::Video | MediaKind::Audio | MediaKind::Folder
+            );
+        ui.set_done_split(can_split);
         let ratio = out.original_bytes as f64 / out.output_bytes.max(1) as f64;
         let mut details = vec![bytes(out.output_bytes)];
         if keep {
@@ -279,11 +298,16 @@ impl App {
         } else if ratio >= 1.1 {
             details.push(format!("{ratio:.1}× smaller"));
         }
-        let sub = if !out.fits {
+        let target = self.target().bytes;
+        let sub = if !out.fits && can_split {
+            format!("{} · too big for one file", bytes(out.output_bytes))
+        } else if !out.fits {
             format!(
                 "{} · trim it or pick a bigger target",
                 bytes(out.output_bytes)
             )
+        } else if parts > 0 {
+            format!("{parts} files · each under {}", bytes(target))
         } else if !copied {
             "Couldn't copy it — drag it from the folder".into()
         } else {

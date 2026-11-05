@@ -231,7 +231,7 @@ impl App {
             return;
         }
         let range = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
-        self.compress(Some(range), keep);
+        self.compress(Some(range), keep, false);
     }
 }
 

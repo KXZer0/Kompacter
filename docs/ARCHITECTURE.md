@@ -46,7 +46,8 @@
 | `jobs::video` | H.264 + AAC MP4, scaled/fps-capped per plan. GPU single pass when available, else two-pass x264; falls back to CPU if the GPU encode fails; one retry if it overshoots. |
 | `jobs::audio` | MP3 (≥ 64 kbps) or Opus (below), retry on overshoot. |
 | `jobs::image` | JPEG, or WebP when transparent; steps quality then size down until it fits. Caps at 4096 px. |
-| `jobs::folder` | Shares the size budget across media files by original size, shrinks them, zips (media stored, others deflated). |
+| `jobs::folder` | Shares the size budget across media files by original size, shrinks them, zips (media stored, others deflated). If it can't fit in one zip, packs it into several zips that each fit. |
+| `jobs::split` | Too long for one good file: cuts video/audio into equal parts that each fit (up to 10). |
 | `jobs::cut` | Keep-quality trim: stream copy, no re-encode (snaps to keyframes). |
 
 Public API: `Engine::probe`, `Engine::estimate` (live numbers), `Engine::compress` (does the work).
@@ -59,7 +60,6 @@ Public API: `Engine::probe`, `Engine::estimate` (live numbers), `Engine::compres
 
 ## Known gaps
 
-- Phone photos rotated via EXIF may come out sideways (ffmpeg doesn't apply EXIF orientation for stills).
 - GPU paths are untested on real hardware so far (CI and the dev box have no GPU); the CPU fallback is tested.
-- Folders over the limit after shrinking error out instead of splitting into parts.
+- A single non-media file bigger than the limit (a huge installer) can't be split into parts that open on their own.
 - Keep-quality trim size is a linear estimate; exact packet-sum estimate planned.

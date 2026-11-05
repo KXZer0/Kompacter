@@ -1,5 +1,7 @@
 //! Images: JPEG (or WebP when there's transparency), stepping quality and size down
 //! until the result fits. Huge photos are capped at 4096 px on the long side first.
+//! Phone photos are often stored sideways with an EXIF "orientation" tag; ffmpeg doesn't
+//! apply it to stills, so we read it ourselves and turn the picture upright.
 
 use std::path::{Path, PathBuf};
 
@@ -26,7 +28,14 @@ pub(crate) fn fit(
         .video
         .as_ref()
         .ok_or_else(|| Error::Unsupported("unreadable image".into()))?;
-    let (w, h) = (v.width.max(1) as f64, v.height.max(1) as f64);
+    let orient = orientation(&info.path);
+    let turn = orient_filter(orient);
+    // A quarter turn swaps width and height.
+    let (w, h) = if orient >= 5 {
+        (v.height.max(1) as f64, v.width.max(1) as f64)
+    } else {
+        (v.width.max(1) as f64, v.height.max(1) as f64)
+    };
     let base_scale = (MAX_SIDE / w.max(h)).min(1.0);
     let webp = info.has_alpha;
     let out = with_ext(out_base, if webp { "webp" } else { "jpg" });
@@ -40,9 +49,18 @@ pub(crate) fn fit(
     let encode = |i: usize, dest: &Path| -> Result<u64> {
         let (s, qi) = ladder[i];
         let (tw, th) = even(w * base_scale * s, h * base_scale * s);
-        let mut a = args(["-i".into(), info.path.clone().into_os_string()]);
+        // `-noautorotate`: never let ffmpeg turn it too (newer builds might), we do it once.
+        let mut a = args([
+            "-noautorotate".into(),
+            "-i".into(),
+            info.path.clone().into_os_string(),
+        ]);
         a.extend(args(["-frames:v", "1", "-vf"]));
-        a.push(format!("scale={tw}:{th}:flags=lanczos").into());
+        let scale = format!("scale={tw}:{th}:flags=lanczos");
+        a.push(match turn {
+            Some(t) => format!("{t},{scale}").into(),
+            None => scale.into(),
+        });
         if webp {
             a.extend(args(["-c:v", "libwebp", "-quality"]));
             a.push(WEBP_Q[qi].to_string().into());
@@ -94,4 +112,139 @@ pub(crate) fn fit(
 fn even(w: f64, h: f64) -> (u32, u32) {
     let e = |v: f64| ((v.round() as u32) / 2 * 2).max(2);
     (e(w), e(h))
+}
+
+/// EXIF orientation (1–8) of a JPEG photo; 1 (upright) when there is none.
+fn orientation(path: &Path) -> u8 {
+    use std::io::Read;
+    let mut head = Vec::new();
+    let ok = std::fs::File::open(path)
+        .and_then(|f| f.take(256 * 1024).read_to_end(&mut head))
+        .is_ok();
+    if ok {
+        exif_orientation(&head).unwrap_or(1)
+    } else {
+        1
+    }
+}
+
+/// Finds the Orientation tag (0x0112) in a JPEG's EXIF block.
+fn exif_orientation(d: &[u8]) -> Option<u8> {
+    if d.get(0..2)? != [0xFF, 0xD8] {
+        return None;
+    }
+    let mut i = 2;
+    while i + 4 <= d.len() {
+        if d[i] != 0xFF {
+            return None;
+        }
+        let marker = d[i + 1];
+        let len = u16::from_be_bytes([d[i + 2], d[i + 3]]) as usize;
+        if marker == 0xDA {
+            return None; // image data starts; no EXIF before it
+        }
+        if marker == 0xE1 && d.get(i + 4..i + 10)? == b"Exif\0\0" {
+            let t = d.get(i + 10..(i + 2 + len).min(d.len()))?;
+            let le = match t.get(0..2)? {
+                b"II" => true,
+                b"MM" => false,
+                _ => return None,
+            };
+            let u16_at = |o: usize| {
+                t.get(o..o + 2).map(|b| {
+                    if le {
+                        u16::from_le_bytes([b[0], b[1]])
+                    } else {
+                        u16::from_be_bytes([b[0], b[1]])
+                    }
+                })
+            };
+            let u32_at = |o: usize| {
+                t.get(o..o + 4).map(|b| {
+                    let a = [b[0], b[1], b[2], b[3]];
+                    if le {
+                        u32::from_le_bytes(a)
+                    } else {
+                        u32::from_be_bytes(a)
+                    }
+                })
+            };
+            let ifd = u32_at(4)? as usize;
+            for k in 0..u16_at(ifd)? as usize {
+                let e = ifd + 2 + k * 12;
+                if u16_at(e)? == 0x0112 {
+                    let v = u16_at(e + 8)?;
+                    return (1..=8).contains(&v).then_some(v as u8);
+                }
+            }
+            return None;
+        }
+        i += 2 + len;
+    }
+    None
+}
+
+/// ffmpeg filter that turns a photo with this EXIF orientation upright.
+fn orient_filter(o: u8) -> Option<&'static str> {
+    match o {
+        2 => Some("hflip"),
+        3 => Some("hflip,vflip"),
+        4 => Some("vflip"),
+        5 => Some("transpose=0"),
+        6 => Some("transpose=1"),
+        7 => Some("transpose=3"),
+        8 => Some("transpose=2"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal JPEG start with an EXIF block holding just the orientation tag.
+    fn jpeg_with(orient: u16, little: bool) -> Vec<u8> {
+        let mut tiff: Vec<u8> = Vec::new();
+        let w16 = |v: u16| {
+            if little {
+                v.to_le_bytes()
+            } else {
+                v.to_be_bytes()
+            }
+        };
+        let w32 = |v: u32| {
+            if little {
+                v.to_le_bytes()
+            } else {
+                v.to_be_bytes()
+            }
+        };
+        tiff.extend(if little { b"II" } else { b"MM" });
+        tiff.extend(w16(42));
+        tiff.extend(w32(8)); // first IFD right after the header
+        tiff.extend(w16(1)); // one entry
+        tiff.extend(w16(0x0112));
+        tiff.extend(w16(3)); // SHORT
+        tiff.extend(w32(1));
+        tiff.extend(w16(orient));
+        tiff.extend([0, 0]);
+        tiff.extend(w32(0));
+        let mut app1 = b"Exif\0\0".to_vec();
+        app1.extend(&tiff);
+        let mut d = vec![0xFF, 0xD8, 0xFF, 0xE1];
+        d.extend(((app1.len() + 2) as u16).to_be_bytes());
+        d.extend(app1);
+        d.extend([0xFF, 0xDA, 0, 2]);
+        d
+    }
+
+    #[test]
+    fn reads_orientation_both_byte_orders() {
+        assert_eq!(exif_orientation(&jpeg_with(6, true)), Some(6));
+        assert_eq!(exif_orientation(&jpeg_with(8, false)), Some(8));
+        assert_eq!(exif_orientation(&jpeg_with(1, true)), Some(1));
+        assert_eq!(exif_orientation(b"not a jpeg"), None);
+        assert_eq!(orient_filter(6), Some("transpose=1"));
+        assert_eq!(orient_filter(1), None);
+    }
 }
