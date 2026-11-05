@@ -6,6 +6,7 @@
 
 pub mod error;
 pub mod ffmpeg;
+pub mod gpu;
 mod jobs;
 pub mod plan;
 pub mod probe;
@@ -13,11 +14,13 @@ pub mod size;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
 pub use error::{Error, Result};
 pub use ffmpeg::Ffmpeg;
+pub use gpu::Encoder;
 pub use plan::{Quality, Trim, VideoPlan};
 pub use probe::{MediaInfo, MediaKind};
 
@@ -50,6 +53,8 @@ pub struct Options {
     /// Where results go. Defaults to the input's folder.
     pub out_dir: Option<PathBuf>,
     pub speed: Speed,
+    /// Use a hardware encoder when one works (falls back to CPU on any failure).
+    pub gpu: bool,
 }
 
 impl Options {
@@ -60,6 +65,7 @@ impl Options {
             trim: None,
             out_dir: None,
             speed: Speed::Balanced,
+            gpu: true,
         }
     }
 }
@@ -95,11 +101,20 @@ pub struct Estimate {
 #[derive(Debug, Clone, Default)]
 pub struct Engine {
     ff: Ffmpeg,
+    encoders: OnceLock<Vec<Encoder>>,
 }
 
 impl Engine {
     pub fn new(ff: Ffmpeg) -> Self {
-        Engine { ff }
+        Engine {
+            ff,
+            encoders: OnceLock::new(),
+        }
+    }
+
+    /// Hardware encoders that work on this PC, best first. Detected once, then cached.
+    pub fn hw_encoders(&self) -> &[Encoder] {
+        self.encoders.get_or_init(|| gpu::detect(&self.ff))
     }
 
     pub fn probe(&self, path: &Path) -> Result<MediaInfo> {
@@ -166,6 +181,7 @@ impl Engine {
             ff: &self.ff,
             cancel,
             speed: opts.speed,
+            encoders: if opts.gpu { self.hw_encoders() } else { &[] },
         };
         let out = match (opts.mode, trim) {
             (Mode::KeepQuality, Some(t)) => jobs::cut(&ctx, &info, t, &out_base, progress)?,

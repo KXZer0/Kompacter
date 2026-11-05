@@ -33,6 +33,9 @@ enum Cmd {
         keep_quality: bool,
         #[arg(long, value_enum, default_value_t = SpeedArg::Balanced)]
         speed: SpeedArg,
+        /// Don't use the GPU, encode on the CPU only.
+        #[arg(long)]
+        cpu: bool,
         /// Output folder (default: next to the input).
         #[arg(short, long)]
         out: Option<PathBuf>,
@@ -47,6 +50,8 @@ enum Cmd {
     Probe { input: PathBuf },
     /// List built-in size presets.
     Presets,
+    /// Show which GPU encoders work on this PC.
+    Encoders,
 }
 
 #[derive(clap::Args)]
@@ -90,6 +95,15 @@ fn main() -> Result<()> {
                 println!("{:<22} {:<22} {}", p.id, p.label, human(p.bytes));
             }
         }
+        Cmd::Encoders => {
+            let found = engine.hw_encoders();
+            if found.is_empty() {
+                println!("No working GPU encoder found; using the CPU (x264).");
+            }
+            for e in found {
+                println!("{:<20} {}", e.label(), e.ffmpeg_name());
+            }
+        }
         Cmd::Probe { input } => {
             let info = engine.probe(&input)?;
             println!("{}", serde_json::to_string_pretty(&info)?);
@@ -104,10 +118,12 @@ fn main() -> Result<()> {
             common,
             keep_quality,
             speed,
+            cpu,
             out,
         } => {
             let mut opts = common.options()?;
             opts.out_dir = out;
+            opts.gpu = !cpu;
             opts.mode = if keep_quality {
                 Mode::KeepQuality
             } else {

@@ -11,6 +11,7 @@ use std::sync::atomic::AtomicBool;
 
 use crate::error::{Error, Result};
 use crate::ffmpeg::{Ffmpeg, Progress};
+use crate::gpu::Encoder;
 use crate::plan::Trim;
 use crate::probe::{MediaInfo, MediaKind};
 use crate::Speed;
@@ -19,6 +20,8 @@ pub(crate) struct Ctx<'a> {
     pub ff: &'a Ffmpeg,
     pub cancel: &'a AtomicBool,
     pub speed: Speed,
+    /// Working hardware encoders, best first. Empty = CPU only.
+    pub encoders: &'a [Encoder],
 }
 
 /// Compress one media file to fit `target` bytes.

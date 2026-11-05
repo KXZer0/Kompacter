@@ -46,7 +46,8 @@ Not doing: intercepting drag-and-drop into Discord, hooking its upload dialog, o
 
 ## Engine to-do
 
-- [ ] GPU encoders (NVENC / QSV / AMF) with speed test and CPU fallback
+- [x] GPU encoders (NVENC / AMF / QSV / VideoToolbox) with detection and CPU fallback
+- [ ] Verify GPU encodes on real NVIDIA / AMD / Intel hardware
 - [ ] Exact keep-quality estimate from packet sizes
 - [ ] EXIF orientation for photos
 - [ ] Split folders/long videos into parts when they can't fit
