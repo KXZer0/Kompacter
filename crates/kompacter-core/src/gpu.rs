@@ -9,6 +9,7 @@ use crate::ffmpeg::Ffmpeg;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Encoder {
     /// NVIDIA
     Nvenc,

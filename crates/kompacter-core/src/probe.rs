@@ -10,6 +10,7 @@ use crate::ffmpeg::Ffmpeg;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum MediaKind {
     Video,
     Audio,
@@ -20,6 +21,7 @@ pub enum MediaKind {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct VideoStream {
     pub width: u32,
     pub height: u32,
@@ -28,6 +30,7 @@ pub struct VideoStream {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AudioStream {
     pub codec: String,
     pub bitrate_kbps: Option<u32>,
@@ -35,8 +38,10 @@ pub struct AudioStream {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct MediaInfo {
     pub path: PathBuf,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub size_bytes: u64,
     pub kind: MediaKind,
     /// Seconds. 0 for images and non-media files.

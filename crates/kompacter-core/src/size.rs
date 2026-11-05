@@ -11,9 +11,11 @@ pub const GB: u64 = 1024 * MB;
 
 /// A named upload limit the user can pick in settings.
 #[derive(Debug, Clone, Copy, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Preset {
     pub id: &'static str,
     pub label: &'static str,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub bytes: u64,
 }
 

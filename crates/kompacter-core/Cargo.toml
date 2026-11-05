@@ -12,3 +12,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true
 zip.workspace = true
+ts-rs = { version = "12.0.1", optional = true }
+
+[features]
+# Generates TypeScript types for the desktop UI (`cargo test --features ts`).
+ts = ["dep:ts-rs"]

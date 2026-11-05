@@ -71,10 +71,13 @@ impl Options {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Outcome {
     pub path: PathBuf,
     pub kind: MediaKind,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub original_bytes: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub output_bytes: u64,
     pub fits: bool,
     /// True when the file already fit and nothing was written.
@@ -83,14 +86,18 @@ pub struct Outcome {
 
 /// Live numbers for the UI. Cheap enough to recompute on every trim-handle drag.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct Estimate {
     pub kind: MediaKind,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub original_bytes: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub target_bytes: u64,
     /// Length of the selection (or whole file), in seconds.
     pub seconds: f64,
     pub fits_as_is: bool,
     /// Keep-quality mode: expected size of the cut.
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub keep_quality_bytes: Option<u64>,
     /// Fit mode, video: resolution/bitrate/quality we'd use.
     pub video: Option<VideoPlan>,
