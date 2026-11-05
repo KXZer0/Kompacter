@@ -42,8 +42,8 @@
   --focus:rgba(0,113,227,.55);
   --shadow:0 0 0 .5px rgba(0,0,0,.12),0 10px 30px rgba(0,0,0,.16),0 30px 80px -20px rgba(0,0,0,.28);
   --shadow-sm:0 0 0 .5px rgba(0,0,0,.1),0 4px 14px rgba(0,0,0,.12);
-  --pouch-a:#e9f2ff; --pouch-b:#9cc4ff; --pouch-c:#5b8cff;
-  --plate-a:#c3c7cf; --plate-b:#f4f5f7; --plate-c:#a9aeb7;
+  --pouch-a:#e9f2ff; --pouch-b:#9cc4ff; --pouch-c:#5b8cff; --face:#13213f;
+  --m1:#8f949c; --m2:#d4d7dc; --m3:#ffffff; --m4:#b9bdc4; --m5:#7b8088;
   --chat-bg:#fbfaf8; --chat-side:#f1efea; --chat-line:rgba(0,0,0,.08); --chat-text:#26251f; --chat-muted:#66635b; --chat-input:#ebe8e2; --chat-accent:#0b7a6c;
 }
 @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
@@ -57,7 +57,7 @@
   --focus:rgba(77,163,255,.7);
   --shadow:0 0 0 .5px rgba(255,255,255,.12),0 10px 30px rgba(0,0,0,.4),0 30px 80px -20px rgba(0,0,0,.6);
   --shadow-sm:0 0 0 .5px rgba(255,255,255,.1),0 4px 14px rgba(0,0,0,.35);
-  --pouch-a:#cfe2ff; --pouch-b:#7aa9ff; --pouch-c:#3d6fff; --plate-a:#4a4e57; --plate-b:#9095a0; --plate-c:#383b42;
+  --pouch-a:#cfe2ff; --pouch-b:#7aa9ff; --pouch-c:#3d6fff; --m1:#6c717a; --m2:#b8bdc5; --m3:#f4f6f9; --m4:#9ba0a9; --m5:#555960;
   --chat-bg:#1d1e1b; --chat-side:#252622; --chat-line:rgba(255,255,255,.08); --chat-text:#ecebe6; --chat-muted:#a9a69d; --chat-input:#2e2f2b; --chat-accent:#4fd1bd;
 }}
 :root[data-theme="dark"]{
@@ -71,7 +71,7 @@
   --focus:rgba(77,163,255,.7);
   --shadow:0 0 0 .5px rgba(255,255,255,.12),0 10px 30px rgba(0,0,0,.4),0 30px 80px -20px rgba(0,0,0,.6);
   --shadow-sm:0 0 0 .5px rgba(255,255,255,.1),0 4px 14px rgba(0,0,0,.35);
-  --pouch-a:#cfe2ff; --pouch-b:#7aa9ff; --pouch-c:#3d6fff; --plate-a:#4a4e57; --plate-b:#9095a0; --plate-c:#383b42;
+  --pouch-a:#cfe2ff; --pouch-b:#7aa9ff; --pouch-c:#3d6fff; --m1:#6c717a; --m2:#b8bdc5; --m3:#f4f6f9; --m4:#9ba0a9; --m5:#555960;
   --chat-bg:#1d1e1b; --chat-side:#252622; --chat-line:rgba(255,255,255,.08); --chat-text:#ecebe6; --chat-muted:#a9a69d; --chat-input:#2e2f2b; --chat-accent:#4fd1bd;
 }
 @supports (transition-timing-function: linear(0, 1)){
@@ -224,24 +224,37 @@ kbd{display:inline-block;min-width:20px;padding:0 6px;border-radius:6px;backgrou
 .blob{position:absolute;inset:0;border-radius:47% 53% 45% 55%/55% 52% 48% 45%;background:linear-gradient(150deg,var(--pouch-a) 0%,var(--pouch-b) 55%,var(--pouch-c) 100%);box-shadow:inset 0 -12px 22px rgba(25,45,120,.22),inset 0 8px 14px rgba(255,255,255,.6),0 10px 22px -8px rgba(40,70,160,.45);animation:spin 18s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .gloss{position:absolute;left:20%;top:11%;width:36%;height:20%;border-radius:50%;background:radial-gradient(closest-side,rgba(255,255,255,.9),rgba(255,255,255,0));transform:rotate(-16deg)}
+.face{position:absolute;left:50%;top:44%;width:52px;height:28px;margin-left:-26px;transition:transform 180ms var(--ease)}
+.eye{position:absolute;top:0;width:8px;height:13px;border-radius:5px;background:var(--face);transform-origin:50% 60%;animation:blink 5.4s infinite}
+.eye.l{left:9px} .eye.r{right:9px}
+@keyframes blink{0%,95%,100%{transform:none}97%{transform:scaleY(.12)}}
+.mouth{position:absolute;left:50%;top:18px;width:12px;height:6px;margin-left:-6px;border:2.2px solid var(--face);border-top:0;border-radius:0 0 12px 12px}
+[data-mood="hungry"] .eye{height:15px;width:9px}
+[data-mood="hungry"] .mouth{width:13px;height:13px;margin-left:-6.5px;border:0;border-radius:50%;background:var(--face);top:17px}
+[data-mood="worried"] .eye{height:10px;top:3px}
+[data-mood="worried"] .mouth{top:21px;height:5px;border:2.2px solid var(--face);border-bottom:0;border-radius:12px 12px 0 0}
+[data-mood="busy"] .eye{height:3px;width:10px;top:6px;border-radius:2px;animation:none}
+[data-mood="busy"] .eye.l{transform:rotate(14deg)} [data-mood="busy"] .eye.r{transform:rotate(-14deg)}
+[data-mood="busy"] .mouth{width:7px;height:7px;margin-left:-3.5px;border:2px solid var(--face);border-radius:50%}
+[data-mood="happy"] .eye{background:none;border:2.4px solid var(--face);border-bottom:0;border-radius:10px 10px 0 0;height:7px;width:11px;top:4px;animation:none}
+[data-mood="happy"] .mouth{width:18px;height:9px;margin-left:-9px;border:0;background:var(--face);border-radius:0 0 18px 18px}
+.pouch{cursor:pointer}
 [data-mood="worried"] .breathe{animation:wobble 2.6s ease-in-out infinite}
 @keyframes wobble{0%,55%,100%{transform:none}10%{transform:rotate(-4deg) scale(1.03,.97)}22%{transform:rotate(3deg) scale(.98,1.02)}34%{transform:rotate(-1.5deg)}45%{transform:rotate(.6deg)}}
 .shadow{position:absolute;left:18%;right:18%;bottom:-6px;height:12px;border-radius:50%;background:radial-gradient(closest-side,rgba(0,0,0,.22),transparent);transform-origin:50% 50%}
 /* Hydraulic press (compressing) */
 .rig{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity var(--t-fast)}
 .stage[data-size="press"] .rig{opacity:1}
-.plate{position:absolute;left:50%;top:50%;width:40px;height:124px;margin:-62px 0 0 -20px;border-radius:10px;will-change:transform;
-  background:repeating-linear-gradient(180deg,transparent 0 2px,rgba(255,255,255,.16) 2px 3px),linear-gradient(90deg,var(--plate-a),var(--plate-b) 46%,var(--plate-c));
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.65),inset 0 -1px 0 rgba(0,0,0,.14),0 0 0 .5px rgba(0,0,0,.2),0 10px 20px -8px rgba(0,0,0,.4)}
-.plate::after{content:"";position:absolute;top:10px;bottom:10px;width:2px;border-radius:1px;background:rgba(255,255,255,.7)}
-.plate.l::after{right:4px} .plate.r::after{left:4px}
-.rod{position:absolute;top:50%;width:240px;height:10px;margin-top:-5px;border-radius:5px;background:linear-gradient(180deg,var(--plate-b),var(--plate-a) 55%,var(--plate-c));box-shadow:0 0 0 .5px rgba(0,0,0,.18)}
-.plate.l .rod{right:100%} .plate.r .rod{left:100%}
-.rod::before{content:"";position:absolute;top:-4px;bottom:-4px;width:8px;border-radius:3px;background:var(--plate-c)}
-.plate.l .rod::before{right:0} .plate.r .rod::before{left:0}
+.plate{position:absolute;left:50%;top:50%;width:56px;height:112px;margin:-56px 0 0 -28px;border-radius:14px;will-change:transform;
+  background:linear-gradient(180deg,rgba(255,255,255,.55) 0,rgba(255,255,255,0) 24%,rgba(0,0,0,0) 72%,rgba(0,0,0,.2) 100%),
+    linear-gradient(90deg,var(--m1) 0%,var(--m2) 20%,var(--m3) 36%,var(--m4) 54%,var(--m2) 76%,var(--m5) 100%);
+  box-shadow:inset 0 1.5px 0 rgba(255,255,255,.95),inset 0 -2px 1px rgba(0,0,0,.2),inset 2px 0 2px rgba(255,255,255,.35),inset -2px 0 2px rgba(0,0,0,.18),
+    0 0 0 .5px rgba(0,0,0,.35),0 16px 18px -12px rgba(0,0,0,.55)}
+.plate::before{content:"";position:absolute;top:50%;width:200px;height:46px;margin-top:-23px;border-radius:9px;
+  background:linear-gradient(180deg,var(--m5) 0%,var(--m3) 26%,var(--m2) 46%,var(--m4) 64%,var(--m1) 100%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.7),0 0 0 .5px rgba(0,0,0,.3),0 10px 14px -10px rgba(0,0,0,.5)}
+.plate.l::before{right:100%} .plate.r::before{left:100%}
 .dust i{position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px;border-radius:50%;background:var(--label-2);opacity:0}
-.pbar{width:160px;height:4px;margin:6px auto 0;border-radius:2px;background:var(--fill-2);overflow:hidden}
-.pbar i{display:block;height:100%;background:var(--accent);transform-origin:0 50%;transform:scaleX(0)}
 .sparks i{position:absolute;left:50%;top:50%;width:6px;height:6px;margin:-3px;border-radius:50%;background:var(--accent);opacity:0}
 .sparks i:nth-child(even){background:var(--pouch-b)}
 .sparks.burst i{animation:spark 420ms var(--ease) forwards}
@@ -545,10 +558,11 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
                     <div class="pouch" id="pouch" data-mood="idle" aria-hidden="true">
             <div class="breathe"><div class="spring" id="pouchSpring">
               <div class="blob"></div><div class="gloss"></div>
+              <div class="face" id="face"><span class="eye l"></span><span class="eye r"></span><span class="mouth"></span></div>
             </div></div>
             <div class="shadow" id="pouchShadow"></div>
           </div>
-          <div class="rig" aria-hidden="true"><div class="plate l" id="plateL"><span class="rod"></span></div><div class="plate r" id="plateR"><span class="rod"></span></div><div class="dust" id="dust"><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+          <div class="rig" aria-hidden="true"><div class="plate l" id="plateL"></div><div class="plate r" id="plateR"></div><div class="dust" id="dust"><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
           <div class="sparks" id="sparks" aria-hidden="true"><i style="--a:0deg"></i><i style="--a:45deg"></i><i style="--a:90deg"></i><i style="--a:135deg"></i><i style="--a:180deg"></i><i style="--a:225deg"></i><i style="--a:270deg"></i><i style="--a:315deg"></i></div>
         </div>
 
@@ -621,7 +635,7 @@ html.rm *,html.rm *::before,html.rm *::after{animation-duration:1ms!important;an
         <!-- Compressing -->
         <section class="view center" data-view="progress" aria-label="Compressing">
           <div id="progBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Compression progress">
-            <div class="pct" id="pct">0%</div><div class="pbar" aria-hidden="true"><i id="pbarFill"></i></div>
+            <div class="pct" id="pct">0%</div>
           </div>
           <p class="sub" id="progLeft" style="margin-top:0">Starting…</p>
           <p class="sub" id="progMeta"></p>
@@ -838,6 +852,15 @@ const pouchEl = $('#pouch');
 const sp = new Spring($('#pouchSpring'), $('#pouchShadow'));
 const setMood = m => pouchEl.dataset.mood = m;
 const chomp = () => sp.push({ sx: 3.2, sy: -4.2 });
+pouchEl.addEventListener('pointerdown', () => { if (!prog) chomp(); });
+/* Eyes follow the pointer, a little */
+let eyeRaf = 0, px = 0, py = 0;
+const face = $('#face');
+function lookAt() { eyeRaf = 0; if (reduced() || !S.open) return; const r = pouchEl.getBoundingClientRect(); if (!r.width) return;
+  const dx = px - (r.left + r.width / 2), dy = py - (r.top + r.height / 2), d = Math.hypot(dx, dy) || 1, m = Math.min(3.5, d / 50);
+  face.style.transform = `translate(${(dx / d * m).toFixed(2)}px,${(dy / d * m * .7).toFixed(2)}px)`; }
+const trackPtr = e => { px = e.clientX; py = e.clientY; if (!eyeRaf) eyeRaf = requestAnimationFrame(lookAt); };
+document.addEventListener('pointermove', trackPtr, { passive: true });
 function burst() { if (reduced()) return; const s = $('#sparks'); s.classList.remove('burst'); void s.offsetWidth; s.classList.add('burst'); }
 
 
@@ -1084,11 +1107,11 @@ $('#modeSeg').addEventListener('pick', e => { S.mode = e.detail; updTrim(true); 
 /* ───── Compress (single file) ───── */
 let prog = null;
 /* Hydraulic press: transform/opacity only (WAAPI on two plates, CSS var scale on the blob) */
-const plates = [$('#plateL'), $('#plateR')], PW = 20, SQ = .74, dustEls = $$('#dust i');
+const plates = [$('#plateL'), $('#plateR')], PW = 28, SQ = .74, dustEls = $$('#dust i');
 const setPs = v => pouchEl.style.setProperty('--ps', v.toFixed(3));
 const X = (i, d, y = 0) => `translate(${((i ? 1 : -1) * d).toFixed(1)}px,${y}px)`;
 const openDist = () => stage.clientWidth / 2 + PW + 6;
-function platesGo(frames, dur, easing) { plates.forEach((p, i) => { p.getAnimations().forEach(a => a.cancel()); const kf = frames.map(f => ({ transform: X(i, f.d, f.y || 0), offset: f.o })); p.style.transform = kf[kf.length - 1].transform; p.animate(kf, { duration: dur, easing }); }); }
+function platesGo(frames, dur, easing) { plates.forEach((p, i) => { p.getAnimations().forEach(a => a.cancel()); const kf = frames.map(f => ({ transform: X(i, f.d, f.y || 0), offset: f.o, easing: f.e || 'linear' })); p.style.transform = kf[kf.length - 1].transform; p.animate(kf, { duration: dur, easing }); }); }
 function dust(edge) {
   dustEls.forEach((d, i) => { const s = i % 2 ? 1 : -1, y = (Math.floor(i / 2) - 1) * 24;
     d.animate([{ opacity: .75, transform: `translate(${s * edge}px,${y}px)` }, { opacity: 0, transform: `translate(${s * (edge + 10 + Math.random() * 10)}px,${y - 10 - Math.random() * 12}px) scale(.4)` }], { duration: 360, easing: 'ease-out' }); });
@@ -1099,17 +1122,22 @@ function pressStart() {
   const o = openDist(); platesGo([{ d: o }, { d: 66 + PW + 16 }], 280, SPRING_EASE);
 }
 function stroke(base, next) {
-  const hit = 66 * base * SQ + PW, back = 66 * next + PW + 14, T = 540;
-  platesGo([{ d: 66 * base + PW + 14 }, { d: hit - 2, o: .3 }, { d: hit + 1.4, y: 1, o: .38 }, { d: hit - .7, y: -1, o: .46 }, { d: hit, o: .54 }, { d: hit, o: .68 }, { d: back }], T, 'cubic-bezier(.55,0,.25,1)');
-  prog.t.push(setTimeout(() => { if (!prog) return; sp.v.sx = SQ; sp.v.sy = 1.14; sp.vel.sx = sp.vel.sy = 0; sp.to({ sx: SQ, sy: 1.12 }); dust(hit - PW); }, T * .3));
-  prog.t.push(setTimeout(() => { if (!prog) return; setPs(next); sp.to({ sx: 1, sy: 1 }); }, T * .68));
+  const hit = 66 * base * SQ + PW, rest = 66 * base + PW + 14, back = 66 * next + PW + 14, T = 660;
+  platesGo([
+    { d: rest, e: 'cubic-bezier(.45,0,.55,1)' },          // slow wind-up (pull back)
+    { d: rest + 10, o: .36, e: 'cubic-bezier(.75,0,1,.6)' }, // fast, hard drive in
+    { d: hit - 1.5, o: .5 },                                 // impact
+    { d: hit + 1.2, y: .8, o: .55 }, { d: hit - .6, y: -.6, o: .6 }, { d: hit, o: .65 }, // tiny shake
+    { d: hit, o: .78, e: 'cubic-bezier(.3,0,.2,1)' }, { d: back }], T, 'linear');
+  prog.t.push(setTimeout(() => { if (!prog) return; sp.v.sx = SQ; sp.v.sy = 1.14; sp.vel.sx = sp.vel.sy = 0; sp.to({ sx: SQ, sy: 1.12 }); dust(hit - PW); }, T * .5));
+  prog.t.push(setTimeout(() => { if (!prog) return; setPs(next); sp.to({ sx: 1, sy: 1 }); }, T * .78));
 }
 function pressFinish(done) {
   if (reduced()) { pouchEl.style.opacity = '0'; prog.t.push(setTimeout(done, 160)); return; }
-  platesGo([{ d: 66 * .32 + PW + 14 }, { d: PW + 3 }], 200, 'cubic-bezier(.6,0,.9,.6)');
+  platesGo([{ d: 66 * .32 + PW + 14 }, { d: PW + 2 }], 200, 'cubic-bezier(.7,0,1,.6)');
   sp.to({ sx: .4, sy: 1.15 }); setPs(.06);
   prog.t.push(setTimeout(() => { pouchEl.style.opacity = '0'; burst(); }, 200));
-  prog.t.push(setTimeout(() => platesGo([{ d: PW + 3 }, { d: openDist() }], 260, SPRING_EASE), 260));
+  prog.t.push(setTimeout(() => platesGo([{ d: PW + 2 }, { d: openDist() }], 260, SPRING_EASE), 260));
   prog.t.push(setTimeout(done, 420));
 }
 function startCompress(o = {}) {
@@ -1121,15 +1149,14 @@ function startCompress(o = {}) {
   const gpu = $('#swGpu').getAttribute('aria-checked') === 'true';
   $('#progMeta').textContent = `${fmt(f.size)} → ≈ ${fmt(S.result.out)} · ${S.result.label} · ${gpu ? 'GPU' : 'CPU'}`;
   tray.dataset.state = 'busy';
-  const dur = 4600, every = 575, t0 = performance.now(); let lastMs = -1, lastStroke = -1;
+  const dur = 4600, every = 720, t0 = performance.now(); let lastMs = -1, lastStroke = -1;
   const base = k => 1 - .68 * Math.min(1, k);
-  const pb = $('#progBar'), fillEl = $('#pbarFill');
+  const pb = $('#progBar');
   prog = { raf: 0, t: [] };
   pressStart();
   const tick = now => {
     if (!prog) return;
     const el = now - t0, k = Math.min(1, el / dur), pct = Math.round(k * 100), left = Math.ceil((1 - k) * 14);
-    fillEl.style.transform = `scaleX(${k.toFixed(3)})`;
     $('#pct').textContent = pct + '%';
     $('#progLeft').textContent = k < 1 ? `About ${left} s left` : 'Finishing…';
     pb.setAttribute('aria-valuenow', pct); pb.setAttribute('aria-valuetext', `${pct}%, about ${left} seconds left`);
@@ -1182,7 +1209,7 @@ function setDrag(on) {
   sp.to(on ? { sx: 1.08, sy: 1.08 } : { sx: 1, sy: 1 });
 }
 fly.addEventListener('dragenter', e => { e.preventDefault(); if (++dragDepth === 1) { if (S.view !== 'idle' && !prog) show('idle'); setDrag(true); } });
-fly.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+fly.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; trackPtr(e); });
 fly.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; setDrag(false); } });
 fly.addEventListener('drop', e => {
   e.preventDefault(); dragDepth = 0; setDrag(false);
