@@ -1,14 +1,14 @@
 # Architecture
 
 ```
- ┌──────────────── desktop app (Tauri 2, planned) ────────────────┐
- │  UI (web: popup, trimmer, settings)                             │
- │        ▲ events (progress, estimates)    │ commands             │
- │        │                                 ▼                      │
- │  Rust shell: tray · triggers (clipboard, hotkey, paste guard,   │
- │              clip-folder watcher, per-app profiles) · settings  │
+ ┌──────────────── tray app (apps/kompacter) ─────────────────────┐
+ │  UI: Slint (ui/*.slint), CPU-rendered, no web view              │
+ │        ▲ properties (progress, estimates)  │ callbacks          │
+ │        │                                   ▼                    │
+ │  Rust: src/main.rs (flow) · sys.rs (clipboard, tray corner,     │
+ │        Recycle Bin, start with Windows) · output.rs · settings  │
  └────────────────────────────┬────────────────────────────────────┘
-                              │ calls
+                              │ calls (worker threads)
                      ┌────────▼─────────┐        ┌──────────────┐
                      │  kompacter-core  │──runs──▶ ffmpeg/ffprobe│
                      └────────▲─────────┘        └──────────────┘
@@ -17,6 +17,17 @@
                      │  kompacter-cli   │
                      └──────────────────┘
 ```
+
+## apps/kompacter
+
+- One process, one window, no browser. Nothing runs while the window is hidden; while it's
+  open, animations only run when something changes.
+- The window is drawn on the CPU (Slint's software renderer), which keeps memory low. That
+  renderer can't round gradient shapes, so the blob's body is a pre-drawn image
+  (`tools/blob.py` makes `ui/blob-*.png`).
+- Platform code lives in `src/sys.rs` (Windows now; macOS/Linux get their own part later).
+- ffmpeg runs as a hidden child process at below-normal priority, so games stay smooth.
+- Dev builds: `KOMPACTER_DEMO=big|busy|done|error|settings|drag` shows a screen with sample data.
 
 ## kompacter-core
 
@@ -38,7 +49,7 @@ Public API: `Engine::probe`, `Engine::estimate` (live numbers), `Engine::compres
 ### Key rules
 
 - ffmpeg runs only during a job, so idle cost is close to zero.
-- Results go to `<name>.kompact.<ext>`. The app will write to its own cache folder and clean it after 7 days.
+- Results go to `<name>.kompact.<ext>`, by default in a `Kompacted` folder next to the app, cleaned after 7 days.
 - Everything is local. The engine never touches the network.
 
 ## Known gaps

@@ -6,7 +6,7 @@
 |---|---|---|
 | 0. UI mockups | Clickable mockup of popup, trimmer, settings; iterate on look | In progress |
 | 1. Engine | Rust library + CLI: probe, fit video/audio/image/folder, trim, estimates, GPU | **Working** |
-| 2. App shell | Tauri 2 tray app: popup, drag & drop, result on clipboard, settings | Next |
+| 2. App shell | Native tray app (Slint, no web view): popup, drag & drop, result on clipboard, settings | **Rewritten natively**, testing |
 | 3. Triggers | Right-click menu, hotkey, paste guard, heads-up on copy, per-app profiles | |
 | 4. Trimmer + extras | Live trimmer, GPU encoding, pre-compress on copy, clip-folder watcher, queue | |
 | 5. Release | Signed per-user installer, auto-update, macOS/Linux builds | |
@@ -51,4 +51,4 @@ Not doing: intercepting drag-and-drop into Discord, hooking its upload dialog, o
 - [ ] Exact keep-quality estimate from packet sizes
 - [ ] EXIF orientation for photos
 - [ ] Split folders/long videos into parts when they can't fit
-- [ ] Bundle ffmpeg as a Tauri sidecar
+- [x] Bundle ffmpeg with the installer

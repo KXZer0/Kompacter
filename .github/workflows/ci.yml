@@ -7,7 +7,7 @@ on:
 
 jobs:
   engine:
-    name: Engine (tests + lint)
+    name: Engine + app (tests + lint, Linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,27 +22,12 @@ jobs:
       - run: cargo test
 
   app:
-    name: Desktop app (Windows check)
+    name: App (Windows build + lint)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: apps/desktop/ui/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: apps/desktop/src-tauri
-      - name: UI type check and build
-        working-directory: apps/desktop/ui
-        run: |
-          npm ci
-          npm run check
-          npm run build
-      - name: Rust check
-        working-directory: apps/desktop/src-tauri
-        run: cargo clippy -- -D warnings
+      - run: cargo clippy -p kompacter -- -D warnings

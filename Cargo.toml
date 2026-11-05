@@ -1,8 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/kompacter-core", "crates/kompacter-cli"]
-# The desktop app needs platform webview libraries, so it builds on its own.
-exclude = ["apps/desktop/src-tauri"]
+members = ["crates/kompacter-core", "crates/kompacter-cli", "apps/kompacter"]
 
 [workspace.package]
 version = "0.1.0"
@@ -18,3 +16,10 @@ tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+
+# Small, fast release builds.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
