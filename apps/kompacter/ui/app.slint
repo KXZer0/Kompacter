@@ -1,7 +1,7 @@
 // The Kompacter flyout. One calm 360×472 card; settings is taller.
 // Rust owns the logic (src/main.rs) and sets the properties below; this file only draws.
 
-import { Theme, Icon, AppLogo, Btn, IconBtn, Kbd, Switch, Seg, Appear } from "theme.slint";
+import { Theme, Icon, AppLogo, Btn, IconBtn, Switch, Seg, Appear, Tip } from "theme.slint";
 import { Icons } from "icons.slint";
 import { Mood, Blob, DropZone, Press, Sparks } from "stage.slint";
 
@@ -140,16 +140,15 @@ export component AppWindow inherits Window {
     in property <float> meter-fill;
     in property <float> meter-limit;
     in property <string> over-text;
+    in property <string> compress-label: "Compress";
     in property <string> foot-text;
 
     in property <string> busy-left;
-    in property <string> busy-meta;
 
     in property <bool> done-ok;
     in property <string> done-title;
     in property <string> done-sub;
-    in property <string> done-hint;
-    in property <bool> done-copied;
+    in property <string> done-tip;
     in-out property <string> note;
 
     in property <string> error-text;
@@ -201,7 +200,7 @@ export component AppWindow inherits Window {
         : Mood.idle;
     property <bool> stage-lg: view == View.idle || view == View.done;
     property <bool> stage-md: view == View.reading || view == View.big || view == View.error;
-    property <length> stage-h: stage-lg ? (view == View.idle ? 246px : 222px) : 112px;
+    property <length> stage-h: stage-lg ? 312px : 124px;
     property <float> squeeze: view == View.busy ? progress : 0;
     animate squeeze { duration: 300ms; easing: ease-out; }
 
@@ -263,6 +262,8 @@ export component AppWindow inherits Window {
         x: parent.width - 14px - self.width;
         y: 13px;
         icon: Icons.gear;
+        tip: "Settings";
+        tip-below: true;
         enabled: root.view != View.busy;
         clicked => { root.open-settings(); }
     }
@@ -298,7 +299,7 @@ export component AppWindow inherits Window {
                             y: (parent.height - self.height) / 2;
                         }
                         Text {
-                            text: p.note != "" ? p.name + " · " + p.note : p.name;
+                            text: p.name;
                             font-size: 13px;
                             color: row-ta.has-hover ? white : Theme.label;
                             vertical-alignment: center;
@@ -394,26 +395,20 @@ export component AppWindow inherits Window {
         }
     }
 
-    // ── Views ──
+    // ── Views: big text and buttons; the stage and controls say the rest ──
     if view == View.idle: Appear {
         x: 20px;
-        y: 302px;
+        y: 376px;
         width: 320px;
-        height: 150px;
+        height: 76px;
         Title {
             y: 0;
             width: parent.width;
             height: 24px;
-            text: root.dragging ? "Let go to Kompact it" : "Drop or copy a file";
-        }
-        Sub {
-            y: 28px;
-            width: parent.width;
-            height: 36px;
-            text: "It shrinks to fit " + root.target-text + " and lands on your clipboard.";
+            text: root.note != "" ? root.note : root.dragging ? "Drop it" : "Drop or copy a file";
         }
         HorizontalLayout {
-            y: 74px;
+            y: 40px;
             height: 36px;
             spacing: 8px;
             alignment: center;
@@ -425,55 +420,28 @@ export component AppWindow inherits Window {
             Btn {
                 text: "Paste";
                 icon: Icons.clip;
+                tip: "Ctrl+V";
                 clicked => { root.paste(); }
-            }
-        }
-        HorizontalLayout {
-            y: 124px;
-            height: 20px;
-            spacing: 4px;
-            alignment: center;
-            Text {
-                text: "or press";
-                font-size: 12px;
-                color: Theme.label-2;
-                vertical-alignment: center;
-            }
-            Kbd { text: "Ctrl"; }
-            Kbd { text: "V"; }
-            Text {
-                text: "here with a file copied";
-                font-size: 12px;
-                color: Theme.label-2;
-                vertical-alignment: center;
             }
         }
     }
 
     if view == View.reading: Appear {
         x: 20px;
-        y: 186px;
+        y: 196px;
         width: 320px;
-        height: 60px;
+        height: 24px;
         Title {
-            y: 0;
             width: parent.width;
-            height: 24px;
             text: root.file-name;
-        }
-        Sub {
-            y: 30px;
-            width: parent.width;
-            height: 18px;
-            text: "Reading…";
         }
     }
 
     if view == View.big: Appear {
         x: 20px;
-        y: 170px;
+        y: 186px;
         width: 320px;
-        height: 282px;
+        height: 266px;
         // File card.
         Rectangle {
             y: 0;
@@ -560,48 +528,40 @@ export component AppWindow inherits Window {
                 background: Theme.label;
             }
         }
-        HorizontalLayout {
+        Text {
             y: 116px;
+            width: parent.width;
             height: 20px;
-            spacing: 6px;
-            Icon {
-                d: Icons.xc;
-                size: 16px;
-                color: Theme.bad;
-                y: 2px;
-            }
-            Text {
-                text: root.over-text;
-                font-size: 13px;
-                font-weight: 600;
-                color: Theme.bad;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-            }
+            text: root.over-text;
+            font-size: 13px;
+            font-weight: 600;
+            color: Theme.bad;
         }
         Btn {
             y: 152px;
             width: parent.width;
-            text: "Compress";
+            text: root.compress-label;
             icon: Icons.squeeze;
             primary: true;
             large: true;
             clicked => { root.compress(); }
         }
-        Sub {
+        if root.foot-text != "": Text {
             y: 206px;
             width: parent.width;
-            height: 36px;
-            font-size: 12px;
             text: root.foot-text;
+            font-size: 12px;
+            color: Theme.label-2;
+            horizontal-alignment: center;
+            wrap: word-wrap;
         }
     }
 
     if view == View.busy: Appear {
         x: 20px;
-        y: 306px;
+        y: 310px;
         width: 320px;
-        height: 146px;
+        height: 142px;
         Text {
             y: 0;
             width: parent.width;
@@ -613,21 +573,13 @@ export component AppWindow inherits Window {
             horizontal-alignment: center;
         }
         Sub {
-            y: 36px;
+            y: 38px;
             width: parent.width;
             height: 18px;
             text: root.busy-left;
         }
-        Sub {
-            y: 56px;
-            width: parent.width;
-            height: 18px;
-            text: root.busy-meta;
-            wrap: no-wrap;
-            overflow: elide;
-        }
         HorizontalLayout {
-            y: 88px;
+            y: 74px;
             height: 36px;
             alignment: center;
             Btn {
@@ -639,9 +591,9 @@ export component AppWindow inherits Window {
 
     if view == View.done: Appear {
         x: 20px;
-        y: 278px;
+        y: 374px;
         width: 320px;
-        height: 174px;
+        height: 78px;
         HorizontalLayout {
             y: 0;
             height: 26px;
@@ -658,35 +610,26 @@ export component AppWindow inherits Window {
                 color: root.done-ok ? Theme.label : Theme.bad;
             }
         }
-        Sub {
-            y: 30px;
+        // Details (size, resolution) on hover; a line only when something needs doing.
+        done-hover := TouchArea {
+            y: 0;
+            height: 26px;
+        }
+        Tip {
+            text: root.done-tip;
+            hovered: done-hover.has-hover;
+            host-w: parent.width;
+            host-h: 26px;
+        }
+        if root.done-sub != "": Sub {
+            y: 28px;
             width: parent.width;
-            height: 36px;
+            height: 18px;
+            font-size: 12px;
             text: root.done-sub;
         }
-        if root.done-copied: HorizontalLayout {
-            y: 70px;
-            height: 20px;
-            spacing: 4px;
-            alignment: center;
-            Kbd { text: "Ctrl"; }
-            Kbd { text: "V"; }
-            Text {
-                text: "in any chat";
-                font-size: 12px;
-                color: Theme.label-2;
-                vertical-alignment: center;
-            }
-        }
-        if !root.done-copied: Sub {
-            y: 70px;
-            width: parent.width;
-            height: 20px;
-            font-size: 12px;
-            text: root.done-hint;
-        }
         HorizontalLayout {
-            y: 102px;
+            y: root.done-sub != "" ? 52px : 42px;
             height: 36px;
             spacing: 8px;
             alignment: center;
@@ -696,25 +639,18 @@ export component AppWindow inherits Window {
                 clicked => { root.show-in-folder(); }
             }
             Btn {
-                text: "Kompact another";
+                text: "Another";
                 plain: true;
                 clicked => { root.another(); }
             }
-        }
-        Sub {
-            y: 146px;
-            width: parent.width;
-            height: 18px;
-            font-size: 12px;
-            text: root.note;
         }
     }
 
     if view == View.error: Appear {
         x: 20px;
-        y: 176px;
+        y: 186px;
         width: 320px;
-        height: 200px;
+        height: 160px;
         HorizontalLayout {
             y: 0;
             height: 26px;
@@ -731,15 +667,15 @@ export component AppWindow inherits Window {
         Sub {
             y: 32px;
             width: parent.width;
-            height: 72px;
+            height: 54px;
             text: root.error-text;
         }
         HorizontalLayout {
-            y: 114px;
+            y: 96px;
             height: 36px;
             alignment: center;
             Btn {
-                text: "Try another file";
+                text: "Try another";
                 primary: true;
                 clicked => { root.another(); }
             }
@@ -781,11 +717,10 @@ export component AppWindow inherits Window {
                 padding-bottom: 20px;
                 spacing: 6px;
 
-                GroupTitle { text: "DEFAULT TARGET"; }
+                GroupTitle { text: "TARGET"; }
                 Group {
                     for p[i] in root.presets: Cell {
                         label: p.name;
-                        small: p.note;
                         first: i == 0;
                         clickable: true;
                         clicked => { root.select-preset(i); }
@@ -826,18 +761,18 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                GroupTitle { text: "APPEARANCE"; }
+                GroupTitle { text: "THEME"; }
                 Seg {
                     options: ["System", "Light", "Dark"];
                     index: root.theme-index;
                     picked(i) => { root.set-theme(i); }
                 }
 
-                GroupTitle { text: "SAVE COMPRESSED FILES TO"; }
+                GroupTitle { text: "SAVE TO"; }
                 Group {
                     Cell {
                         label: "Kompacter folder";
-                        small: "Next to the app (or Videos) · deleted after 7 days";
+                        small: "Deleted after 7 days";
                         first: true;
                         clickable: true;
                         clicked => { root.set-output(0); }
@@ -851,14 +786,13 @@ export component AppWindow inherits Window {
                     }
                     Cell {
                         label: "Next to the original";
-                        small: "In a “Kompacted” folder beside it";
                         clickable: true;
                         clicked => { root.set-output(1); }
                         Check { on: root.output-index == 1; }
                     }
                     Cell {
-                        label: "A folder I choose";
-                        small: root.output-dir != "" ? root.output-dir : "Pick a folder";
+                        label: "Pick a folder";
+                        small: root.output-dir;
                         clickable: true;
                         clicked => { root.set-output(2); }
                         Btn {
@@ -871,7 +805,7 @@ export component AppWindow inherits Window {
                     }
                     Cell {
                         label: "Replace the original";
-                        small: "The original goes to the Recycle Bin";
+                        small: "Original goes to the Recycle Bin";
                         clickable: true;
                         clicked => { root.set-output(3); }
                         Check { on: root.output-index == 3; }
@@ -895,8 +829,7 @@ export component AppWindow inherits Window {
                 GroupTitle { text: "GENERAL"; }
                 Group {
                     Cell {
-                        label: "Hide when I click away";
-                        small: "Stays open while you drag a file to it";
+                        label: "Auto-hide";
                         first: true;
                         Switch {
                             checked: root.auto-hide;
@@ -906,7 +839,6 @@ export component AppWindow inherits Window {
                     }
                     Cell {
                         label: "Start with Windows";
-                        small: "Waits quietly in the tray";
                         Switch {
                             checked: root.start-with-windows;
                             y: (parent.height - self.height) / 2;
@@ -915,21 +847,6 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                HorizontalLayout {
-                    padding-top: 10px;
-                    spacing: 8px;
-                    Icon {
-                        d: Icons.lock;
-                        size: 15px;
-                    }
-                    Text {
-                        text: "Everything runs on this PC. No account, no uploads.";
-                        font-size: 12px;
-                        color: Theme.label-2;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                }
             }
         }
     }

@@ -295,24 +295,18 @@ impl App {
         let max = size.max(target) as f64 * 1.08;
         ui.set_meter_fill((size as f64 / max) as f32);
         ui.set_meter_limit((target as f64 / max) as f32);
-        ui.set_over_text(
-            format!(
-                "{} over your {} limit",
-                bytes(size.saturating_sub(target)),
-                bytes(target)
-            )
-            .into(),
-        );
-        let foot = match &c.estimate.video {
-            Some(v) if v.fits => format!(
-                "Compress makes it fit at {}p · {} quality",
-                v.height,
-                format!("{:?}", v.quality).to_lowercase()
+        ui.set_over_text(format!("{} too big", bytes(size.saturating_sub(target))).into());
+        // The button says what it will do; a line appears only as a warning.
+        let (label, warn) = match &c.estimate.video {
+            Some(v) if v.fits => (format!("Compress to {}p", v.height), ""),
+            Some(_) => (
+                "Compress".to_string(),
+                "Quality will be low. Trim it first for a better result.",
             ),
-            Some(_) => "It's long for this limit, so quality will be low. Trimming it comes in the next build.".into(),
-            None => String::new(),
+            None => ("Compress".to_string(), ""),
         };
-        ui.set_foot_text(foot.into());
+        ui.set_compress_label(label.into());
+        ui.set_foot_text(warn.into());
         drop(cur);
         self.set_view(View::Big);
     }
@@ -323,12 +317,7 @@ impl App {
         let Some(c) = cur.as_ref() else { return };
         let path = c.path.clone();
         let quick = c.estimate.fits_as_is;
-        let label = match (&c.estimate.video, c.estimate.audio_kbps) {
-            (Some(v), _) => format!("{}p", v.height),
-            (None, Some(k)) => format!("{k} kbps"),
-            _ => String::new(),
-        };
-        let size = c.info.size_bytes;
+        let height = c.estimate.video.as_ref().map(|v| v.height);
         drop(cur);
 
         let prefs = self.settings.borrow().clone();
@@ -345,22 +334,6 @@ impl App {
         self.started.set(Some(Instant::now()));
         ui.set_progress(0.0);
         ui.set_busy_left("Estimating time…".into());
-        let hw = if prefs.gpu && !self.engine.hw_encoders().is_empty() {
-            "GPU"
-        } else {
-            "CPU"
-        };
-        let mut meta = format!("{} → ≤ {}", bytes(size), bytes(target));
-        if !label.is_empty() {
-            meta += &format!(" · {label}");
-        }
-        if matches!(
-            self.current.borrow().as_ref().map(|c| c.info.kind),
-            Some(MediaKind::Video)
-        ) {
-            meta += &format!(" · {hw}");
-        }
-        ui.set_busy_meta(meta.into());
         if !quick {
             self.set_view(View::Busy);
         }
@@ -405,7 +378,7 @@ impl App {
                         let delay = if quick { 0 } else { 380 };
                         slint::Timer::single_shot(Duration::from_millis(delay), move || {
                             if let Some(app) = weak.upgrade() {
-                                app.done(out, copied, &label);
+                                app.done(out, copied, height);
                             }
                         });
                     }
@@ -424,44 +397,39 @@ impl App {
         );
     }
 
-    fn done(&self, out: Outcome, copied: bool, label: &str) {
+    fn done(&self, out: Outcome, copied: bool, height: Option<u32>) {
         let ui = self.ui();
         let title = if !out.fits {
             "Still too big"
         } else if copied {
-            "Copied — paste anywhere"
+            "Copied"
         } else {
-            "Saved — ready to share"
+            "Saved"
         };
-        let sub = if out.untouched {
+        let sub = if !out.fits {
             format!(
-                "{} is {} — already fits{}",
-                file_name(&out.path),
-                bytes(out.output_bytes),
-                if copied { ", copied as-is" } else { "" }
+                "{} · trim it or pick a bigger target",
+                bytes(out.output_bytes)
             )
+        } else if !copied {
+            "Couldn't copy it — drag it from the folder".into()
         } else {
-            let ratio = out.original_bytes as f64 / out.output_bytes.max(1) as f64;
-            let mut parts = vec![file_name(&out.path), bytes(out.output_bytes)];
-            if !label.is_empty() {
-                parts.push(label.to_string());
-            }
-            if ratio >= 1.1 {
-                parts.push(format!("{ratio:.1}× smaller"));
-            }
-            parts.join(" · ")
+            String::new()
         };
-        let hint = if out.fits && !copied {
-            "Couldn't put it on the clipboard — drag it from the folder."
-        } else {
-            "Trim it shorter, or pick a bigger target."
-        };
-        ui.set_done_ok(out.fits);
-        ui.set_done_copied(out.fits && copied);
-        ui.set_done_title(title.into());
+        let ratio = out.original_bytes as f64 / out.output_bytes.max(1) as f64;
+        let mut tip = vec![bytes(out.output_bytes)];
+        if let Some(h) = height {
+            tip.push(format!("{h}p"));
+        }
+        if out.untouched {
+            tip.push("already fit".into());
+        } else if ratio >= 1.1 {
+            tip.push(format!("{ratio:.1}× smaller"));
+        }
         ui.set_done_sub(sub.into());
-        ui.set_done_hint(hint.into());
-        ui.set_note(SharedString::new());
+        ui.set_done_tip(tip.join(" · ").into());
+        ui.set_done_ok(out.fits);
+        ui.set_done_title(title.into());
         *self.result.borrow_mut() = Some(out.path);
         self.set_view(View::Done);
         // If the user already went back to their chat, fold away after a moment.
@@ -476,7 +444,8 @@ impl App {
 
     fn fail(&self, path: &Path, e: &str) {
         let ui = self.ui();
-        ui.set_error_text(format!("{}: {}", file_name(path), e).into());
+        let _ = path;
+        ui.set_error_text(e.into());
         self.set_view(View::Error);
     }
 
@@ -617,35 +586,27 @@ fn main() -> Result<(), slint::PlatformError> {
     // The Run entry is the truth (it can be turned off in Task Manager).
     app.settings.borrow_mut().start_with_windows = sys::starts_with_windows();
     app.sync_settings();
-    ui.set_dash_path(format::dashed_round_rect(308.0, 234.0, 28.0, 6.0, 7.0).into());
+    ui.set_dash_path(format::dashed_round_rect(308.0, 300.0, 28.0, 6.0, 7.0).into());
 
-    // Find GPU encoders in the background, then tidy old outputs.
+    // Find GPU encoders in the background (so the first compress doesn't wait), then
+    // tidy old outputs.
     {
         let engine = app.engine.clone();
         let w = ui.as_weak();
         std::thread::spawn(move || {
-            let found: Vec<String> = engine
-                .hw_encoders()
-                .iter()
-                .map(|e| {
-                    match e {
-                        kompacter_core::Encoder::Nvenc => "NVIDIA NVENC",
-                        kompacter_core::Encoder::Qsv => "Intel Quick Sync",
-                        kompacter_core::Encoder::Amf => "AMD AMF",
-                        kompacter_core::Encoder::VideoToolbox => "VideoToolbox",
+            let none = engine.hw_encoders().is_empty();
+            let _ = w.upgrade_in_event_loop(move |ui| {
+                ui.set_gpu_text(
+                    if none {
+                        "No GPU found — uses the CPU"
+                    } else {
+                        ""
                     }
-                    .to_string()
-                })
-                .collect();
-            let text = if found.is_empty() {
-                "No GPU encoder found — using the CPU".to_string()
-            } else {
-                format!("{} found · much faster", found.join(", "))
-            };
-            let _ = w.upgrade_in_event_loop(move |ui| ui.set_gpu_text(text.into()));
+                    .into(),
+                )
+            });
             output::clean(None);
         });
-        ui.set_gpu_text("Checking your GPU…".into());
     }
 
     // ── Tray ──
@@ -709,8 +670,15 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Some(p) = sys::clipboard_files().into_iter().next() {
                 a.open(p);
             } else {
-                a.ui()
-                    .set_note("No copied file. Copy one in Explorer first.".into());
+                // Say it in the title for a moment.
+                let ui = a.ui();
+                ui.set_note("Copy a file first".into());
+                let w = ui.as_weak();
+                slint::Timer::single_shot(Duration::from_millis(1800), move || {
+                    if let Some(ui) = w.upgrade() {
+                        ui.set_note(SharedString::new());
+                    }
+                });
             }
         });
         let a = app.clone();
@@ -725,7 +693,6 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_show_in_folder(move || {
             if let Some(p) = a.result.borrow().as_ref() {
                 sys::show_in_folder(p);
-                a.ui().set_note("Opened in Explorer".into());
             }
         });
         let a = app.clone();
@@ -889,16 +856,14 @@ fn demo(app: &App, which: &str) {
     ui.set_file_kind("video".into());
     ui.set_meter_fill(0.92);
     ui.set_meter_limit(0.15);
-    ui.set_over_text("108 MB over your 20 MB limit".into());
-    ui.set_foot_text("Compress makes it fit at 720p · okay quality".into());
+    ui.set_over_text("108 MB too big".into());
     ui.set_progress(0.42);
     ui.set_busy_left("About 40 s left".into());
-    ui.set_busy_meta("128 MB → ≤ 20 MB · 720p · GPU".into());
     ui.set_done_ok(true);
-    ui.set_done_copied(true);
-    ui.set_done_title("Copied — paste anywhere".into());
-    ui.set_done_sub("Valorant clutch 4K.kompact.mp4 · 19.4 MB · 720p · 6.6× smaller".into());
-    ui.set_error_text("notes.docx: ffprobe couldn't read this file".into());
+    ui.set_done_title("Copied".into());
+    ui.set_done_tip("19.4 MB · 720p · 6.6× smaller".into());
+    ui.set_compress_label("Compress to 720p".into());
+    ui.set_error_text("ffprobe couldn't read this file".into());
     match which {
         "big" => ui.set_view(View::Big),
         "busy" => ui.set_view(View::Busy),

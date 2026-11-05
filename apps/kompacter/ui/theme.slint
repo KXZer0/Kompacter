@@ -75,6 +75,43 @@ export component AppLogo inherits Rectangle {
     }
 }
 
+/// Small dark label that fades in after the pointer rests on something for half a second.
+/// Extra info lives here instead of in always-visible subtitles.
+export component Tip inherits Rectangle {
+    in property <string> text;
+    in property <bool> hovered;
+    /// Show under the parent instead of above (for things at the top of the window).
+    in property <bool> below;
+    /// Size of the thing it describes (a component can't see its parent).
+    in property <length> host-w;
+    in property <length> host-h;
+    property <bool> show;
+    changed hovered => {
+        if (!self.hovered) {
+            self.show = false;
+        }
+    }
+    x: (host-w - self.width) / 2;
+    y: below ? host-h + 6px : -self.height - 6px;
+    width: label.preferred-width + 16px;
+    height: 24px;
+    border-radius: 6px;
+    background: #1c1c1eeb;
+    opacity: show && text != "" ? 1 : 0;
+    animate opacity { duration: 120ms; }
+    Timer {
+        interval: 500ms;
+        running: root.hovered && !root.show;
+        triggered => { root.show = true; }
+    }
+    label := Text {
+        text: root.text;
+        color: white;
+        font-size: 12px;
+        vertical-alignment: center;
+    }
+}
+
 /// Pill button: default (grey), primary (blue) or plain (text only).
 export component Btn inherits Rectangle {
     in property <string> text;
@@ -83,6 +120,7 @@ export component Btn inherits Rectangle {
     in property <bool> plain;
     in property <bool> large;
     in property <bool> enabled: true;
+    in property <string> tip;
     callback clicked;
 
     height: large ? 44px : 36px;
@@ -118,12 +156,20 @@ export component Btn inherits Rectangle {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
+    Tip {
+        text: root.tip;
+        hovered: ta.has-hover;
+        host-w: root.width;
+        host-h: root.height;
+    }
 }
 
 /// Round, icon-only button.
 export component IconBtn inherits Rectangle {
     in property <string> icon;
     in property <bool> enabled: true;
+    in property <string> tip;
+    in property <bool> tip-below;
     callback clicked;
     width: 32px;
     height: 32px;
@@ -138,6 +184,13 @@ export component IconBtn inherits Rectangle {
         enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+    }
+    Tip {
+        text: root.tip;
+        hovered: ta.has-hover;
+        host-w: root.width;
+        host-h: root.height;
+        below: root.tip-below;
     }
 }
 
