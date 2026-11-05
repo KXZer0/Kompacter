@@ -31,7 +31,7 @@ pub struct Motion {
 /// Content height of each screen.
 pub fn view_height(v: View) -> f32 {
     match v {
-        View::Trim => 608.0,
+        View::Trim => 624.0,
         View::Settings => 600.0,
         _ => 472.0,
     }

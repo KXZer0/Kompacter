@@ -661,11 +661,30 @@ fn demo(app: &Rc<App>, which: &str) {
     ui.set_trim_range("0:12 – 0:40 · 28 s".into());
     ui.set_trim_big("≈ 14.2 MB".into());
     ui.set_trim_status("Fits 20 MB".into());
-    ui.set_trim_grade(3);
+    ui.set_trim_grade(2);
+    ui.set_trim_big("720p".into());
+    ui.set_trim_details(ModelRc::new(VecModel::from(vec![
+        DetailRow {
+            label: "Resolution".into(),
+            value: "2560×1440 → 1280×720".into(),
+        },
+        DetailRow {
+            label: "Frame rate".into(),
+            value: "60 → 30 fps".into(),
+        },
+        DetailRow {
+            label: "Bitrate".into(),
+            value: "1.9 Mbps video · 96 kbps audio".into(),
+        },
+    ])));
+    ui.set_trim_verdict(
+        "Okay for 720p (sharp needs about 2.5 Mbps). Fine for talking, a bit soft in fast action."
+            .into(),
+    );
     match which {
         "big" => ui.set_view(View::Big),
         "trim" => {
-            ui.set_win_h(608.0);
+            ui.set_win_h(624.0);
             ui.set_view(View::Trim);
         }
         "busy" => ui.set_view(View::Busy),

@@ -13,6 +13,12 @@ export { Theme, Fx }
 
 export enum View { idle, reading, big, trim, busy, done, error, settings }
 
+/// One line in the trimmer's quality details.
+export struct DetailRow {
+    label: string,
+    value: string,
+}
+
 export struct PresetItem {
     name: string,
     note: string,
@@ -132,25 +138,24 @@ component Check inherits Rectangle {
     }
 }
 
-/// Quality chip: three dots (filled by grade) and a word.
+/// Quality chip: a word and an arrow. Click to open the details below it.
 component Badge inherits Rectangle {
     in property <int> grade; // 3 great, 2 okay, 1 low
+    in property <bool> open;
+    callback toggled;
     property <color> c: grade >= 3 ? Theme.ok : grade == 2 ? Theme.warn : Theme.bad;
-    height: 24px;
-    width: row.preferred-width + 20px;
-    border-radius: 12px;
-    background: c.transparentize(0.86);
+    height: 28px;
+    width: row.preferred-width;
+    border-radius: 14px;
+    background: ta.has-hover ? c.transparentize(0.8) : c.transparentize(0.87);
+    animate background { duration: 140ms; }
+    transform-scale: ta.pressed ? 0.95 : 1;
+    animate transform-scale { duration: 220ms; easing: ease-out-back; }
     row := HorizontalLayout {
-        x: 10px;
-        spacing: 6px;
+        padding-left: 12px;
+        padding-right: 8px;
+        spacing: 4px;
         alignment: center;
-        for i in 3: Rectangle {
-            width: 6px;
-            height: 6px;
-            y: (parent.height - self.height) / 2;
-            border-radius: 3px;
-            background: i < root.grade ? root.c : root.c.transparentize(0.7);
-        }
         Text {
             text: root.grade >= 3 ? "Great quality" : root.grade == 2 ? "Okay quality" : "Low quality";
             font-size: 12px;
@@ -158,6 +163,19 @@ component Badge inherits Rectangle {
             color: root.c;
             vertical-alignment: center;
         }
+        Icon {
+            // Turns over when open (GPU drawing); CPU drawing swaps to an up arrow.
+            d: root.open && !Fx.rich ? "M7 14l5-5 5 5" : Icons.down;
+            size: 16px;
+            y: (parent.height - self.height) / 2;
+            color: root.c;
+            transform-rotation: root.open && Fx.rich ? 180deg : 0deg;
+            animate transform-rotation { duration: 280ms; easing: ease-out-back; }
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(); }
     }
 }
 
@@ -207,6 +225,8 @@ export component AppWindow inherits Window {
     in property <string> trim-status;
     in property <bool> trim-ok: true;
     in property <int> trim-grade;
+    in property <[DetailRow]> trim-details;
+    in property <string> trim-verdict;
     in property <string> trim-button: "Compress";
 
     in property <string> busy-left;
@@ -258,7 +278,7 @@ export component AppWindow inherits Window {
     callback escape();
 
     property <length> inset: Fx.glass ? 12px : 0;
-    property <length> full-h: view == View.trim ? 608px : view == View.settings ? 600px : 472px;
+    property <length> full-h: view == View.trim ? 624px : view == View.settings ? 600px : 472px;
 
     title: "Kompacter";
     no-frame: true;
@@ -720,7 +740,7 @@ export component AppWindow inherits Window {
 
             if root.view == View.trim: Appear {
                 width: 360px;
-                height: 608px;
+                height: 624px;
                 // Header: back, name, selected range.
                 IconBtn {
                     x: 8px;
@@ -750,7 +770,7 @@ export component AppWindow inherits Window {
                     x: 20px;
                     y: 62px;
                     width: 320px;
-                    height: 180px;
+                    height: 150px;
                     border-radius: 12px;
                     background: Theme.fill;
                     clip: true;
@@ -766,7 +786,7 @@ export component AppWindow inherits Window {
                     property <float> fa: root.trim-a / Math.max(0.001, root.trim-dur);
                     property <float> fb: root.trim-b / Math.max(0.001, root.trim-dur);
                     x: 20px;
-                    y: 258px;
+                    y: 228px;
                     width: 320px;
                     height: 48px;
                     Rectangle {
@@ -851,7 +871,7 @@ export component AppWindow inherits Window {
                 // Mode and live readout.
                 Seg {
                     x: 20px;
-                    y: 330px;
+                    y: 296px;
                     width: 320px;
                     options: ["Keep quality", "Fit to " + root.target-text];
                     index: root.trim-mode;
@@ -860,29 +880,37 @@ export component AppWindow inherits Window {
                         root.trim-changed();
                     }
                 }
-                Rectangle {
+                readout := Rectangle {
+                    property <bool> open;
+                    property <length> extra: details.preferred-height;
                     x: 20px;
-                    y: 380px;
+                    y: 344px;
                     width: 320px;
-                    height: 92px;
+                    height: 76px + (self.open ? self.extra : 0);
+                    animate height { duration: 320ms; easing: Fx.rich ? ease-out-back : ease-out; }
                     border-radius: 12px;
                     background: Theme.group;
+                    clip: true;
                     Text {
                         x: 16px;
-                        y: 14px;
+                        y: 10px;
+                        height: 34px;
                         text: root.trim-big;
                         font-size: 26px;
                         font-weight: 700;
                         color: Theme.label;
+                        vertical-alignment: center;
                     }
                     if root.trim-grade > 0: Badge {
-                        x: parent.width - self.width - 14px;
-                        y: 18px;
+                        x: parent.width - self.width - 12px;
+                        y: 13px;
                         grade: root.trim-grade;
+                        open: readout.open;
+                        toggled => { readout.open = !readout.open; }
                     }
                     HorizontalLayout {
                         x: 16px;
-                        y: 56px;
+                        y: 46px;
                         height: 20px;
                         spacing: 6px;
                         Icon {
@@ -899,10 +927,48 @@ export component AppWindow inherits Window {
                             vertical-alignment: center;
                         }
                     }
+                    // Details: what the result will be, and whether that bitrate is enough.
+                    details := VerticalLayout {
+                        y: 76px;
+                        width: parent.width;
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        padding-bottom: 14px;
+                        spacing: 6px;
+                        opacity: readout.open ? 1 : 0;
+                        animate opacity { duration: 200ms; }
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.sep;
+                        }
+                        for d in root.trim-details: HorizontalLayout {
+                            height: 18px;
+                            Text {
+                                text: d.label;
+                                font-size: 12px;
+                                color: Theme.label-2;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: d.value;
+                                font-size: 12px;
+                                font-weight: 600;
+                                color: Theme.label;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Text {
+                            text: root.trim-verdict;
+                            font-size: 12px;
+                            color: Theme.label-2;
+                            wrap: word-wrap;
+                        }
+                    }
                 }
                 Btn {
                     x: 20px;
-                    y: 500px;
+                    y: readout.y + readout.height + 18px;
                     width: 320px;
                     text: root.trim-button;
                     icon: Icons.squeeze;

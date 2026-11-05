@@ -10,7 +10,7 @@ use kompacter_core::{MediaKind, Options, Quality};
 use slint::{Image, ModelRc, Rgb8Pixel, SharedPixelBuffer, VecModel};
 
 use crate::format::{bytes, clock};
-use crate::{run, App, View};
+use crate::{run, App, DetailRow, View};
 
 #[derive(Default)]
 pub struct Trim {
@@ -104,7 +104,31 @@ impl App {
         let keep_ok = keep_bytes <= target;
         self.trim.keep_ok.set(keep_ok);
 
+        let original_kbps = if c.info.duration > 0.0 {
+            (c.info.size_bytes as f64 * 8.0 / c.info.duration / 1000.0) as u32
+        } else {
+            0
+        };
+        let video = c.info.video.as_ref();
+        let original = || {
+            let mut rows = Vec::new();
+            if let Some(v) = video {
+                rows.push(row(
+                    "Resolution",
+                    format!("{}×{} (original)", v.width, v.height),
+                ));
+                rows.push(row("Frame rate", format!("{} fps", v.fps.round())));
+            }
+            rows.push(row(
+                "Bitrate",
+                format!("{} (original)", rate(original_kbps)),
+            ));
+            rows
+        };
+        let same = "No re-encode, so it looks exactly like the original.";
+
         if ui.get_trim_mode() == 0 {
+            self.set_details(original(), same);
             // Keep quality: a cut, no re-encode.
             ui.set_trim_big(format!("≈ {}", bytes(keep_bytes)).into());
             ui.set_trim_grade(3);
@@ -121,12 +145,38 @@ impl App {
                 ui.set_trim_button(format!("Fit to {} instead", bytes(target)).into());
             }
         } else if est.fits_as_is {
+            self.set_details(original(), same);
             ui.set_trim_big("Original".into());
             ui.set_trim_grade(3);
             ui.set_trim_ok(true);
             ui.set_trim_status(format!("Fits {} · no re-encode", bytes(target)).into());
             ui.set_trim_button("Compress".into());
         } else if let Some(v) = &est.video {
+            let mut rows = Vec::new();
+            let src = video.map(|s| (s.width, s.height, s.fps));
+            rows.push(row(
+                "Resolution",
+                match src {
+                    Some((w, h, _)) if (w, h) != (v.width, v.height) => {
+                        format!("{w}×{h} → {}×{}", v.width, v.height)
+                    }
+                    _ => format!("{}×{}", v.width, v.height),
+                },
+            ));
+            rows.push(row(
+                "Frame rate",
+                match src {
+                    Some((_, _, f)) if (f - v.fps).abs() > 0.5 => {
+                        format!("{} → {} fps", f.round(), v.fps.round())
+                    }
+                    _ => format!("{} fps", v.fps.round()),
+                },
+            ));
+            rows.push(row(
+                "Bitrate",
+                format!("{} video · {} kbps audio", rate(v.video_kbps), v.audio_kbps),
+            ));
+            self.set_details(rows, &verdict(v.height, v.fps, v.video_kbps, v.quality));
             ui.set_trim_big(format!("{}p", v.height).into());
             ui.set_trim_grade(match v.quality {
                 Quality::Great => 3,
@@ -145,6 +195,17 @@ impl App {
             ui.set_trim_button("Compress".into());
         } else {
             let ok = est.audio_kbps.is_some();
+            let k = est.audio_kbps.unwrap_or(0);
+            self.set_details(
+                vec![row("Audio bitrate", format!("{k} kbps"))],
+                if k >= 128 {
+                    "Sounds like the original."
+                } else if k >= 64 {
+                    "Fine for voice and most music."
+                } else {
+                    "Low: fine for voice, music will sound thin."
+                },
+            );
             ui.set_trim_big(
                 est.audio_kbps
                     .map_or("—".into(), |k| format!("{k} kbps"))
@@ -164,6 +225,12 @@ impl App {
         }
     }
 
+    fn set_details(&self, rows: Vec<DetailRow>, verdict: &str) {
+        let ui = self.ui();
+        ui.set_trim_details(ModelRc::new(VecModel::from(rows)));
+        ui.set_trim_verdict(verdict.into());
+    }
+
     pub fn trim_compress(self: &Rc<Self>) {
         let ui = self.ui();
         let keep = ui.get_trim_mode() == 0;
@@ -175,5 +242,58 @@ impl App {
         }
         let range = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
         self.compress(Some(range), keep);
+    }
+}
+
+fn row(label: &str, value: String) -> DetailRow {
+    DetailRow {
+        label: label.into(),
+        value: value.into(),
+    }
+}
+
+/// "2.4 Mbps" / "900 kbps".
+fn rate(kbps: u32) -> String {
+    if kbps >= 1000 {
+        let m = format!("{:.1}", kbps as f64 / 1000.0);
+        format!("{} Mbps", m.trim_end_matches(".0"))
+    } else {
+        format!("{kbps} kbps")
+    }
+}
+
+/// Bitrate that keeps H.264 sharp at this size and frame rate (typical streaming targets).
+fn good_kbps(height: u32, fps: f64) -> u32 {
+    let base = match height {
+        h if h >= 1080 => 5000,
+        h if h >= 720 => 2500,
+        h if h >= 480 => 1200,
+        _ => 700,
+    };
+    if fps > 40.0 {
+        base * 3 / 2
+    } else {
+        base
+    }
+}
+
+/// Plain words on whether the bitrate suits the resolution. Matches the quality chip.
+fn verdict(height: u32, fps: f64, kbps: u32, q: Quality) -> String {
+    let good = good_kbps(height, fps);
+    let what = format!("{height}p{}", if fps > 40.0 { "60" } else { "" });
+    match q {
+        Quality::Great => format!(
+            "{} is plenty for {what}: sharp, even in fast motion.",
+            rate(kbps)
+        ),
+        Quality::Okay => format!(
+            "Okay for {what} (sharp needs about {}). Fine for talking, a bit soft in fast action.",
+            rate(good)
+        ),
+        Quality::Low => format!(
+            "Low for {what} ({} of about {}). Fast motion will look blocky; trim it shorter for a sharper result.",
+            rate(kbps),
+            rate(good)
+        ),
     }
 }
