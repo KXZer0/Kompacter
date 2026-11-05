@@ -82,10 +82,11 @@ fn video_fits_target_and_trim_works() {
     );
 
     let thumbs = engine.thumbnails(&info, 8, 48).unwrap();
-    assert!(thumbs.len() >= 6, "got {} thumbnails", thumbs.len());
-    assert!(
-        thumbs.iter().all(|t| t.starts_with(&[0xFF, 0xD8])),
-        "not JPEGs"
+    assert!(thumbs.rgb.len() >= 6, "got {} thumbnails", thumbs.rgb.len());
+    assert_eq!(thumbs.height, 48);
+    assert_eq!(
+        thumbs.rgb[0].len(),
+        (thumbs.width * thumbs.height * 3) as usize
     );
 
     opts.trim = Some(Trim::new(2.0, 5.0).unwrap());

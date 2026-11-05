@@ -20,14 +20,19 @@
 
 ## apps/kompacter
 
-- One process, one window, no browser. Nothing runs while the window is hidden; while it's
-  open, animations only run when something changes.
-- The window is drawn on the CPU (Slint's software renderer), which keeps memory low. That
-  renderer can't round gradient shapes, so the blob's body is a pre-drawn image
-  (`tools/blob.py` makes `ui/blob-*.png`).
+- One process, one window, no browser. Nothing runs while the window is hidden.
+- Two drawing modes. Normal: GPU drawing (Slint femtovg) with a floating, slightly
+  see-through card that grows out of the taskbar, and all animations. Low-memory mode
+  (setting, restarts the app): CPU drawing and only the basic animations. Without a working
+  GPU, Slint falls back to CPU drawing by itself and the animations stay on.
+- The CPU renderer can't round or cut gradient shapes, so the blob body, its gloss and the
+  press heads are pre-drawn images (`tools/art.py` makes `ui/*.png`).
+- `src/flow.rs` (file → compress → clipboard), `src/trim.rs` (trimmer, live estimates),
+  `src/motion.rs` (open/close, eyes, press, marching dashes), `src/sys.rs` (Windows bits).
 - Platform code lives in `src/sys.rs` (Windows now; macOS/Linux get their own part later).
 - ffmpeg runs as a hidden child process at below-normal priority, so games stay smooth.
-- Dev builds: `KOMPACTER_DEMO=big|busy|done|error|settings|drag` shows a screen with sample data.
+- Dev builds: `KOMPACTER_DEMO=big|trim|busy|done|error|settings|drag|discord` shows a screen
+  with sample data.
 
 ## kompacter-core
 

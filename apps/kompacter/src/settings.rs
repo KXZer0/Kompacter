@@ -12,8 +12,14 @@ pub struct Settings {
     pub preset: String,
     /// Custom limit in bytes, used when `preset` is "custom".
     pub custom_bytes: u64,
-    /// "system" | "light" | "dark"
+    /// "system" | "light" | "dark" (Kompacter style)
     pub theme: String,
+    /// "kompacter" | "discord"
+    pub style: String,
+    /// "match" | "light" | "ash" | "dark" | "onyx" (Discord style)
+    pub discord_theme: String,
+    /// CPU drawing and simpler animations, for the least memory.
+    pub low_memory: bool,
     pub gpu: bool,
     /// Where results go: "app" | "beside" | "custom" | "replace" (see output.rs).
     pub output: String,
@@ -30,6 +36,9 @@ impl Default for Settings {
             preset: "discord".into(),
             custom_bytes: 20 * 1024 * 1024,
             theme: "system".into(),
+            style: "kompacter".into(),
+            discord_theme: "match".into(),
+            low_memory: false,
             gpu: true,
             output: "app".into(),
             output_dir: String::new(),

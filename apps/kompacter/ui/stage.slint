@@ -2,7 +2,7 @@
 // squeezes it with real progress, and the little burst when a file is done.
 // Everything animates only when something changes, so an idle window costs no CPU.
 
-import { Theme } from "theme.slint";
+import { Theme, Fx } from "theme.slint";
 
 export enum Mood { idle, hungry, worried, busy, happy }
 
@@ -30,6 +30,7 @@ component Mark inherits Path {
 }
 
 /// The mascot. Centered on (cx, cy) of its parent; size follows scale and squeeze.
+/// With full effects (Fx.rich) it breathes, squishes when clicked and hops when done.
 export component Blob inherits Rectangle {
     in property <Mood> mood;
     in property <float> s: 1;
@@ -39,24 +40,91 @@ export component Blob inherits Rectangle {
     in property <float> look-y;
     in property <length> cx;
     in property <length> cy;
+    /// Bump this to make the blob hop (done).
+    in property <int> hop;
+    /// Bump this to make the blob squish (a file landed).
+    in property <int> chomp;
 
     property <float> grow: swell ? 1.08 : 1;
-    property <float> sx: s * grow * (1 + 0.2 * c);
-    property <float> sy: s * grow * (1 - 0.5 * c);
+    animate grow { duration: 260ms; easing: ease-out-back; }
+    // Breathing: a slow in-out loop, only with full effects and when calm.
+    property <bool> inhale;
+    property <float> breath: inhale && Fx.rich && root.mood != Mood.busy ? 1 : 0;
+    animate breath { duration: 1800ms; easing: ease-in-out; }
+    Timer {
+        interval: 1800ms;
+        running: Fx.rich && root.mood != Mood.busy;
+        triggered => { root.inhale = !root.inhale; }
+    }
+    // Squish (click or chomp) and hop (done): quick in, springy out.
+    property <bool> squished;
+    property <float> squish;
+    property <bool> hopping;
+    property <length> lift;
+    states [
+        squashed when root.squished: {
+            squish: 1;
+            in {
+                animate squish { duration: 90ms; easing: ease-out; }
+            }
+            out {
+                animate squish { duration: 650ms; easing: ease-out-elastic; }
+            }
+        }
+        up when root.hopping: {
+            lift: -18px * root.s;
+            in {
+                animate lift { duration: 170ms; easing: ease-out; }
+            }
+            out {
+                animate lift { duration: 560ms; easing: ease-out-bounce; }
+            }
+        }
+    ]
+    changed hop => {
+        if (Fx.rich) {
+            root.hopping = true;
+            root.squished = true;
+        }
+    }
+    changed chomp => {
+        if (Fx.rich) {
+            root.squished = true;
+        }
+    }
+    Timer {
+        interval: 150ms;
+        running: root.squished || root.hopping;
+        triggered => {
+            root.squished = false;
+            root.hopping = false;
+        }
+    }
+
+    property <float> sx: s * grow * (1 + 0.2 * c) * (1 + 0.02 * breath + 0.08 * squish);
+    property <float> sy: s * grow * (1 - 0.5 * c) * (1 - 0.015 * breath - 0.1 * squish);
     property <float> k: s * grow;
     property <bool> blink;
 
     width: 132px * sx;
     height: 116px * sy;
     x: cx - self.width / 2;
-    y: cy - self.height / 2;
-    animate width, height { duration: 240ms; easing: ease-out; }
+    // Breathing and squish keep the bottom on the floor.
+    y: cy - 58px * s * grow * (1 - 0.5 * c) + 116px * s * grow * (1 - 0.5 * c) - self.height + lift;
 
     // Blink every few seconds (a timer, not a frame loop).
     Timer {
         interval: root.blink ? 110ms : 5400ms;
-        running: root.mood != Mood.busy && root.mood != Mood.happy;
+        running: Fx.rich && root.mood != Mood.busy && root.mood != Mood.happy;
         triggered => { root.blink = !root.blink; }
+    }
+
+    TouchArea {
+        clicked => {
+            if (Fx.rich) {
+                root.squished = true;
+            }
+        }
     }
 
     // Soft contact shadow.
@@ -69,12 +137,39 @@ export component Blob inherits Rectangle {
         image-fit: fill;
     }
 
-    // Body: gradient, inner light and gloss are pre-drawn (tools/blob.py), because the
-    // CPU renderer can only draw gradients as plain rectangles.
+    // Body: gradient and inner light are pre-drawn (tools/art.py). With full effects it
+    // slowly turns (the uneven shape seems to morph) and wobbles when worried.
+    property <bool> wob;
+    property <float> wobble;
+    states [
+        wobbling when root.wob: {
+            wobble: 1;
+            in {
+                animate wobble { duration: 110ms; easing: ease-out; }
+            }
+            out {
+                animate wobble { duration: 900ms; easing: ease-out-elastic; }
+            }
+        }
+    ]
+    Timer {
+        interval: root.wob ? 110ms : 2600ms;
+        running: Fx.rich && root.mood == Mood.worried;
+        triggered => { root.wob = !root.wob; }
+    }
     Image {
         width: parent.width;
         height: parent.height;
-        source: Theme.dark ? @image-url("blob-dark.png") : @image-url("blob-light.png");
+        source: Theme.style == 1
+            ? (Theme.is-dark ? @image-url("blob-discord-dark.png") : @image-url("blob-discord-light.png"))
+            : (Theme.is-dark ? @image-url("blob-dark.png") : @image-url("blob-light.png"));
+        image-fit: fill;
+        transform-rotation: (Fx.rich && root.mood != Mood.busy ? Math.mod(animation-tick() / 1ms, 18000) / 18000 * 360deg : 0deg) - root.wobble * 5deg;
+    }
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: @image-url("blob-gloss.png");
         image-fit: fill;
     }
 
@@ -86,11 +181,13 @@ export component Blob inherits Rectangle {
         property <float> ew: root.mood == Mood.hungry ? 9 : 8;
         property <float> eh: (root.mood == Mood.hungry ? 15 : root.mood == Mood.worried ? 10 : 13) * (root.blink ? 0.12 : 1);
         property <float> ey: root.mood == Mood.worried ? 3 : 0;
-        x: (parent.width - 52px * k) / 2 + root.look-x * 3.5px;
-        y: parent.height * 0.44 - 4px * k * root.c + root.look-y * 2.4px;
+        property <length> dx: root.look-x * 4.5px * k;
+        property <length> dy: root.look-y * 3px * k;
+        animate dx, dy { duration: 140ms; easing: ease-out; }
+        x: (parent.width - 52px * k) / 2 + dx;
+        y: parent.height * 0.44 - 4px * k * root.c + dy;
         width: 52px * k;
         height: 28px * k;
-        animate x, y { duration: 180ms; easing: ease-out; }
 
         if face.plain-eyes: Rectangle {
             x: 9px * face.k;
@@ -164,105 +261,43 @@ export component DropZone inherits Rectangle {
     background: active ? Theme.accent-soft : transparent;
     opacity: visible-dash || active ? 1 : 0;
     animate background, opacity { duration: 160ms; }
+    transform-scale: active ? 1.015 : visible-dash ? 1 : 0.94;
+    animate transform-scale { duration: 280ms; easing: ease-out-back; }
     Path {
         width: parent.width;
         height: parent.height;
         viewbox-width: parent.width / 1px;
         viewbox-height: parent.height / 1px;
         commands: root.dash-path;
-        stroke: root.active ? Theme.accent-text : Theme.label-2.transparentize(0.62);
-        stroke-width: root.active ? 2.2px : 1.5px;
+        stroke: root.active ? Theme.accent-text : Theme.label-2.transparentize(0.5);
+        stroke-width: root.active ? 2.2px : 1.6px;
         stroke-line-cap: round;
         fill: transparent;
     }
 }
 
-/// One press head: pole → hazard collar → trapezoid → plate (124 wide, 252 tall).
-component Head inherits Rectangle {
-    in property <bool> top;
-    width: 124px;
-    height: 252px;
-    // Pole.
-    Rectangle {
-        x: (124px - 33.5px) / 2;
-        y: root.top ? 0 : 52px;
-        width: 33.5px;
-        height: 200px;
-        background: Theme.metal;
-    }
-    // Hazard collar (yellow and black stripes).
-    Rectangle {
-        x: (124px - 43.4px) / 2;
-        y: root.top ? 200px : 38px;
-        width: 43.4px;
-        height: 14px;
-        border-radius: 3px;
-        background: #f5c400;
-        clip: true;
-        Path {
-            width: parent.width;
-            height: parent.height;
-            viewbox-width: 43.4;
-            viewbox-height: 14;
-            commands: "M-14 14L-9 14L5 0L0 0ZM-4 14L1 14L15 0L10 0ZM6 14L11 14L25 0L20 0ZM16 14L21 14L35 0L30 0ZM26 14L31 14L45 0L40 0ZM36 14L41 14L55 0L50 0Z";
-            fill: #141414;
-        }
-    }
-    // Trapezoid: a metal block with its outer corners cut away.
-    Rectangle {
-        x: (124px - 101.7px) / 2;
-        y: root.top ? 214px : 12px;
-        width: 101.7px;
-        height: 26px;
-        background: Theme.metal;
-        Rectangle {
-            background: root.top ? @linear-gradient(180deg, #ffffff47 0%, #00000029 100%) : @linear-gradient(0deg, #ffffff47 0%, #00000029 100%);
-        }
-        Path {
-            width: parent.width;
-            height: parent.height;
-            viewbox-width: 101.7;
-            viewbox-height: 26;
-            commands: root.top ? "M0 0L11.8 0L0 26ZM89.9 0L101.7 0L101.7 26Z" : "M0 0L11.8 26L0 26ZM101.7 0L89.9 26L101.7 26Z";
-            fill: Theme.bg;
-        }
-    }
-    // Plate.
-    Rectangle {
-        y: root.top ? 240px : 0;
-        width: 124px;
-        height: 12px;
-        border-radius: 2px;
-        background: Theme.metal;
-        Rectangle {
-            y: 0;
-            height: 1px;
-            background: #ffffffcc;
-        }
-        Rectangle {
-            y: parent.height - 1px;
-            height: 1px;
-            background: #00000047;
-        }
-    }
-}
-
 /// The hydraulic press. `c` (0…1) is the smoothed squeeze; the plates touch the blob.
+/// `intro` (0…1) brings the heads in from off-screen. Heads are pre-drawn (tools/art.py).
 export component Press inherits Rectangle {
     in property <float> c;
-    in property <bool> active;
-    property <length> d: active ? (58 * 0.85 * (1 - 0.5 * c) + 1.5) * 1px : 150px;
-    animate d { duration: 260ms; easing: ease-out; }
+    in property <float> intro;
+    property <length> d: 150px + ((58 * 0.85 * (1 - 0.5 * c) + 1.5) * 1px - 150px) * intro;
     clip: true;
-    Head {
-        top: true;
-        x: (parent.width - self.width) / 2;
-        y: parent.height / 2 - root.d - self.height;
+    Image {
+        x: (parent.width - 124px) / 2;
+        y: parent.height / 2 - root.d - 252px;
+        width: 124px;
+        height: 252px;
+        source: @image-url("press-top.png");
+        image-fit: fill;
     }
-    Head {
-        top: false;
-        x: (parent.width - self.width) / 2;
+    Image {
+        x: (parent.width - 124px) / 2;
         y: parent.height / 2 + root.d;
+        width: 124px;
+        height: 252px;
+        source: @image-url("press-bottom.png");
+        image-fit: fill;
     }
 }
 

@@ -1,35 +1,57 @@
-// Colors and shared controls. Colors match the original Kompacter design tokens.
+// Colors and shared controls. Colors match the original Kompacter design tokens, plus the
+// Discord-style palettes (Light / Ash / Dark / Onyx).
 
 import { Icons } from "icons.slint";
 
-export global Theme {
-    in-out property <bool> dark;
+/// Effects level. `rich`: every animation (breathing, eye tracking, bounces, sparks,
+/// marching dashes). Off in Low-memory mode (or when Windows animations are off), which
+/// keeps only open/close and simple fades.
+/// `glass`: the floating, slightly see-through card with its own shadow (GPU drawing).
+export global Fx {
+    in-out property <bool> rich: true;
+    in-out property <bool> glass;
+}
 
-    out property <color> bg: dark ? #2c2c30 : #fafafc;
-    out property <color> fill: dark ? #78788040 : #7878801f;
-    out property <color> fill-2: dark ? #78788057 : #78788033;
-    out property <color> fill-hover: dark ? #7878804d : #78788029;
-    out property <color> group: dark ? #ffffff0f : #ffffffd9;
-    out property <color> sep: dark ? #54545899 : #3c3c4329;
-    out property <color> label: dark ? #f5f5f7 : #1d1d1f;
-    out property <color> label-2: dark ? #b4b4ba : #5f5f66;
-    out property <color> accent: #0071e3;
-    out property <color> accent-hover: #0063c7;
-    out property <color> accent-text: dark ? #4da3ff : #0066cc;
-    out property <color> accent-soft: dark ? #0a84ff33 : #0071e31f;
+export global Theme {
+    /// Kompacter style: follows this.
+    in-out property <bool> dark;
+    /// 0 = Kompacter, 1 = Discord.
+    in-out property <int> style;
+    /// Discord palette: 0 Light, 1 Ash, 2 Dark, 3 Onyx.
+    in-out property <int> dt;
+
+    property <bool> dc: style == 1;
+    out property <bool> is-dark: dc ? dt != 0 : dark;
+
+    pure function pick(k-light: color, k-dark: color, d-light: color, d-ash: color, d-dark: color, d-onyx: color) -> color {
+        return !dc ? (dark ? k-dark : k-light) : dt == 0 ? d-light : dt == 1 ? d-ash : dt == 2 ? d-dark : d-onyx;
+    }
+
+    /// The card: opaque, and a see-through version for the floating card.
+    out property <color> bg: pick(#fafafc, #2c2c30, #ffffff, #323339, #1f2024, #0c0c0e);
+    out property <color> card: bg.transparentize(dc ? 0.03 : 0.08);
+    out property <color> fill: pick(#7878801f, #7878803d, #ebebed, #26272b, #141517, #ffffff14);
+    out property <color> fill-2: pick(#78788033, #78788057, #dcdce0, #3d3e45, #2c2d32, #ffffff24);
+    out property <color> fill-hover: pick(#78788029, #7878804d, #e2e2e5, #36373d, #25262a, #ffffff1f);
+    out property <color> group: pick(#ffffffd9, #ffffff0f, #f2f3f5, #ffffff0a, #ffffff0a, #ffffff0a);
+    out property <color> sep: pick(#3c3c4329, #54545899, #2e2f3424, #ffffff14, #ffffff14, #ffffff17);
+    out property <color> hair: pick(#00000014, #ffffff1a, #00000014, #ffffff14, #ffffff14, #ffffff1a);
+    out property <color> label: pick(#1d1d1f, #f5f5f7, #2e2f34, #ffffff, #f2f3f5, #ffffff);
+    out property <color> label-2: pick(#5f5f66, #b4b4ba, #5c5e66, #c4c5cb, #b5bac1, #b5b7bd);
+    out property <color> accent: dc ? #4752c4 : #0071e3;
+    out property <color> accent-hover: dc ? #3c45a8 : #0063c7;
+    out property <color> accent-text: pick(#0066cc, #4da3ff, #4752c4, #a5acff, #a5acff, #a5acff);
+    out property <color> accent-soft: pick(#0071e31f, #0a84ff33, #5865f224, #5865f242, #5865f23d, #5865f238);
     out property <color> on-accent: #ffffff;
-    out property <color> ok: dark ? #30d158 : #1a7f37;
-    out property <color> bad: dark ? #ff6961 : #d70015;
-    out property <color> pouch-a: dark ? #cfe2ff : #e9f2ff;
-    out property <color> pouch-b: dark ? #7aa9ff : #9cc4ff;
-    out property <color> pouch-c: dark ? #3d6fff : #5b8cff;
+    out property <color> ok: pick(#1a7f37, #30d158, #1a7f37, #3ba55c, #3ba55c, #3ba55c);
+    out property <color> bad: pick(#d70015, #ff6961, #d70015, #f2777a, #f2777a, #f2777a);
+    out property <color> warn: pick(#9a5b00, #ffd60a, #9a5b00, #f0b232, #f0b232, #f0b232);
+    out property <color> pouch-b: dc ? (is-dark ? #8891f2 : #9aa4ff) : (dark ? #7aa9ff : #9cc4ff);
     out property <color> face: #13213f;
-    out property <color> m1: dark ? #6c717a : #8f949c;
-    out property <color> m2: dark ? #b8bdc5 : #d4d7dc;
-    out property <color> m3: dark ? #f4f6f9 : #ffffff;
-    out property <color> m4: dark ? #9ba0a9 : #b9bdc4;
-    out property <color> m5: dark ? #555960 : #7b8088;
-    out property <brush> metal: @linear-gradient(90deg, m5 0%, m2 22%, m3 38%, m4 60%, m2 80%, m1 100%);
+    out property <color> shadow: is-dark ? #0000008c : #00000052;
+    /// Tooltip / menu surface.
+    out property <color> pop: pick(#ffffff, #3a3a3e, #ffffff, #3d3e45, #2c2d32, #1a1a1e);
+    out property <color> pop-border: is-dark ? #ffffff26 : #d1d1d6;
 }
 
 /// A 24×24 line icon.
@@ -51,11 +73,13 @@ export component Icon inherits Path {
 /// App logo for a preset: a filled brand glyph, or a neutral line icon.
 export component AppLogo inherits Rectangle {
     in property <string> brand;
+    in property <bool> on-accent;
     width: 15px;
     height: 15px;
     if brand == "mail" || brand == "custom": Icon {
         size: 15px;
         d: brand == "mail" ? Icons.mail : Icons.custom;
+        color: root.on-accent ? white : Theme.label-2;
     }
     if brand != "mail" && brand != "custom": Path {
         width: 15px;
@@ -67,20 +91,20 @@ export component AppLogo inherits Rectangle {
             : brand == "telegram" ? Icons.brand-telegram
             : brand == "slack" ? Icons.brand-slack
             : Icons.brand-gmail;
-        fill: brand == "discord" ? #5865f2
+        fill: root.on-accent ? white
+            : brand == "discord" ? #5865f2
             : brand == "whatsapp" ? #1fa855
             : brand == "telegram" ? #229ed9
-            : brand == "slack" ? (Theme.dark ? #e3b6e6 : #4a154b)
+            : brand == "slack" ? (Theme.is-dark ? #e3b6e6 : #4a154b)
             : #ea4335;
     }
 }
 
-/// Small dark label that fades in after the pointer rests on something for half a second.
-/// Extra info lives here instead of in always-visible subtitles.
+/// Small label that fades in after the pointer rests on something for half a second.
 export component Tip inherits Rectangle {
     in property <string> text;
     in property <bool> hovered;
-    /// Show under the parent instead of above (for things at the top of the window).
+    /// Show under the thing instead of above (for things at the top of the window).
     in property <bool> below;
     /// Size of the thing it describes (a component can't see its parent).
     in property <length> host-w;
@@ -96,9 +120,9 @@ export component Tip inherits Rectangle {
     width: label.preferred-width + 16px;
     height: 24px;
     border-radius: 6px;
-    background: Theme.dark ? #3a3a3e : #ffffff;
+    background: Theme.pop;
     border-width: 1px;
-    border-color: Theme.dark ? #ffffff26 : #d1d1d6;
+    border-color: Theme.pop-border;
     opacity: show && text != "" ? 1 : 0;
     animate opacity { duration: 120ms; }
     Timer {
@@ -115,6 +139,7 @@ export component Tip inherits Rectangle {
 }
 
 /// Pill button: default (grey), primary (blue) or plain (text only).
+/// Shrinks a little while pressed and springs back, like the original.
 export component Btn inherits Rectangle {
     in property <string> text;
     in property <string> icon;
@@ -131,7 +156,9 @@ export component Btn inherits Rectangle {
     background: plain ? (ta.has-hover ? Theme.fill : transparent)
         : primary ? (ta.has-hover || ta.pressed ? Theme.accent-hover : Theme.accent)
         : (ta.has-hover || ta.pressed ? Theme.fill-hover : Theme.fill);
-    animate background { duration: 120ms; }
+    animate background { duration: 140ms; }
+    transform-scale: ta.pressed ? 0.96 : 1;
+    animate transform-scale { duration: 220ms; easing: ease-out-back; }
 
     HorizontalLayout {
         padding-left: plain ? 10px : large ? 20px : 16px;
@@ -178,7 +205,9 @@ export component IconBtn inherits Rectangle {
     border-radius: 16px;
     opacity: enabled ? 1 : 0.45;
     background: ta.has-hover ? Theme.fill : transparent;
-    animate background { duration: 120ms; }
+    animate background { duration: 140ms; }
+    transform-scale: ta.pressed ? 0.9 : 1;
+    animate transform-scale { duration: 220ms; easing: ease-out-back; }
     Icon {
         d: root.icon;
     }
@@ -190,9 +219,92 @@ export component IconBtn inherits Rectangle {
     Tip {
         text: root.tip;
         hovered: ta.has-hover;
+        below: root.tip-below;
         host-w: root.width;
         host-h: root.height;
-        below: root.tip-below;
+    }
+}
+
+/// On/off switch with a springy knob.
+export component Switch inherits Rectangle {
+    in property <bool> checked;
+    callback toggled(bool);
+    width: 44px;
+    height: 26px;
+    border-radius: 13px;
+    background: checked ? Theme.accent : Theme.fill-2;
+    animate background { duration: 180ms; }
+    Rectangle {
+        x: root.checked ? 20px : 2px;
+        y: 2px;
+        width: 22px;
+        height: 22px;
+        border-radius: 11px;
+        background: white;
+        drop-shadow-blur: 4px;
+        drop-shadow-offset-y: 1px;
+        drop-shadow-color: #00000033;
+        animate x { duration: 260ms; easing: ease-out-back; }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.checked); }
+    }
+}
+
+/// Segmented control: one of a few options, with a sliding thumb.
+export component Seg inherits Rectangle {
+    in property <[string]> options;
+    in property <int> index;
+    callback picked(int);
+    height: 34px;
+    border-radius: 10px;
+    background: Theme.fill;
+    property <length> w: (self.width - 4px) / Math.max(1, options.length);
+    Rectangle {
+        x: 2px + root.w * root.index;
+        y: 2px;
+        width: root.w;
+        height: root.height - 4px;
+        border-radius: 8px;
+        background: Theme.is-dark ? #636366 : #ffffff;
+        drop-shadow-blur: 3px;
+        drop-shadow-offset-y: 1px;
+        drop-shadow-color: #00000024;
+        animate x { duration: 280ms; easing: ease-out-back; }
+    }
+    for opt[i] in root.options: Rectangle {
+        x: 2px + root.w * i;
+        y: 2px;
+        width: root.w;
+        height: root.height - 4px;
+        Text {
+            text: opt;
+            font-size: 13px;
+            font-weight: i == root.index ? 600 : 500;
+            color: Theme.label;
+        }
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.picked(i); }
+        }
+    }
+}
+
+/// Fades content in and, with full effects, slides it up into place when it appears.
+export component Appear inherits Rectangle {
+    property <bool> on;
+    opacity: on ? 1 : 0;
+    animate opacity { duration: 220ms; easing: ease-out; }
+    Timer {
+        interval: 16ms;
+        running: !root.on;
+        triggered => { root.on = true; }
+    }
+    Rectangle {
+        y: root.on || !Fx.rich ? 0 : 8px;
+        animate y { duration: 340ms; easing: ease-out-back; }
+        @children
     }
 }
 
@@ -213,77 +325,4 @@ export component Kbd inherits Rectangle {
             vertical-alignment: center;
         }
     }
-}
-
-/// On/off switch.
-export component Switch inherits Rectangle {
-    in property <bool> checked;
-    callback toggled(bool);
-    width: 44px;
-    height: 26px;
-    border-radius: 13px;
-    background: checked ? Theme.accent : Theme.fill-2;
-    animate background { duration: 180ms; }
-    Rectangle {
-        x: root.checked ? 20px : 2px;
-        y: 2px;
-        width: 22px;
-        height: 22px;
-        border-radius: 11px;
-        background: white;
-        animate x { duration: 200ms; easing: ease-out; }
-    }
-    TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.toggled(!root.checked); }
-    }
-}
-
-/// Segmented control: one of a few options.
-export component Seg inherits Rectangle {
-    in property <[string]> options;
-    in property <int> index;
-    callback picked(int);
-    height: 34px;
-    border-radius: 10px;
-    background: Theme.fill;
-    property <length> w: (self.width - 4px) / Math.max(1, options.length);
-    Rectangle {
-        x: 2px + root.w * root.index;
-        y: 2px;
-        width: root.w;
-        height: root.height - 4px;
-        border-radius: 8px;
-        background: Theme.dark ? #636366 : #ffffff;
-        animate x { duration: 200ms; easing: ease-out; }
-    }
-    for opt[i] in root.options: Rectangle {
-        x: 2px + root.w * i;
-        y: 2px;
-        width: root.w;
-        height: root.height - 4px;
-        Text {
-            text: opt;
-            font-size: 13px;
-            font-weight: i == root.index ? 600 : 500;
-            color: Theme.label;
-        }
-        TouchArea {
-            mouse-cursor: pointer;
-            clicked => { root.picked(i); }
-        }
-    }
-}
-
-/// Fades content in and nudges it up a little when it appears.
-export component Appear inherits Rectangle {
-    property <bool> on;
-    opacity: on ? 1 : 0;
-    animate opacity { duration: 200ms; easing: ease-out; }
-    Timer {
-        interval: 16ms;
-        running: !root.on;
-        triggered => { root.on = true; }
-    }
-    @children
 }

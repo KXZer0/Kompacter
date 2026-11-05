@@ -24,6 +24,7 @@ pub use ffmpeg::Ffmpeg;
 pub use gpu::Encoder;
 pub use plan::{Quality, Trim, VideoPlan};
 pub use probe::{MediaInfo, MediaKind};
+pub use thumbs::Frames;
 
 /// What to do with a file.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,8 +120,10 @@ impl Engine {
     }
 
     /// `count` small JPEG frames across a video, for the trimmer's filmstrip.
-    pub fn thumbnails(&self, info: &MediaInfo, count: u32, height: u32) -> Result<Vec<Vec<u8>>> {
-        thumbs::thumbnails(&self.ff, &info.path, info.duration, count, height)
+    /// Filmstrip frames for the trimmer (raw RGB).
+    pub fn thumbnails(&self, info: &MediaInfo, count: u32, height: u32) -> Result<thumbs::Frames> {
+        let size = info.video.as_ref().map_or((0, 0), |v| (v.width, v.height));
+        thumbs::thumbnails(&self.ff, &info.path, info.duration, size, count, height)
     }
 
     pub fn probe(&self, path: &Path) -> Result<MediaInfo> {

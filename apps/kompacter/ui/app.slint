@@ -1,13 +1,17 @@
-// The Kompacter flyout. One calm 360×472 card; settings is taller.
+// The Kompacter flyout: a calm 360×472 card; the trimmer and settings are taller.
 // Rust owns the logic (src/main.rs) and sets the properties below; this file only draws.
+//
+// With GPU drawing the window is see-through and the card floats in it: big rounded
+// corners, soft shadow, grows up out of the taskbar and folds back down. Without (Low-memory
+// mode, or no GPU) the card fills a plain window and Rust slides the window in and out.
 
-import { Theme, Icon, AppLogo, Btn, IconBtn, Switch, Seg, Appear, Tip } from "theme.slint";
+import { Theme, Fx, Icon, AppLogo, Btn, IconBtn, Kbd, Switch, Seg, Appear, Tip } from "theme.slint";
 import { Icons } from "icons.slint";
 import { Mood, Blob, DropZone, Press, Sparks } from "stage.slint";
 
-export { Theme }
+export { Theme, Fx }
 
-export enum View { idle, reading, big, busy, done, error, settings }
+export enum View { idle, reading, big, trim, busy, done, error, settings }
 
 export struct PresetItem {
     name: string,
@@ -64,6 +68,8 @@ component Cell inherits Rectangle {
     in property <bool> clickable;
     callback clicked;
     min-height: root.small != "" ? 56px : 44px;
+    background: ta.has-hover && root.clickable ? Theme.fill : transparent;
+    animate background { duration: 120ms; }
     if !root.first: Rectangle {
         x: 12px;
         y: 0;
@@ -71,8 +77,9 @@ component Cell inherits Rectangle {
         height: 1px;
         background: Theme.sep;
     }
-    if root.clickable: TouchArea {
-        mouse-cursor: pointer;
+    ta := TouchArea {
+        enabled: root.clickable;
+        mouse-cursor: root.clickable ? pointer : default;
         clicked => { root.clicked(); }
     }
     HorizontalLayout {
@@ -121,6 +128,36 @@ component Check inherits Rectangle {
         d: Icons.check;
         color: Theme.accent-text;
         opacity: root.on ? 1 : 0;
+        animate opacity { duration: 120ms; }
+    }
+}
+
+/// Quality chip: three dots (filled by grade) and a word.
+component Badge inherits Rectangle {
+    in property <int> grade; // 3 great, 2 okay, 1 low
+    property <color> c: grade >= 3 ? Theme.ok : grade == 2 ? Theme.warn : Theme.bad;
+    height: 24px;
+    width: row.preferred-width + 20px;
+    border-radius: 12px;
+    background: c.transparentize(0.86);
+    row := HorizontalLayout {
+        x: 10px;
+        spacing: 6px;
+        alignment: center;
+        for i in 3: Rectangle {
+            width: 6px;
+            height: 6px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 3px;
+            background: i < root.grade ? root.c : root.c.transparentize(0.7);
+        }
+        Text {
+            text: root.grade >= 3 ? "Great quality" : root.grade == 2 ? "Okay quality" : "Low quality";
+            font-size: 12px;
+            font-weight: 600;
+            color: root.c;
+            vertical-alignment: center;
+        }
     }
 }
 
@@ -128,7 +165,18 @@ export component AppWindow inherits Window {
     // ── Set by Rust ──
     in-out property <View> view: View.idle;
     in-out property <bool> dragging;
+    /// The card is open (floating card grows/folds with this).
+    in-out property <bool> opened: true;
+    /// Window content height (Rust delays shrinking until the card has folded in).
+    in property <length> win-h: 472px;
     in property <float> progress;
+    /// Smoothed squeeze and press intro, driven by Rust each frame while compressing.
+    in property <float> squeeze;
+    in property <float> intro;
+    in property <float> look-x;
+    in property <float> look-y;
+    in property <int> hop;
+    in property <int> chomp;
     in property <[PresetItem]> presets;
     in property <int> preset-index;
     in property <string> dash-path;
@@ -140,8 +188,26 @@ export component AppWindow inherits Window {
     in property <float> meter-fill;
     in property <float> meter-limit;
     in property <string> over-text;
+    in property <bool> over-ok;
     in property <string> compress-label: "Compress";
     in property <string> foot-text;
+    in property <bool> can-trim;
+    in property <bool> trim-first;
+
+    // Trimmer.
+    in property <float> trim-dur: 1;
+    in-out property <float> trim-a;
+    in-out property <float> trim-b: 1;
+    in-out property <int> trim-active;
+    in-out property <int> trim-mode;
+    in property <[image]> thumbs;
+    in property <image> trim-frame;
+    in property <string> trim-range;
+    in property <string> trim-big;
+    in property <string> trim-status;
+    in property <bool> trim-ok: true;
+    in property <int> trim-grade;
+    in property <string> trim-button: "Compress";
 
     in property <string> busy-left;
 
@@ -152,13 +218,16 @@ export component AppWindow inherits Window {
 
     in property <string> error-text;
 
+    in property <int> style-index;
     in property <int> theme-index;
+    in property <[string]> theme-options: ["System", "Light", "Dark"];
     in property <int> output-index;
     in property <string> output-dir;
     in property <bool> gpu;
     in property <string> gpu-text;
     in property <bool> auto-hide;
     in property <bool> start-with-windows;
+    in property <bool> low-memory;
     in property <int> custom-mb;
 
     // ── Calls into Rust ──
@@ -172,6 +241,11 @@ export component AppWindow inherits Window {
     callback select-preset(int);
     callback open-settings();
     callback close-settings();
+    callback open-trim();
+    callback close-trim();
+    callback trim-changed();
+    callback trim-compress();
+    callback set-style(int);
     callback set-theme(int);
     callback set-output(int);
     callback choose-folder();
@@ -179,17 +253,21 @@ export component AppWindow inherits Window {
     callback set-gpu(bool);
     callback set-auto-hide(bool);
     callback set-start(bool);
+    callback set-low-memory(bool);
     callback set-custom-mb(int);
     callback escape();
+
+    property <length> inset: Fx.glass ? 12px : 0;
+    property <length> full-h: view == View.trim ? 608px : view == View.settings ? 600px : 472px;
 
     title: "Kompacter";
     no-frame: true;
     always-on-top: true;
-    background: Theme.bg;
+    background: Fx.glass ? transparent : Theme.bg;
     default-font-family: "Segoe UI Variable Text";
     default-font-size: 14px;
-    width: 360px;
-    height: view == View.settings ? 600px : 472px;
+    width: 360px + 2 * inset;
+    height: win-h + 2 * inset;
     forward-focus: keys;
 
     property <Mood> mood: dragging ? Mood.hungry
@@ -200,8 +278,6 @@ export component AppWindow inherits Window {
     property <bool> stage-lg: view == View.idle || view == View.done;
     property <bool> stage-md: view == View.reading || view == View.big || view == View.error;
     property <length> stage-h: stage-lg ? 312px : 124px;
-    property <float> squeeze: view == View.busy ? progress : 0;
-    animate squeeze { duration: 300ms; easing: ease-out; }
 
     keys := FocusScope {
         key-pressed(event) => {
@@ -217,624 +293,910 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Eyes follow the pointer while it's over the window.
-    eyes := TouchArea { }
-
-    // ── Header ──
-    if view != View.settings: Rectangle {
-        x: 16px;
-        y: 14px;
-        width: pill-row.preferred-width;
-        height: 30px;
-        border-radius: 15px;
-        background: pill-ta.has-hover ? Theme.fill-hover : Theme.fill;
-        animate background { duration: 120ms; }
-        pill-row := HorizontalLayout {
-            padding-left: 12px;
-            padding-right: 10px;
-            spacing: 6px;
-            alignment: center;
-            AppLogo {
-                brand: root.presets[root.preset-index].brand;
-                y: (parent.height - self.height) / 2;
-            }
-            Text {
-                text: root.presets[root.preset-index].name + " · " + root.target-text;
-                font-size: 13px;
-                font-weight: 600;
-                color: Theme.label;
-                vertical-alignment: center;
-            }
-            Icon {
-                d: Icons.down;
-                size: 15px;
-                y: (parent.height - self.height) / 2;
-            }
-        }
-        pill-ta := TouchArea {
-            enabled: root.view != View.busy;
-            mouse-cursor: pointer;
-            clicked => { menu.show(); }
-        }
-    }
-    if view != View.settings: IconBtn {
-        x: parent.width - 14px - self.width;
-        y: 13px;
-        icon: Icons.gear;
-        tip: "Settings";
-        tip-below: true;
-        enabled: root.view != View.busy;
-        clicked => { root.open-settings(); }
-    }
-
-    menu := PopupWindow {
-        x: 12px;
-        y: 48px;
-        width: 268px;
-        Rectangle {
-            border-radius: 14px;
-            background: Theme.bg;
-            border-width: 1px;
-            border-color: Theme.sep;
-            VerticalLayout {
-                padding: 6px;
-                for p[i] in root.presets: Rectangle {
-                    height: 32px;
-                    border-radius: 8px;
-                    background: row-ta.has-hover ? Theme.accent : transparent;
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        spacing: 10px;
-                        Icon {
-                            d: Icons.check;
-                            size: 14px;
-                            y: (parent.height - self.height) / 2;
-                            color: row-ta.has-hover ? white : Theme.label;
-                            opacity: i == root.preset-index ? 1 : 0;
-                        }
-                        AppLogo {
-                            brand: p.brand;
-                            y: (parent.height - self.height) / 2;
-                        }
-                        Text {
-                            text: p.name;
-                            font-size: 13px;
-                            color: row-ta.has-hover ? white : Theme.label;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                        }
-                        Text {
-                            text: p.size;
-                            font-size: 12px;
-                            color: row-ta.has-hover ? #ffffffd9 : Theme.label-2;
-                            vertical-alignment: center;
-                        }
-                    }
-                    row-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.select-preset(i); }
-                    }
+    // ── The card ──
+    card := Rectangle {
+        // Open: the card's height springs up from a pill at the bottom; closed: folds down.
+        // `vh` follows the screen size; `fold` (0 open … 1 folded) does open/close.
+        property <length> vh: root.full-h;
+        animate vh { duration: 360ms; easing: ease-out-back; }
+        property <float> fold;
+        property <length> h: self.vh - (self.vh - 56px) * self.fold;
+        states [
+            folded when Fx.glass && !root.opened: {
+                fold: 1;
+                opacity: 0;
+                in {
+                    animate fold { duration: 200ms; easing: ease-in; }
+                    animate opacity { duration: 180ms; easing: ease-in; }
                 }
-                Rectangle {
-                    height: 11px;
-                    Rectangle {
-                        x: 8px;
-                        width: parent.width - 16px;
-                        height: 1px;
-                        background: Theme.sep;
-                    }
-                }
-                Rectangle {
-                    height: 32px;
-                    border-radius: 8px;
-                    background: edit-ta.has-hover ? Theme.accent : transparent;
-                    Text {
-                        x: 10px;
-                        text: "Edit targets…";
-                        font-size: 13px;
-                        color: edit-ta.has-hover ? white : Theme.label;
-                    }
-                    edit-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.open-settings(); }
-                    }
+                out {
+                    animate fold { duration: 420ms; easing: ease-out-back; }
+                    animate opacity { duration: 140ms; }
                 }
             }
-        }
-    }
-
-    // ── Stage: drop zone, blob, press ──
-    if stage-lg || stage-md: Rectangle {
-        x: 16px;
-        y: 50px;
-        width: 328px;
-        height: root.stage-h;
-        animate height { duration: 220ms; easing: ease-out; }
-        DropZone {
-            x: 10px;
-            y: 6px;
-            width: parent.width - 20px;
-            height: parent.height - 12px;
-            active: root.dragging;
-            visible-dash: root.view == View.idle;
-            dash-path: root.dash-path;
-        }
-        Blob {
-            mood: root.mood;
-            s: root.stage-lg ? 1 : 0.62;
-            swell: root.dragging;
-            cx: parent.width / 2;
-            cy: parent.height / 2;
-            look-x: eyes.has-hover ? Math.clamp((eyes.mouse-x - 180px) / 180px, -1, 1) : 0;
-            look-y: eyes.has-hover ? Math.clamp((eyes.mouse-y - 50px - parent.height / 2) / 200px, -1, 1) : 0;
-        }
-        if root.view == View.done && root.done-ok: Sparks {
-            width: parent.width;
-            height: parent.height;
-        }
-    }
-    if view == View.busy: Rectangle {
-        x: 0;
-        y: 50px;
+        ]
+        x: root.inset;
+        y: root.inset + root.win-h - self.height;
         width: 360px;
-        height: 252px;
-        Blob {
-            mood: Mood.busy;
-            s: 0.85;
-            c: root.squeeze;
-            cx: parent.width / 2;
-            cy: parent.height / 2;
-        }
-        Press {
-            width: parent.width;
-            height: parent.height;
-            active: true;
-            c: root.squeeze;
-        }
-    }
+        height: Math.min(self.h, root.win-h);
+        border-radius: Fx.glass ? 22px : 0;
+        background: Fx.glass ? Theme.card : Theme.bg;
+        border-width: Fx.glass ? 1px : 0;
+        border-color: Theme.hair;
+        drop-shadow-blur: Fx.glass ? 22px : 0;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-color: Theme.shadow;
+        clip: true;
 
-    // ── Views: big text and buttons; the stage and controls say the rest ──
-    if view == View.idle: Appear {
-        x: 20px;
-        y: 376px;
-        width: 320px;
-        height: 76px;
-        Title {
-            y: 0;
-            width: parent.width;
-            height: 24px;
-            text: root.note != "" ? root.note : root.dragging ? "Drop it" : "Drop or copy a file";
-        }
-        HorizontalLayout {
-            y: 40px;
-            height: 36px;
-            spacing: 8px;
-            alignment: center;
-            Btn {
-                text: "Choose File…";
-                primary: true;
-                clicked => { root.choose-file(); }
-            }
-            Btn {
-                text: "Paste";
-                icon: Icons.clip;
-                tip: "Ctrl+V";
-                clicked => { root.paste(); }
-            }
-        }
-    }
-
-    if view == View.reading: Appear {
-        x: 20px;
-        y: 196px;
-        width: 320px;
-        height: 24px;
-        Title {
-            width: parent.width;
-            text: root.file-name;
-        }
-    }
-
-    if view == View.big: Appear {
-        x: 20px;
-        y: 186px;
-        width: 320px;
-        height: 266px;
-        // File card.
+        // Content keeps its full height and sits on the card's bottom edge, so a shorter
+        // card reveals it from the bottom up instead of squashing it.
         Rectangle {
-            y: 0;
-            height: 56px;
-            Rectangle {
-                x: 0;
-                y: 8px;
-                width: 40px;
-                height: 40px;
-                border-radius: 10px;
-                background: Theme.accent-soft;
-                Icon {
-                    d: root.file-kind == "video" ? Icons.film
-                        : root.file-kind == "audio" ? Icons.music
-                        : root.file-kind == "image" ? Icons.image
-                        : root.file-kind == "folder" ? Icons.folder
-                        : Icons.file;
-                    color: Theme.accent-text;
-                }
-            }
-            Text {
-                x: 52px;
-                y: 9px;
-                width: parent.width - 52px - 40px;
-                text: root.file-name;
-                font-size: 15px;
-                font-weight: 600;
-                color: Theme.label;
-                overflow: elide;
-            }
-            Text {
-                x: 52px;
-                y: 30px;
-                width: parent.width - 52px - 40px;
-                text: root.file-meta;
-                font-size: 13px;
-                color: Theme.label-2;
-                overflow: elide;
-            }
-            IconBtn {
-                x: parent.width - self.width;
-                y: 12px;
-                icon: Icons.x;
-                clicked => { root.remove-file(); }
-            }
-        }
-        // Size against the limit.
-        Rectangle {
-            y: 78px;
-            height: 28px;
-            Text {
-                x: parent.width * root.meter-limit - 40px;
-                y: 0;
-                width: 80px;
-                text: root.target-text;
-                font-size: 11px;
-                font-weight: 600;
-                color: Theme.label-2;
-                horizontal-alignment: center;
-            }
-            Rectangle {
-                y: 18px;
-                height: 8px;
-                border-radius: 4px;
-                background: Theme.fill;
-                clip: true;
-                Rectangle {
-                    x: 0;
-                    width: parent.width * root.meter-fill;
-                    background: Theme.bad;
-                }
-                Rectangle {
-                    x: 0;
-                    width: parent.width * Math.min(root.meter-fill, root.meter-limit);
-                    background: Theme.accent;
-                }
-            }
-            Rectangle {
-                x: parent.width * root.meter-limit - 1px;
-                y: 14px;
-                width: 2px;
-                height: 16px;
-                border-radius: 1px;
-                background: Theme.label;
-            }
-        }
-        Text {
-            y: 116px;
-            width: parent.width;
-            height: 20px;
-            text: root.over-text;
-            font-size: 13px;
-            font-weight: 600;
-            color: Theme.bad;
-        }
-        Btn {
-            y: 152px;
-            width: parent.width;
-            text: root.compress-label;
-            icon: Icons.squeeze;
-            primary: true;
-            large: true;
-            clicked => { root.compress(); }
-        }
-        if root.foot-text != "": Text {
-            y: 206px;
-            width: parent.width;
-            text: root.foot-text;
-            font-size: 12px;
-            color: Theme.label-2;
-            horizontal-alignment: center;
-            wrap: word-wrap;
-        }
-    }
-
-    if view == View.busy: Appear {
-        x: 20px;
-        y: 310px;
-        width: 320px;
-        height: 142px;
-        Text {
-            y: 0;
-            width: parent.width;
-            height: 34px;
-            text: Math.round(root.progress * 100) + "%";
-            font-size: 28px;
-            font-weight: 700;
-            color: Theme.label;
-            horizontal-alignment: center;
-        }
-        Sub {
-            y: 38px;
-            width: parent.width;
-            height: 18px;
-            text: root.busy-left;
-        }
-        HorizontalLayout {
-            y: 74px;
-            height: 36px;
-            alignment: center;
-            Btn {
-                text: "Cancel";
-                clicked => { root.cancel(); }
-            }
-        }
-    }
-
-    if view == View.done: Appear {
-        x: 20px;
-        y: 360px;
-        width: 320px;
-        height: 92px;
-        HorizontalLayout {
-            y: 0;
-            height: 26px;
-            spacing: 6px;
-            alignment: center;
-            Icon {
-                d: root.done-ok ? Icons.okc : Icons.xc;
-                size: 20px;
-                y: 3px;
-                color: root.done-ok ? Theme.ok : Theme.bad;
-            }
-            Title {
-                text: root.done-title;
-                color: root.done-ok ? Theme.label : Theme.bad;
-            }
-        }
-        // One quiet line: the result (size, resolution), or what to do next.
-        Sub {
-            y: 30px;
-            width: parent.width;
-            height: 18px;
-            text: root.done-sub;
-        }
-        HorizontalLayout {
-            y: 56px;
-            height: 36px;
-            spacing: 8px;
-            alignment: center;
-            Btn {
-                text: "Show in Folder";
-                icon: Icons.open;
-                clicked => { root.show-in-folder(); }
-            }
-            Btn {
-                text: "Another";
-                plain: true;
-                clicked => { root.another(); }
-            }
-        }
-    }
-
-    if view == View.error: Appear {
-        x: 20px;
-        y: 186px;
-        width: 320px;
-        height: 160px;
-        HorizontalLayout {
-            y: 0;
-            height: 26px;
-            spacing: 6px;
-            alignment: center;
-            Icon {
-                d: Icons.xc;
-                size: 20px;
-                y: 3px;
-                color: Theme.bad;
-            }
-            Title { text: "Couldn't do that"; }
-        }
-        Sub {
-            y: 32px;
-            width: parent.width;
-            height: 54px;
-            text: root.error-text;
-        }
-        HorizontalLayout {
-            y: 96px;
-            height: 36px;
-            alignment: center;
-            Btn {
-                text: "Try another";
-                primary: true;
-                clicked => { root.another(); }
-            }
-        }
-    }
-
-    // ── Settings ──
-    if view == View.settings: Appear {
-        width: 360px;
-        height: 600px;
-        Rectangle {
-            x: 8px;
-            y: 12px;
-            width: 340px;
-            height: 36px;
-            IconBtn {
-                x: 0;
-                y: 2px;
-                icon: Icons.back;
-                clicked => { root.close-settings(); }
-            }
-            Text {
-                x: 40px;
-                text: "Settings";
-                font-size: 19px;
-                font-weight: 650;
-                color: Theme.label;
-                vertical-alignment: center;
-            }
-        }
-        Flickable {
             x: 0;
-            y: 52px;
+            y: card.height - root.full-h;
             width: 360px;
-            height: 548px;
-            VerticalLayout {
-                padding-left: 20px;
-                padding-right: 20px;
-                padding-bottom: 20px;
-                spacing: 6px;
+            height: root.full-h;
 
-                GroupTitle { text: "TARGET"; }
-                Group {
-                    for p[i] in root.presets: Cell {
-                        label: p.name;
-                        first: i == 0;
-                        clickable: true;
-                        clicked => { root.select-preset(i); }
-                        AppLogo {
-                            brand: p.brand;
-                            y: (parent.height - self.height) / 2;
+            // ── Header ──
+            if root.view != View.settings && root.view != View.trim: Rectangle {
+                x: 16px;
+                y: 14px;
+                width: pill-row.preferred-width;
+                height: 30px;
+                border-radius: 15px;
+                background: pill-ta.has-hover ? Theme.fill-hover : Theme.fill;
+                animate background { duration: 120ms; }
+                transform-scale: pill-ta.pressed ? 0.96 : 1;
+                animate transform-scale { duration: 220ms; easing: ease-out-back; }
+                pill-row := HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 10px;
+                    spacing: 6px;
+                    alignment: center;
+                    AppLogo {
+                        brand: root.presets[root.preset-index].brand;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    Text {
+                        text: root.presets[root.preset-index].name + " · " + root.target-text;
+                        font-size: 13px;
+                        font-weight: 600;
+                        color: Theme.label;
+                        vertical-alignment: center;
+                    }
+                    Icon {
+                        d: Icons.down;
+                        size: 15px;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+                pill-ta := TouchArea {
+                    enabled: root.view != View.busy;
+                    mouse-cursor: pointer;
+                    clicked => { menu.show(); }
+                }
+            }
+            if root.view != View.settings && root.view != View.trim: IconBtn {
+                x: parent.width - 14px - self.width;
+                y: 13px;
+                icon: Icons.gear;
+                tip: "Settings";
+                tip-below: true;
+                enabled: root.view != View.busy;
+                clicked => { root.open-settings(); }
+            }
+
+            menu := PopupWindow {
+                x: 12px;
+                y: 48px;
+                width: 268px;
+                Rectangle {
+                    property <bool> on;
+                    Timer {
+                        interval: 16ms;
+                        running: !parent.on;
+                        triggered => { parent.on = true; }
+                    }
+                    border-radius: 14px;
+                    background: Theme.pop;
+                    border-width: 1px;
+                    border-color: Theme.pop-border;
+                    drop-shadow-blur: 18px;
+                    drop-shadow-offset-y: 6px;
+                    drop-shadow-color: Theme.shadow;
+                    opacity: self.on ? 1 : 0;
+                    animate opacity { duration: 140ms; }
+                    transform-origin: { x: 0, y: 0 };
+                    transform-scale: self.on || !Fx.rich ? 1 : 0.94;
+                    animate transform-scale { duration: 240ms; easing: ease-out-back; }
+                    VerticalLayout {
+                        padding: 6px;
+                        for p[i] in root.presets: Rectangle {
+                            height: 32px;
+                            border-radius: 8px;
+                            background: row-ta.has-hover ? Theme.accent : transparent;
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 10px;
+                                Icon {
+                                    d: Icons.check;
+                                    size: 14px;
+                                    y: (parent.height - self.height) / 2;
+                                    color: row-ta.has-hover ? white : Theme.label;
+                                    opacity: i == root.preset-index ? 1 : 0;
+                                }
+                                AppLogo {
+                                    brand: p.brand;
+                                    on-accent: row-ta.has-hover;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                                Text {
+                                    text: p.name;
+                                    font-size: 13px;
+                                    color: row-ta.has-hover ? white : Theme.label;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: p.size;
+                                    font-size: 12px;
+                                    color: row-ta.has-hover ? #ffffffd9 : Theme.label-2;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            row-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.select-preset(i); }
+                            }
                         }
-                        if p.brand == "custom": Rectangle {
-                            width: 64px;
-                            height: 28px;
-                            y: (parent.height - self.height) / 2;
-                            border-radius: 7px;
-                            background: Theme.fill;
-                            mb := TextInput {
+                        Rectangle {
+                            height: 11px;
+                            Rectangle {
                                 x: 8px;
                                 width: parent.width - 16px;
-                                text: root.custom-mb;
-                                input-type: number;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
-                                color: Theme.label;
-                                font-size: 14px;
-                                accepted => { root.set-custom-mb(self.text.to-float()); }
-                                edited => {
-                                    if (self.text.is-float()) {
-                                        root.set-custom-mb(self.text.to-float());
+                                height: 1px;
+                                background: Theme.sep;
+                            }
+                        }
+                        Rectangle {
+                            height: 32px;
+                            border-radius: 8px;
+                            background: edit-ta.has-hover ? Theme.accent : transparent;
+                            Text {
+                                x: 10px;
+                                text: "Edit targets…";
+                                font-size: 13px;
+                                color: edit-ta.has-hover ? white : Theme.label;
+                            }
+                            edit-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.open-settings(); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Stage: drop zone, blob, sparks ──
+            if root.stage-lg || root.stage-md: Rectangle {
+                x: 16px;
+                y: 50px;
+                width: 328px;
+                height: root.stage-h;
+                animate height { duration: 300ms; easing: ease-out-back; }
+                DropZone {
+                    x: 10px;
+                    y: 6px;
+                    width: parent.width - 20px;
+                    height: parent.height - 12px;
+                    active: root.dragging;
+                    visible-dash: root.view == View.idle;
+                    dash-path: root.dash-path;
+                }
+                Blob {
+                    mood: root.mood;
+                    s: root.stage-lg ? 1 : 0.62;
+                    swell: root.dragging;
+                    cx: parent.width / 2;
+                    cy: parent.height / 2;
+                    look-x: root.look-x;
+                    look-y: root.look-y;
+                    hop: root.hop;
+                    chomp: root.chomp;
+                }
+                if Fx.rich && root.view == View.done && root.done-ok: Sparks {
+                    width: parent.width;
+                    height: parent.height;
+                }
+            }
+            if root.view == View.busy: Rectangle {
+                x: 0;
+                y: 50px;
+                width: 360px;
+                height: 252px;
+                Blob {
+                    mood: Mood.busy;
+                    s: 0.85;
+                    c: root.squeeze;
+                    cx: parent.width / 2;
+                    cy: parent.height / 2;
+                }
+                Press {
+                    width: parent.width;
+                    height: parent.height;
+                    c: root.squeeze;
+                    intro: root.intro;
+                }
+            }
+
+            // ── Views: big text and buttons; the stage and controls say the rest ──
+            if root.view == View.idle: Appear {
+                x: 20px;
+                y: 376px;
+                width: 320px;
+                height: 76px;
+                Title {
+                    y: 0;
+                    width: parent.width;
+                    height: 24px;
+                    text: root.note != "" ? root.note : root.dragging ? "Drop it" : "Drop or copy a file";
+                }
+                HorizontalLayout {
+                    y: 40px;
+                    height: 36px;
+                    spacing: 8px;
+                    alignment: center;
+                    Btn {
+                        text: "Choose File…";
+                        primary: true;
+                        clicked => { root.choose-file(); }
+                    }
+                    Btn {
+                        text: "Paste";
+                        icon: Icons.clip;
+                        tip: "Ctrl+V";
+                        clicked => { root.paste(); }
+                    }
+                }
+            }
+
+            if root.view == View.reading: Appear {
+                x: 20px;
+                y: 196px;
+                width: 320px;
+                height: 24px;
+                Title {
+                    width: parent.width;
+                    text: root.file-name;
+                }
+            }
+
+            if root.view == View.big: Appear {
+                x: 20px;
+                y: 186px;
+                width: 320px;
+                height: 266px;
+                // File card.
+                Rectangle {
+                    y: 0;
+                    height: 56px;
+                    Rectangle {
+                        x: 0;
+                        y: 8px;
+                        width: 40px;
+                        height: 40px;
+                        border-radius: 10px;
+                        background: Theme.accent-soft;
+                        Icon {
+                            d: root.file-kind == "video" ? Icons.film
+                                : root.file-kind == "audio" ? Icons.music
+                                : root.file-kind == "image" ? Icons.image
+                                : root.file-kind == "folder" ? Icons.folder
+                                : Icons.file;
+                            color: Theme.accent-text;
+                        }
+                    }
+                    Text {
+                        x: 52px;
+                        y: 9px;
+                        width: parent.width - 52px - 40px;
+                        text: root.file-name;
+                        font-size: 15px;
+                        font-weight: 600;
+                        color: Theme.label;
+                        overflow: elide;
+                    }
+                    Text {
+                        x: 52px;
+                        y: 30px;
+                        width: parent.width - 52px - 40px;
+                        text: root.file-meta;
+                        font-size: 13px;
+                        color: Theme.label-2;
+                        overflow: elide;
+                    }
+                    IconBtn {
+                        x: parent.width - self.width;
+                        y: 12px;
+                        icon: Icons.x;
+                        clicked => { root.remove-file(); }
+                    }
+                }
+                // Size against the limit; the bar fills when the view appears.
+                meter := Rectangle {
+                    y: 78px;
+                    height: 28px;
+                    property <bool> shown;
+                    Timer {
+                        interval: 60ms;
+                        running: !meter.shown;
+                        triggered => { meter.shown = true; }
+                    }
+                    Text {
+                        x: parent.width * root.meter-limit - 40px;
+                        y: 0;
+                        width: 80px;
+                        text: root.target-text;
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: Theme.label-2;
+                        horizontal-alignment: center;
+                    }
+                    Rectangle {
+                        y: 18px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: Theme.fill;
+                        clip: true;
+                        Rectangle {
+                            x: 0;
+                            width: meter.shown ? parent.width * root.meter-fill : 0;
+                            animate width { duration: 700ms; easing: ease-out; }
+                            background: Theme.bad;
+                        }
+                        Rectangle {
+                            x: 0;
+                            width: meter.shown ? parent.width * Math.min(root.meter-fill, root.meter-limit) : 0;
+                            animate width { duration: 700ms; easing: ease-out; }
+                            background: Theme.accent;
+                        }
+                    }
+                    Rectangle {
+                        x: parent.width * root.meter-limit - 1px;
+                        y: 14px;
+                        width: 2px;
+                        height: 16px;
+                        border-radius: 1px;
+                        background: Theme.label;
+                    }
+                }
+                Text {
+                    y: 116px;
+                    width: parent.width;
+                    height: 20px;
+                    text: root.over-text;
+                    font-size: 13px;
+                    font-weight: 600;
+                    color: root.over-ok ? Theme.ok : Theme.bad;
+                }
+                HorizontalLayout {
+                    y: 152px;
+                    height: 44px;
+                    spacing: 8px;
+                    if root.can-trim && root.trim-first: Btn {
+                        text: "Trim";
+                        icon: Icons.scissors;
+                        primary: true;
+                        large: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.open-trim(); }
+                    }
+                    Btn {
+                        text: root.compress-label;
+                        icon: Icons.squeeze;
+                        primary: !root.trim-first;
+                        large: true;
+                        horizontal-stretch: 1.4;
+                        clicked => { root.compress(); }
+                    }
+                    if root.can-trim && !root.trim-first: Btn {
+                        text: "Trim";
+                        icon: Icons.scissors;
+                        large: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.open-trim(); }
+                    }
+                }
+                if root.foot-text != "": Text {
+                    y: 206px;
+                    width: parent.width;
+                    text: root.foot-text;
+                    font-size: 12px;
+                    color: Theme.label-2;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+
+            if root.view == View.trim: Appear {
+                width: 360px;
+                height: 608px;
+                // Header: back, name, selected range.
+                IconBtn {
+                    x: 8px;
+                    y: 14px;
+                    icon: Icons.back;
+                    clicked => { root.close-trim(); }
+                }
+                Text {
+                    x: 48px;
+                    y: 12px;
+                    width: 290px;
+                    text: root.file-name;
+                    font-size: 15px;
+                    font-weight: 600;
+                    color: Theme.label;
+                    overflow: elide;
+                }
+                Text {
+                    x: 48px;
+                    y: 32px;
+                    text: root.trim-range;
+                    font-size: 12px;
+                    color: Theme.label-2;
+                }
+                // Preview of the frame at the handle being moved.
+                Rectangle {
+                    x: 20px;
+                    y: 62px;
+                    width: 320px;
+                    height: 180px;
+                    border-radius: 12px;
+                    background: Theme.fill;
+                    clip: true;
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.trim-frame;
+                        image-fit: cover;
+                    }
+                }
+                // Filmstrip with two handles.
+                strip := Rectangle {
+                    property <float> fa: root.trim-a / Math.max(0.001, root.trim-dur);
+                    property <float> fb: root.trim-b / Math.max(0.001, root.trim-dur);
+                    x: 20px;
+                    y: 258px;
+                    width: 320px;
+                    height: 48px;
+                    Rectangle {
+                        border-radius: 8px;
+                        background: Theme.fill;
+                        clip: true;
+                        HorizontalLayout {
+                            for t in root.thumbs: Image {
+                                source: t;
+                                image-fit: cover;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                    }
+                    // Dim what's cut away.
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * strip.fa;
+                        border-top-left-radius: 8px;
+                        border-bottom-left-radius: 8px;
+                        background: #000000a6;
+                    }
+                    Rectangle {
+                        x: parent.width * strip.fb;
+                        width: parent.width * (1 - strip.fb);
+                        border-top-right-radius: 8px;
+                        border-bottom-right-radius: 8px;
+                        background: #000000a6;
+                    }
+                    // Selection frame.
+                    Rectangle {
+                        x: parent.width * strip.fa;
+                        width: parent.width * (strip.fb - strip.fa);
+                        border-width: 2px;
+                        border-color: Theme.accent;
+                        border-radius: 6px;
+                    }
+                    for side in 2: Rectangle {
+                        property <float> f: side == 0 ? strip.fa : strip.fb;
+                        property <bool> on: root.trim-active == side && drag.pressed;
+                        x: strip.width * self.f - self.width / 2;
+                        y: -4px;
+                        width: 14px;
+                        height: 56px;
+                        border-radius: 5px;
+                        background: Theme.accent;
+                        drop-shadow-blur: 6px;
+                        drop-shadow-color: #00000059;
+                        transform-scale: self.on ? 1.12 : 1;
+                        animate transform-scale { duration: 220ms; easing: ease-out-back; }
+                        Rectangle {
+                            width: 2px;
+                            height: 18px;
+                            border-radius: 1px;
+                            background: #ffffffd9;
+                        }
+                    }
+                    drag := TouchArea {
+                        y: -8px;
+                        height: 64px;
+                        mouse-cursor: ew-resize;
+                        function move-to(f: float) {
+                            if (root.trim-active == 0) {
+                                root.trim-a = Math.max(0, Math.min(f * root.trim-dur, root.trim-b - 1));
+                            } else {
+                                root.trim-b = Math.min(root.trim-dur, Math.max(f * root.trim-dur, root.trim-a + 1));
+                            }
+                            root.trim-changed();
+                        }
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down) {
+                                // Grab the nearer handle.
+                                root.trim-active = Math.abs(Math.clamp(self.mouse-x / self.width, 0, 1) - strip.fa) <= Math.abs(Math.clamp(self.mouse-x / self.width, 0, 1) - strip.fb) ? 0 : 1;
+                                self.move-to(Math.clamp(self.mouse-x / self.width, 0, 1));
+                            }
+                        }
+                        moved => {
+                            self.move-to(Math.clamp(self.mouse-x / self.width, 0, 1));
+                        }
+                    }
+                }
+                // Mode and live readout.
+                Seg {
+                    x: 20px;
+                    y: 330px;
+                    width: 320px;
+                    options: ["Keep quality", "Fit to " + root.target-text];
+                    index: root.trim-mode;
+                    picked(i) => {
+                        root.trim-mode = i;
+                        root.trim-changed();
+                    }
+                }
+                Rectangle {
+                    x: 20px;
+                    y: 380px;
+                    width: 320px;
+                    height: 92px;
+                    border-radius: 12px;
+                    background: Theme.group;
+                    Text {
+                        x: 16px;
+                        y: 14px;
+                        text: root.trim-big;
+                        font-size: 26px;
+                        font-weight: 700;
+                        color: Theme.label;
+                    }
+                    if root.trim-grade > 0: Badge {
+                        x: parent.width - self.width - 14px;
+                        y: 18px;
+                        grade: root.trim-grade;
+                    }
+                    HorizontalLayout {
+                        x: 16px;
+                        y: 56px;
+                        height: 20px;
+                        spacing: 6px;
+                        Icon {
+                            d: root.trim-ok ? Icons.okc : Icons.xc;
+                            size: 16px;
+                            y: 2px;
+                            color: root.trim-ok ? Theme.ok : Theme.bad;
+                        }
+                        Text {
+                            text: root.trim-status;
+                            font-size: 13px;
+                            font-weight: 600;
+                            color: root.trim-ok ? Theme.ok : Theme.bad;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                Btn {
+                    x: 20px;
+                    y: 500px;
+                    width: 320px;
+                    text: root.trim-button;
+                    icon: Icons.squeeze;
+                    primary: true;
+                    large: true;
+                    clicked => { root.trim-compress(); }
+                }
+            }
+
+            if root.view == View.busy: Appear {
+                x: 20px;
+                y: 310px;
+                width: 320px;
+                height: 142px;
+                Text {
+                    y: 0;
+                    width: parent.width;
+                    height: 34px;
+                    text: Math.round(root.progress * 100) + "%";
+                    font-size: 28px;
+                    font-weight: 700;
+                    color: Theme.label;
+                    horizontal-alignment: center;
+                }
+                Sub {
+                    y: 38px;
+                    width: parent.width;
+                    height: 18px;
+                    text: root.busy-left;
+                }
+                HorizontalLayout {
+                    y: 74px;
+                    height: 36px;
+                    alignment: center;
+                    Btn {
+                        text: "Cancel";
+                        clicked => { root.cancel(); }
+                    }
+                }
+            }
+
+            if root.view == View.done: Appear {
+                x: 20px;
+                y: 360px;
+                width: 320px;
+                height: 92px;
+                HorizontalLayout {
+                    y: 0;
+                    height: 26px;
+                    spacing: 6px;
+                    alignment: center;
+                    Icon {
+                        d: root.done-ok ? Icons.okc : Icons.xc;
+                        size: 20px;
+                        y: 3px;
+                        color: root.done-ok ? Theme.ok : Theme.bad;
+                    }
+                    Title {
+                        text: root.done-title;
+                        color: root.done-ok ? Theme.label : Theme.bad;
+                    }
+                }
+                // One quiet line: the result (size, resolution), or what to do next.
+                Sub {
+                    y: 30px;
+                    width: parent.width;
+                    height: 18px;
+                    text: root.done-sub;
+                }
+                HorizontalLayout {
+                    y: 56px;
+                    height: 36px;
+                    spacing: 8px;
+                    alignment: center;
+                    Btn {
+                        text: "Show in Folder";
+                        icon: Icons.open;
+                        clicked => { root.show-in-folder(); }
+                    }
+                    Btn {
+                        text: "Another";
+                        plain: true;
+                        clicked => { root.another(); }
+                    }
+                }
+            }
+
+            if root.view == View.error: Appear {
+                x: 20px;
+                y: 186px;
+                width: 320px;
+                height: 160px;
+                HorizontalLayout {
+                    y: 0;
+                    height: 26px;
+                    spacing: 6px;
+                    alignment: center;
+                    Icon {
+                        d: Icons.xc;
+                        size: 20px;
+                        y: 3px;
+                        color: Theme.bad;
+                    }
+                    Title { text: "Couldn't do that"; }
+                }
+                Sub {
+                    y: 32px;
+                    width: parent.width;
+                    height: 54px;
+                    text: root.error-text;
+                }
+                HorizontalLayout {
+                    y: 96px;
+                    height: 36px;
+                    alignment: center;
+                    Btn {
+                        text: "Try another";
+                        primary: true;
+                        clicked => { root.another(); }
+                    }
+                }
+            }
+
+            // ── Settings ──
+            if root.view == View.settings: Appear {
+                width: 360px;
+                height: 600px;
+                IconBtn {
+                    x: 8px;
+                    y: 14px;
+                    icon: Icons.back;
+                    clicked => { root.close-settings(); }
+                }
+                Text {
+                    x: 48px;
+                    y: 12px;
+                    height: 36px;
+                    text: "Settings";
+                    font-size: 19px;
+                    font-weight: 650;
+                    color: Theme.label;
+                    vertical-alignment: center;
+                }
+                Flickable {
+                    x: 0;
+                    y: 54px;
+                    width: 360px;
+                    height: 546px;
+                    VerticalLayout {
+                        padding-left: 20px;
+                        padding-right: 20px;
+                        padding-bottom: 20px;
+                        spacing: 6px;
+
+                        GroupTitle { text: "TARGET"; }
+                        Group {
+                            for p[i] in root.presets: Cell {
+                                label: p.name;
+                                first: i == 0;
+                                clickable: true;
+                                clicked => { root.select-preset(i); }
+                                AppLogo {
+                                    brand: p.brand;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                                if p.brand == "custom": Rectangle {
+                                    width: 64px;
+                                    height: 28px;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: 7px;
+                                    background: Theme.fill;
+                                    TextInput {
+                                        x: 8px;
+                                        width: parent.width - 16px;
+                                        text: root.custom-mb;
+                                        input-type: number;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                        color: Theme.label;
+                                        font-size: 14px;
+                                        accepted => { root.set-custom-mb(self.text.to-float()); }
+                                        edited => {
+                                            if (self.text.is-float()) {
+                                                root.set-custom-mb(self.text.to-float());
+                                            }
+                                        }
                                     }
+                                }
+                                Text {
+                                    text: p.brand == "custom" ? "MB" : p.size;
+                                    font-size: 14px;
+                                    color: Theme.label-2;
+                                    vertical-alignment: center;
+                                }
+                                Check { on: i == root.preset-index; }
+                            }
+                        }
+
+                        GroupTitle { text: "STYLE"; }
+                        Seg {
+                            options: ["Kompacter", "Discord"];
+                            index: root.style-index;
+                            picked(i) => { root.set-style(i); }
+                        }
+                        Seg {
+                            options: root.theme-options;
+                            index: root.theme-index;
+                            picked(i) => { root.set-theme(i); }
+                        }
+
+                        GroupTitle { text: "SAVE TO"; }
+                        Group {
+                            Cell {
+                                label: "Kompacter folder";
+                                small: "Deleted after 7 days";
+                                first: true;
+                                clickable: true;
+                                clicked => { root.set-output(0); }
+                                Btn {
+                                    text: "Open";
+                                    plain: true;
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.open-outputs(); }
+                                }
+                                Check { on: root.output-index == 0; }
+                            }
+                            Cell {
+                                label: "Next to the original";
+                                clickable: true;
+                                clicked => { root.set-output(1); }
+                                Check { on: root.output-index == 1; }
+                            }
+                            Cell {
+                                label: "Pick a folder";
+                                small: root.output-dir;
+                                clickable: true;
+                                clicked => { root.set-output(2); }
+                                Btn {
+                                    text: "Choose…";
+                                    plain: true;
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.choose-folder(); }
+                                }
+                                Check { on: root.output-index == 2; }
+                            }
+                            Cell {
+                                label: "Replace the original";
+                                small: "Original goes to the Recycle Bin";
+                                clickable: true;
+                                clicked => { root.set-output(3); }
+                                Check { on: root.output-index == 3; }
+                            }
+                        }
+
+                        GroupTitle { text: "GENERAL"; }
+                        Group {
+                            Cell {
+                                label: "GPU encoding";
+                                small: root.gpu-text;
+                                first: true;
+                                Switch {
+                                    checked: root.gpu;
+                                    y: (parent.height - self.height) / 2;
+                                    toggled(on) => { root.set-gpu(on); }
+                                }
+                            }
+                            Cell {
+                                label: "Auto-hide";
+                                Switch {
+                                    checked: root.auto-hide;
+                                    y: (parent.height - self.height) / 2;
+                                    toggled(on) => { root.set-auto-hide(on); }
+                                }
+                            }
+                            Cell {
+                                label: "Start with Windows";
+                                Switch {
+                                    checked: root.start-with-windows;
+                                    y: (parent.height - self.height) / 2;
+                                    toggled(on) => { root.set-start(on); }
+                                }
+                            }
+                            Cell {
+                                label: "Low-memory mode";
+                                small: "Simpler animations · restarts Kompacter";
+                                Switch {
+                                    checked: root.low-memory;
+                                    y: (parent.height - self.height) / 2;
+                                    toggled(on) => { root.set-low-memory(on); }
                                 }
                             }
                         }
-                        Text {
-                            text: p.brand == "custom" ? "MB" : p.size;
-                            font-size: 14px;
-                            color: Theme.label-2;
-                            vertical-alignment: center;
-                        }
-                        Check { on: i == root.preset-index; }
                     }
                 }
-
-                GroupTitle { text: "THEME"; }
-                Seg {
-                    options: ["System", "Light", "Dark"];
-                    index: root.theme-index;
-                    picked(i) => { root.set-theme(i); }
-                }
-
-                GroupTitle { text: "SAVE TO"; }
-                Group {
-                    Cell {
-                        label: "Kompacter folder";
-                        small: "Deleted after 7 days";
-                        first: true;
-                        clickable: true;
-                        clicked => { root.set-output(0); }
-                        Btn {
-                            text: "Open";
-                            plain: true;
-                            y: (parent.height - self.height) / 2;
-                            clicked => { root.open-outputs(); }
-                        }
-                        Check { on: root.output-index == 0; }
-                    }
-                    Cell {
-                        label: "Next to the original";
-                        clickable: true;
-                        clicked => { root.set-output(1); }
-                        Check { on: root.output-index == 1; }
-                    }
-                    Cell {
-                        label: "Pick a folder";
-                        small: root.output-dir;
-                        clickable: true;
-                        clicked => { root.set-output(2); }
-                        Btn {
-                            text: "Choose…";
-                            plain: true;
-                            y: (parent.height - self.height) / 2;
-                            clicked => { root.choose-folder(); }
-                        }
-                        Check { on: root.output-index == 2; }
-                    }
-                    Cell {
-                        label: "Replace the original";
-                        small: "Original goes to the Recycle Bin";
-                        clickable: true;
-                        clicked => { root.set-output(3); }
-                        Check { on: root.output-index == 3; }
-                    }
-                }
-
-                GroupTitle { text: "ENCODING"; }
-                Group {
-                    Cell {
-                        label: "GPU encoding";
-                        small: root.gpu-text;
-                        first: true;
-                        Switch {
-                            checked: root.gpu;
-                            y: (parent.height - self.height) / 2;
-                            toggled(on) => { root.set-gpu(on); }
-                        }
-                    }
-                }
-
-                GroupTitle { text: "GENERAL"; }
-                Group {
-                    Cell {
-                        label: "Auto-hide";
-                        first: true;
-                        Switch {
-                            checked: root.auto-hide;
-                            y: (parent.height - self.height) / 2;
-                            toggled(on) => { root.set-auto-hide(on); }
-                        }
-                    }
-                    Cell {
-                        label: "Start with Windows";
-                        Switch {
-                            checked: root.start-with-windows;
-                            y: (parent.height - self.height) / 2;
-                            toggled(on) => { root.set-start(on); }
-                        }
-                    }
-                }
-
             }
         }
     }

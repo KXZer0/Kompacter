@@ -55,7 +55,7 @@ pub fn file_name(p: &std::path::Path) -> String {
 
 /// SVG path of evenly dashed strokes around a rounded rectangle (for the drop zone).
 /// Slint paths have no dash style, so the dashes are drawn as short segments.
-pub fn dashed_round_rect(w: f64, h: f64, r: f64, dash: f64, gap: f64) -> String {
+pub fn dashed_round_rect(w: f64, h: f64, r: f64, dash: f64, gap: f64, offset: f64) -> String {
     use std::f64::consts::PI;
     let inset = 1.0;
     let (w, h, r) = (w - 2.0 * inset, h - 2.0 * inset, r - inset);
@@ -84,7 +84,8 @@ pub fn dashed_round_rect(w: f64, h: f64, r: f64, dash: f64, gap: f64) -> String 
     let dash = period * dash / (dash + gap);
 
     let mut out = String::new();
-    let mut pos = 0.0; // distance along the outline
+    // Distance along the outline; the offset makes the dashes march.
+    let mut pos = period - offset.rem_euclid(period);
     let mut drawing = false;
     for s in pts.windows(2) {
         let (a, b) = (s[0], s[1]);
@@ -125,7 +126,7 @@ mod tests {
 
     #[test]
     fn dashes() {
-        let d = dashed_round_rect(308.0, 234.0, 28.0, 6.0, 7.0);
+        let d = dashed_round_rect(308.0, 300.0, 28.0, 6.0, 7.0, 3.0);
         assert!(d.starts_with('M'));
         assert!(d.matches('M').count() > 50);
     }

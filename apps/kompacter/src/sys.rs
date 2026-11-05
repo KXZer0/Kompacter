@@ -193,8 +193,14 @@ mod imp {
     }
 
     /// Bottom-right corner of the free screen area (screen minus taskbar) on the monitor
-    /// under the mouse, and that monitor's scale (1.0 = 100%).
+    /// under the mouse, and that monitor's scale (1.0 = 100%). An auto-hiding taskbar
+    /// doesn't count in the work area, so its space is kept free here too: the flyout
+    /// always sits where it would sit above a visible taskbar.
     pub fn corner() -> Option<(i32, i32, f64)> {
+        use windows_sys::Win32::UI::Shell::{
+            SHAppBarMessage, ABE_BOTTOM, ABE_RIGHT, ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE,
+            APPBARDATA,
+        };
         unsafe {
             let mut pt = POINT { x: 0, y: 0 };
             GetCursorPos(&mut pt);
@@ -204,10 +210,117 @@ mod imp {
             if GetMonitorInfoW(mon, &mut info) == 0 {
                 return None;
             }
-            let RECT { right, bottom, .. } = info.rcWork;
+            let RECT {
+                mut right,
+                mut bottom,
+                ..
+            } = info.rcWork;
             let (mut dx, mut dy) = (96u32, 96u32);
             GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-            Some((right, bottom, dx as f64 / 96.0))
+            let scale = dx as f64 / 96.0;
+
+            let mut abd: APPBARDATA = std::mem::zeroed();
+            abd.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
+            let auto = SHAppBarMessage(ABM_GETSTATE, &mut abd) as u32 & ABS_AUTOHIDE != 0;
+            if auto && SHAppBarMessage(ABM_GETTASKBARPOS, &mut abd) != 0 {
+                let r = abd.rc;
+                let on_this = MonitorFromPoint(
+                    POINT {
+                        x: (r.left + r.right) / 2,
+                        y: (r.top + r.bottom) / 2,
+                    },
+                    MONITOR_DEFAULTTONEAREST,
+                ) == mon;
+                let fallback = (48.0 * scale) as i32;
+                if on_this && abd.uEdge == ABE_BOTTOM {
+                    let h = (r.bottom - r.top).max(0);
+                    let h = if h < 20 { fallback } else { h };
+                    bottom = bottom.min(info.rcMonitor.bottom - h);
+                } else if on_this && abd.uEdge == ABE_RIGHT {
+                    let w = (r.right - r.left).max(0);
+                    let w = if w < 20 { fallback } else { w };
+                    right = right.min(info.rcMonitor.right - w);
+                }
+            }
+            Some((right, bottom, scale))
+        }
+    }
+
+    /// Mouse position on screen, in physical pixels.
+    pub fn cursor() -> Option<(i32, i32)> {
+        let mut pt = POINT { x: 0, y: 0 };
+        (unsafe { GetCursorPos(&mut pt) } != 0).then_some((pt.x, pt.y))
+    }
+
+    /// Window see-through level (0 hidden … 255 solid), for the slide-in of the plain
+    /// window. Makes the window "layered" the first time.
+    pub fn set_alpha(hwnd: isize, alpha: u8) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowLongPtrW, GWL_EXSTYLE,
+            LWA_ALPHA, WS_EX_LAYERED,
+        };
+        let h = hwnd as _;
+        unsafe {
+            let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+            if ex & WS_EX_LAYERED as isize == 0 {
+                SetWindowLongPtrW(h, GWL_EXSTYLE, ex | WS_EX_LAYERED as isize);
+            }
+            SetLayeredWindowAttributes(h, 0, alpha, LWA_ALPHA);
+        }
+    }
+
+    /// Windows 11 rounded corners for the plain (not floating) window, and no extra
+    /// Windows show/hide animation on top of ours.
+    pub fn style_plain_window(hwnd: isize) {
+        use windows_sys::Win32::Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED, DWMWA_WINDOW_CORNER_PREFERENCE,
+            DWMWCP_ROUND,
+        };
+        unsafe {
+            let round = DWMWCP_ROUND;
+            DwmSetWindowAttribute(
+                hwnd as _,
+                DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+                &round as *const _ as *const _,
+                4,
+            );
+            let off: i32 = 1;
+            DwmSetWindowAttribute(
+                hwnd as _,
+                DWMWA_TRANSITIONS_FORCEDISABLED as u32,
+                &off as *const _ as *const _,
+                4,
+            );
+        }
+    }
+
+    /// False when "Animation effects" is turned off in Windows settings.
+    pub fn animations_enabled() -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION,
+        };
+        let mut on: i32 = 1;
+        unsafe {
+            SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                &mut on as *mut i32 as *mut _,
+                0,
+            );
+        }
+        on != 0
+    }
+
+    /// Wait (up to a few seconds) for another process to exit; used when Kompacter
+    /// restarts itself.
+    pub fn wait_for_exit(pid: u32) {
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
+        unsafe {
+            let h = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+            if !h.is_null() {
+                WaitForSingleObject(h, 5000);
+                CloseHandle(h);
+            }
         }
     }
 
@@ -352,6 +465,17 @@ mod imp {
     }
     pub fn corner() -> Option<(i32, i32, f64)> {
         None
+    }
+    pub fn cursor() -> Option<(i32, i32)> {
+        None
+    }
+    pub fn set_alpha(_hwnd: isize, _alpha: u8) {}
+    pub fn style_plain_window(_hwnd: isize) {}
+    pub fn animations_enabled() -> bool {
+        true
+    }
+    pub fn wait_for_exit(_pid: u32) {
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
     pub fn recycle(_path: &Path) -> Result<(), String> {
         Err("not supported on this system yet".into())
