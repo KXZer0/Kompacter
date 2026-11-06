@@ -101,8 +101,9 @@ export component Blob inherits Rectangle {
         }
     }
 
-    property <float> sx: s * grow * (1 + 0.2 * c) * (1 + 0.02 * breath + 0.08 * squish);
-    property <float> sy: s * grow * (1 - 0.5 * c) * (1 - 0.015 * breath - 0.1 * squish);
+    // Squish: an even little bounce (both axes), not a stretch.
+    property <float> sx: s * grow * (1 + 0.2 * c) * (1 + 0.02 * breath - 0.08 * squish);
+    property <float> sy: s * grow * (1 - 0.5 * c) * (1 - 0.015 * breath - 0.08 * squish);
     property <float> k: s * grow;
     property <bool> blink;
 

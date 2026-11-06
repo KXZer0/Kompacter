@@ -1,4 +1,5 @@
-; Kompacter installer: per-user (no admin prompt), into %LOCALAPPDATA%\Programs\Kompacter.
+; Kompacter installer: per-user (no admin prompt). Default folder
+; %LOCALAPPDATA%\Programs\Kompacter; you can pick another one (remembered for updates).
 ; Built by .github/workflows/release.yml:  makensis /DVERSION=0.0.3 kompacter.nsi
 
 Unicode true
@@ -11,6 +12,7 @@ Unicode true
 Name "Kompacter"
 OutFile "Kompacter-${VERSION}-setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\Kompacter"
+InstallDirRegKey HKCU "Software\Kompacter" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
@@ -20,6 +22,7 @@ SetCompressor /SOLID lzma
 !define MUI_FINISHPAGE_RUN_TEXT "Open Kompacter"
 !define UNINST "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kompacter"
 
+!insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -38,6 +41,7 @@ Section "Install"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateShortcut "$SMPROGRAMS\Kompacter.lnk" "$INSTDIR\Kompacter.exe"
 
+  WriteRegStr HKCU "Software\Kompacter" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "${UNINST}" "DisplayName" "Kompacter"
   WriteRegStr HKCU "${UNINST}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "${UNINST}" "Publisher" "Kompacter"
@@ -52,6 +56,16 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\Kompacter.lnk"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Kompacter"
   DeleteRegKey HKCU "${UNINST}"
-  ; Includes the Kompacted folder (compressed copies, cleaned weekly anyway).
-  RMDir /r "$INSTDIR"
+  DeleteRegKey HKCU "Software\Kompacter"
+  ; Only Kompacter's own files: the folder may be one the user chose (never wipe it).
+  Delete "$INSTDIR\Kompacter.exe"
+  Delete "$INSTDIR\ffmpeg.exe"
+  Delete "$INSTDIR\ffprobe.exe"
+  Delete "$INSTDIR\FFMPEG-LICENSE.txt"
+  Delete "$INSTDIR\LICENSE.txt"
+  Delete "$INSTDIR\Uninstall.exe"
+  ; Compressed copies (cleaned weekly anyway).
+  RMDir /r "$INSTDIR\Kompacted"
+  ; Removed only if it's now empty.
+  RMDir "$INSTDIR"
 SectionEnd

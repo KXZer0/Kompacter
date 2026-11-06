@@ -14,6 +14,17 @@ export { Theme, Fx, Prefs, PresetItem }
 
 export enum View { idle, reading, big, trim, busy, done, error, settings }
 
+/// One line of a before → after list (a folder's tree, or a video's stats).
+export struct DiffRow {
+    depth: int,
+    /// "dir", "file", or "" (stat line)
+    icon: string,
+    label: string,
+    before: string,
+    after: string,
+    changed: bool,
+}
+
 /// One line in the trimmer's quality details.
 export struct DetailRow {
     label: string,
@@ -113,7 +124,11 @@ export component AppWindow inherits Window {
     in property <float> progress;
     /// Smoothed squeeze and press intro, driven by Rust each frame while compressing.
     in property <float> squeeze;
-    in property <float> intro;
+    // Smoothed here, at the display's refresh rate, so the press and the % glide.
+    property <float> shown: root.squeeze;
+    animate shown { duration: 450ms; easing: linear; }
+    property <float> intro: root.view == View.busy ? 1 : 0;
+    animate intro { duration: 550ms; easing: ease-out; }
     in property <float> look-x;
     in property <float> look-y;
     in property <int> hop;
@@ -136,6 +151,9 @@ export component AppWindow inherits Window {
     in property <string> foot-text;
     in property <bool> can-trim;
     in property <bool> trim-first;
+    /// Before → after details under the file card ("Show more").
+    in property <[DiffRow]> diff;
+    in-out property <bool> diff-open;
     /// Too long for one good file: how many parts would each fit well (0 = don't offer).
     in property <int> split-count;
     /// The result was still too big, and splitting can help.
@@ -156,6 +174,11 @@ export component AppWindow inherits Window {
     in property <int> trim-grade;
     in property <[DetailRow]> trim-details;
     in property <string> trim-button: "Compress";
+    in-out property <bool> trim-playing;
+    in-out property <bool> trim-sound: true;
+    in property <string> trim-time;
+    in property <string> trim-a-text;
+    in property <string> trim-b-text;
 
     in property <string> busy-left;
 
@@ -184,6 +207,9 @@ export component AppWindow inherits Window {
     callback close-trim();
     callback trim-changed();
     callback trim-compress();
+    callback trim-play();
+    callback trim-set-time(int, string);
+    callback trim-nudge(int, bool);
     callback escape();
 
     property <length> inset: Fx.glass ? 12px : 0;
@@ -205,7 +231,7 @@ export component AppWindow inherits Window {
         : view == View.done ? (done-ok ? Mood.happy : Mood.worried)
         : Mood.idle;
     property <bool> stage-lg: view == View.idle || view == View.done;
-    property <bool> stage-md: view == View.reading || view == View.big || view == View.error;
+    property <bool> stage-md: view == View.reading || (view == View.big && !diff-open) || view == View.error;
     property <length> stage-h: stage-lg ? 312px : 124px;
 
     keys := FocusScope {
@@ -422,12 +448,34 @@ export component AppWindow inherits Window {
                     visible-dash: root.view == View.idle;
                     dash-path: root.dash-path;
                 }
+                // Drop hint inside the dashed box, in the same grey as the dashes.
+                if root.view == View.idle: VerticalLayout {
+                    y: 196px;
+                    width: parent.width;
+                    height: 72px;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        alignment: center;
+                        Icon {
+                            d: "M4 14v4.5a1.5 1.5 0 0 0 1.5 1.5h13a1.5 1.5 0 0 0 1.5-1.5V14M12 4v10M8 10l4 4 4-4";
+                            size: 28px;
+                            color: root.dragging ? Theme.accent-text : Theme.label-2.transparentize(0.5);
+                        }
+                    }
+                    Text {
+                        text: root.note != "" ? root.note : root.dragging ? "Drop it" : "Drop or copy a file";
+                        font-size: 16px;
+                        font-weight: 600;
+                        color: root.dragging ? Theme.accent-text : Theme.label-2.transparentize(0.5);
+                        horizontal-alignment: center;
+                    }
+                }
                 Blob {
                     mood: root.mood;
                     s: root.stage-lg ? 1 : 0.62;
                     swell: root.dragging;
                     cx: parent.width / 2;
-                    cy: parent.height / 2;
+                    cy: root.view == View.idle ? parent.height / 2 - 40px : parent.height / 2;
                     look-x: root.look-x;
                     look-y: root.look-y;
                     hop: root.hop;
@@ -446,14 +494,14 @@ export component AppWindow inherits Window {
                 Blob {
                     mood: Mood.busy;
                     s: 0.85;
-                    c: root.squeeze;
+                    c: root.shown;
                     cx: parent.width / 2;
                     cy: parent.height / 2;
                 }
                 Press {
                     width: parent.width;
                     height: parent.height;
-                    c: root.squeeze;
+                    c: root.shown;
                     intro: root.intro;
                 }
             }
@@ -461,22 +509,17 @@ export component AppWindow inherits Window {
             // ── Views: big text and buttons; the stage and controls say the rest ──
             if root.view == View.idle: Appear {
                 x: 20px;
-                y: 376px;
+                y: 384px;
                 width: 320px;
-                height: 76px;
-                Title {
-                    y: 0;
-                    width: parent.width;
-                    height: 24px;
-                    text: root.note != "" ? root.note : root.dragging ? "Drop it" : "Drop or copy a file";
-                }
+                height: 40px;
                 HorizontalLayout {
-                    y: 40px;
+                    y: 0;
                     height: 36px;
                     spacing: 8px;
                     alignment: center;
                     Btn {
                         text: "Choose File…";
+                        icon: Icons.folder;
                         primary: true;
                         clicked => { root.choose-file(); }
                     }
@@ -502,9 +545,10 @@ export component AppWindow inherits Window {
 
             if root.view == View.big: Appear {
                 x: 20px;
-                y: 186px;
+                y: root.diff-open ? 52px : 186px;
+                animate y { duration: 320ms; easing: ease-out; }
                 width: 320px;
-                height: 266px;
+                height: root.diff-open ? 400px : 266px;
                 // File card.
                 Rectangle {
                     y: 0;
@@ -559,8 +603,82 @@ export component AppWindow inherits Window {
                         clicked => { root.remove-file(); }
                     }
                 }
+                // "Show more": the before → after list.
+                if root.diff.length > 0: Rectangle {
+                    x: 52px;
+                    y: 52px;
+                    width: more-row.preferred-width;
+                    height: 20px;
+                    more-row := HorizontalLayout {
+                        spacing: 2px;
+                        Text {
+                            text: root.diff-open ? "Show less" : "Show more";
+                            font-size: 12px;
+                            color: more-ta.has-hover ? Theme.label : Theme.label-2;
+                            vertical-alignment: center;
+                        }
+                        Icon {
+                            d: Icons.down;
+                            size: 14px;
+                            y: 3px;
+                            color: more-ta.has-hover ? Theme.label : Theme.label-2;
+                            transform-rotation: root.diff-open ? 180deg : 0deg;
+                            animate transform-rotation { duration: 260ms; easing: ease-out-back; }
+                        }
+                    }
+                    more-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.diff-open = !root.diff-open; }
+                    }
+                }
+                if root.diff-open: Flickable {
+                    y: 80px;
+                    width: parent.width;
+                    height: 220px;
+                    VerticalLayout {
+                        spacing: 0;
+                        for r in root.diff: HorizontalLayout {
+                            height: 24px;
+                            spacing: 6px;
+                            padding-left: r.depth * 14px;
+                            if r.icon != "": Icon {
+                                d: r.icon == "dir" ? Icons.folder : Icons.file;
+                                size: 14px;
+                                y: 5px;
+                            }
+                            Text {
+                                text: r.label;
+                                font-size: 12px;
+                                font-weight: r.depth == 0 && r.icon == "dir" ? 600 : 400;
+                                color: Theme.label;
+                                overflow: elide;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: r.before;
+                                font-size: 12px;
+                                color: Theme.label-2;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "→";
+                                font-size: 12px;
+                                color: r.changed ? Theme.ok : Theme.label-2;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: r.after;
+                                font-size: 12px;
+                                font-weight: 600;
+                                color: r.changed ? Theme.ok : Theme.label-2;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
                 // Size against the limit; the bar fills when the view appears.
-                meter := Rectangle {
+                if !root.diff-open: meter := Rectangle {
                     y: 78px;
                     height: 28px;
                     property <bool> shown;
@@ -607,7 +725,7 @@ export component AppWindow inherits Window {
                         background: Theme.label;
                     }
                 }
-                Text {
+                if !root.diff-open: Text {
                     y: 116px;
                     width: parent.width;
                     height: 20px;
@@ -618,7 +736,7 @@ export component AppWindow inherits Window {
                 }
                 // Too long for one good file: trim it, or split it into parts that each fit.
                 if root.split-count > 1: HorizontalLayout {
-                    y: 152px;
+                    y: root.diff-open ? 312px : 152px;
                     height: 44px;
                     spacing: 8px;
                     Btn {
@@ -638,7 +756,7 @@ export component AppWindow inherits Window {
                     }
                 }
                 if root.split-count > 1: HorizontalLayout {
-                    y: 206px;
+                    y: root.diff-open ? 362px : 206px;
                     height: 36px;
                     alignment: center;
                     Btn {
@@ -648,7 +766,7 @@ export component AppWindow inherits Window {
                     }
                 }
                 if root.split-count <= 1: HorizontalLayout {
-                    y: 152px;
+                    y: root.diff-open ? 312px : 152px;
                     height: 44px;
                     spacing: 8px;
                     if root.can-trim && root.trim-first: Btn {
@@ -675,7 +793,7 @@ export component AppWindow inherits Window {
                         clicked => { root.open-trim(); }
                     }
                 }
-                if root.foot-text != "" && root.split-count <= 1: Text {
+                if root.foot-text != "" && root.split-count <= 1 && !root.diff-open: Text {
                     y: 206px;
                     width: parent.width;
                     text: root.foot-text;
@@ -706,13 +824,6 @@ export component AppWindow inherits Window {
                     color: Theme.label;
                     overflow: elide;
                 }
-                Text {
-                    x: 48px;
-                    y: 32px;
-                    text: root.trim-range;
-                    font-size: 12px;
-                    color: Theme.label-2;
-                }
                 // Preview of the frame at the handle being moved.
                 Rectangle {
                     x: 20px;
@@ -726,7 +837,66 @@ export component AppWindow inherits Window {
                         width: parent.width;
                         height: parent.height;
                         source: root.trim-frame;
-                        image-fit: cover;
+                        image-fit: contain;
+                    }
+                    pv := TouchArea {
+                        clicked => { root.trim-play(); }
+                    }
+                    // Controls appear while the pointer is over the video.
+                    Rectangle {
+                        opacity: pv.has-hover ? 1 : 0;
+                        animate opacity { duration: 160ms; }
+                        // Play / pause.
+                        Rectangle {
+                            x: 10px;
+                            y: parent.height - 40px;
+                            width: 30px;
+                            height: 30px;
+                            border-radius: 15px;
+                            background: #000000a0;
+                            Path {
+                                width: 16px;
+                                height: 16px;
+                                viewbox-width: 24;
+                                viewbox-height: 24;
+                                commands: root.trim-playing ? "M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" : "M8 5.5v13l11-6.5z";
+                                fill: white;
+                            }
+                        }
+                        // Time of the frame shown, to the millisecond.
+                        Rectangle {
+                            x: (parent.width - self.width) / 2;
+                            y: parent.height - 36px;
+                            width: time-text.preferred-width + 16px;
+                            height: 22px;
+                            border-radius: 11px;
+                            background: #000000a0;
+                            time-text := Text {
+                                text: root.trim-time;
+                                font-size: 12px;
+                                color: white;
+                            }
+                        }
+                        // Sound on / off.
+                        Rectangle {
+                            x: parent.width - 40px;
+                            y: parent.height - 40px;
+                            width: 30px;
+                            height: 30px;
+                            border-radius: 15px;
+                            background: snd.has-hover ? #000000d0 : #000000a0;
+                            Icon {
+                                d: root.trim-sound
+                                    ? "M4 9.5h3.5L12 6v12l-4.5-3.5H4zM15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"
+                                    : "M4 9.5h3.5L12 6v12l-4.5-3.5H4zM16 9.5l5 5M21 9.5l-5 5";
+                                size: 18px;
+                                color: white;
+                            }
+                            snd := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.trim-sound = !root.trim-sound; }
+                            }
+                        }
                     }
                 }
                 // Filmstrip with two handles.
@@ -791,6 +961,35 @@ export component AppWindow inherits Window {
                             border-radius: 1px;
                             background: #ffffffd9;
                         }
+                        // Exact time above the handle while it moves.
+                        if root.trim-active == side && drag.pressed: Rectangle {
+                            x: (parent.width - self.width) / 2;
+                            y: -26px;
+                            width: tip-text.preferred-width + 12px;
+                            height: 20px;
+                            border-radius: 10px;
+                            background: Theme.accent;
+                            tip-text := Text {
+                                text: side == 0 ? root.trim-a-text : root.trim-b-text;
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: white;
+                            }
+                        }
+                    }
+                    // Arrow keys nudge the active handle one frame (Shift: one second).
+                    keys-strip := FocusScope {
+                        key-pressed(e) => {
+                            if (e.text == Key.LeftArrow) {
+                                root.trim-nudge(-1, e.modifiers.shift);
+                                return accept;
+                            }
+                            if (e.text == Key.RightArrow) {
+                                root.trim-nudge(1, e.modifiers.shift);
+                                return accept;
+                            }
+                            reject
+                        }
                     }
                     drag := TouchArea {
                         y: -8px;
@@ -806,6 +1005,7 @@ export component AppWindow inherits Window {
                         }
                         pointer-event(e) => {
                             if (e.kind == PointerEventKind.down) {
+                                keys-strip.focus();
                                 // Grab the nearer handle.
                                 root.trim-active = Math.abs(Math.clamp(self.mouse-x / self.width, 0, 1) - strip.fa) <= Math.abs(Math.clamp(self.mouse-x / self.width, 0, 1) - strip.fb) ? 0 : 1;
                                 self.move-to(Math.clamp(self.mouse-x / self.width, 0, 1));
@@ -816,10 +1016,42 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+                // Start and end, typed to the millisecond (m:ss.mmm).
+                for side in 2: Rectangle {
+                    property <string> src: side == 0 ? root.trim-a-text : root.trim-b-text;
+                    changed src => { field.text = self.src; }
+                    x: side == 0 ? 20px : 340px - self.width;
+                    y: 288px;
+                    width: 104px;
+                    height: 26px;
+                    border-radius: 7px;
+                    background: Theme.fill;
+                    field := TextInput {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        text: parent.src;
+                        font-size: 13px;
+                        color: Theme.label;
+                        horizontal-alignment: side == 0 ? left : right;
+                        vertical-alignment: center;
+                        accepted => { root.trim-set-time(side, self.text); }
+                    }
+                }
+                Text {
+                    x: 124px;
+                    y: 288px;
+                    width: 112px;
+                    height: 26px;
+                    text: root.trim-range;
+                    font-size: 12px;
+                    color: Theme.label-2;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
                 // Mode and live readout.
                 Seg {
                     x: 20px;
-                    y: 296px;
+                    y: 326px;
                     width: 320px;
                     options: ["Keep quality", "Fit to " + root.target-text];
                     index: root.trim-mode;
@@ -832,7 +1064,7 @@ export component AppWindow inherits Window {
                     property <bool> open;
                     property <length> extra: details.preferred-height;
                     x: 20px;
-                    y: 344px;
+                    y: 372px;
                     width: 320px;
                     height: 76px + (self.open ? self.extra : 0);
                     animate height { duration: 320ms; easing: Fx.rich ? ease-out-back : ease-out; }
@@ -929,7 +1161,7 @@ export component AppWindow inherits Window {
                     y: 0;
                     width: parent.width;
                     height: 34px;
-                    text: Math.round(root.progress * 100) + "%";
+                    text: Math.round(root.shown * 100) + "%";
                     font-size: 28px;
                     font-weight: 700;
                     color: Theme.label;

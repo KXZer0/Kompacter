@@ -12,11 +12,11 @@ use crate::probe::MediaInfo;
 
 pub const MAX_PARTS: u32 = 10;
 
-/// `<name>.kompact` → `<name> (part 2 of 3).kompact` (each job adds its extension).
+/// `<name>.kompacter` → `<name> (part 2 of 3).kompacter` (each job adds its extension).
 pub(crate) fn part_base(out_base: &Path, i: u32, n: u32) -> PathBuf {
     let s = out_base.to_string_lossy();
-    let stem = s.strip_suffix(".kompact").unwrap_or(&s);
-    PathBuf::from(format!("{stem} (part {i} of {n}).kompact"))
+    let stem = s.strip_suffix(".kompacter").unwrap_or(&s);
+    PathBuf::from(format!("{stem} (part {i} of {n}).kompacter"))
 }
 
 /// Cut video/audio into `n` equal parts and fit each one to `target`.

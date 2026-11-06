@@ -31,19 +31,42 @@ pub fn clock(secs: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-/// "About 2 min left" from how long it has run and how far it got.
-pub fn time_left(elapsed: f64, progress: f64) -> String {
-    if progress >= 0.995 {
-        return "Finishing…".into();
-    }
-    if progress < 0.03 || elapsed < 1.0 {
-        return "Estimating time…".into();
-    }
-    let s = (elapsed * (1.0 - progress) / progress).ceil();
+/// "About 40 s left" / "About 2 min left".
+pub fn seconds_left(s: f64) -> String {
+    let s = s.ceil().max(1.0);
     if s >= 90.0 {
         format!("About {} min left", (s / 60.0).round())
     } else {
         format!("About {s} s left")
+    }
+}
+
+/// "1:05.250": trim times, to the millisecond.
+pub fn clock_ms(secs: f64) -> String {
+    let ms = (secs.max(0.0) * 1000.0).round() as u64;
+    format!("{}:{:02}.{:03}", ms / 60_000, ms / 1000 % 60, ms % 1000)
+}
+
+/// Reads a typed time: "1:05.250", "65.25", "0:01:05.250". `None` if it isn't one.
+pub fn parse_time(s: &str) -> Option<f64> {
+    let mut secs = 0.0;
+    for part in s.trim().split(':') {
+        let v: f64 = part.trim().parse().ok()?;
+        if v < 0.0 {
+            return None;
+        }
+        secs = secs * 60.0 + v;
+    }
+    Some(secs)
+}
+
+/// "2.4 Mbps" / "900 kbps".
+pub fn rate(kbps: u32) -> String {
+    if kbps >= 1000 {
+        let m = format!("{:.1}", kbps as f64 / 1000.0);
+        format!("{} Mbps", m.trim_end_matches(".0"))
+    } else {
+        format!("{kbps} kbps")
     }
 }
 
@@ -122,6 +145,16 @@ mod tests {
         assert_eq!(bytes(128 * 1024 * 1024), "128 MB");
         assert_eq!(bytes(1536 * 1024), "1.5 MB");
         assert_eq!(bytes(2048), "2 KB");
+    }
+
+    #[test]
+    fn trim_times() {
+        assert_eq!(clock_ms(65.25), "1:05.250");
+        assert_eq!(clock_ms(0.0), "0:00.000");
+        assert_eq!(parse_time("1:05.250"), Some(65.25));
+        assert_eq!(parse_time("12.5"), Some(12.5));
+        assert_eq!(parse_time("1:00:00"), Some(3600.0));
+        assert_eq!(parse_time("abc"), None);
     }
 
     #[test]

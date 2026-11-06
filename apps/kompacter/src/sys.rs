@@ -414,6 +414,53 @@ mod imp {
         }
     }
 
+    /// Play a WAV file in the background (trimmer sound). Replaces whatever was playing.
+    pub fn play_wav(path: &Path) {
+        use windows_sys::Win32::Media::Audio::{
+            PlaySoundW, SND_ASYNC, SND_FILENAME, SND_NODEFAULT,
+        };
+        let w = wide(path);
+        unsafe {
+            PlaySoundW(
+                w.as_ptr(),
+                null_mut(),
+                SND_FILENAME | SND_ASYNC | SND_NODEFAULT,
+            );
+        }
+    }
+
+    /// Stop the trimmer sound.
+    pub fn stop_sound() {
+        use windows_sys::Win32::Media::Audio::PlaySoundW;
+        unsafe {
+            PlaySoundW(null(), null_mut(), 0);
+        }
+    }
+
+    /// True when the window in front is one you'd use to find a file to drag in (File
+    /// Explorer, the desktop, a file dialog), or the taskbar. Auto-hide waits then.
+    pub fn browsing_files() -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow};
+        unsafe {
+            let h = GetForegroundWindow();
+            if h.is_null() {
+                return false;
+            }
+            let mut buf = [0u16; 64];
+            let n = GetClassNameW(h, buf.as_mut_ptr(), buf.len() as i32);
+            let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+            matches!(
+                class.as_str(),
+                "CabinetWClass"
+                    | "ExploreWClass"
+                    | "#32770"
+                    | "Progman"
+                    | "WorkerW"
+                    | "Shell_TrayWnd"
+            )
+        }
+    }
+
     /// Move a file or folder to the Recycle Bin.
     pub fn recycle(path: &Path) -> Result<(), String> {
         let mut from = wide(path);
@@ -572,6 +619,11 @@ mod imp {
     }
     pub fn recycle(_path: &Path) -> Result<(), String> {
         Err("not supported on this system yet".into())
+    }
+    pub fn play_wav(_path: &Path) {}
+    pub fn stop_sound() {}
+    pub fn browsing_files() -> bool {
+        false
     }
     pub fn set_start_with_windows(_on: bool) {}
     pub fn starts_with_windows() -> bool {
