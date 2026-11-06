@@ -46,7 +46,13 @@ jobs:
           $v = "0.0.0"
           if ("${{ github.ref }}".StartsWith("refs/tags/v")) { $v = "${{ github.ref_name }}".TrimStart("v").Split("-")[0] }
           $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
-          if (-not (Test-Path $nsis)) { choco install nsis -y --no-progress; $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }
+          # Chocolatey's server sometimes times out (504): retry a few times, then fail here
+          # with a clear message instead of later with "makensis not found".
+          for ($try = 1; $try -le 4 -and -not (Test-Path $nsis); $try++) {
+            if ($try -gt 1) { Start-Sleep -Seconds (15 * $try) }
+            choco install nsis -y --no-progress --limit-output
+          }
+          if (-not (Test-Path $nsis)) { throw "NSIS (makensis.exe) is not installed; Chocolatey failed after 4 tries." }
           & $nsis /DVERSION=$v kompacter.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
