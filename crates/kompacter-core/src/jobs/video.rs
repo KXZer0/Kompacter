@@ -208,10 +208,14 @@ impl Job<'_> {
             }
             a.extend(args(["-pix_fmt", "yuv420p", "-b:v"]));
             a.push(format!("{kbps}k").into());
-            a.extend(args(["-maxrate"]));
-            a.push(format!("{}k", kbps * 3 / 2).into());
-            a.extend(args(["-bufsize"]));
-            a.push(format!("{}k", kbps * 2).into());
+            // x265 takes a peak cap; SVT-AV1 refuses one outside CRF mode (some versions
+            // fail to start), so AV1 relies on its own rate control plus the retry below.
+            if codec != VideoCodec::Av1 {
+                a.extend(args(["-maxrate"]));
+                a.push(format!("{}k", kbps * 3 / 2).into());
+                a.extend(args(["-bufsize"]));
+                a.push(format!("{}k", kbps * 2).into());
+            }
             self.tail(&mut a, &plan);
             let (from, to) = if attempt == 0 { (0.0, 1.0) } else { (0.6, 1.0) };
             self.ctx.ff.run(
