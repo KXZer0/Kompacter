@@ -42,6 +42,9 @@ enum Cmd {
         /// Make parts that each fit when one file can't (video, audio, folders).
         #[arg(long)]
         split: bool,
+        /// Make a GIF instead (videos up to 30 s; use --start/--end for a part).
+        #[arg(long, conflicts_with_all = ["keep_quality", "split"])]
+        gif: bool,
     },
     /// Show what we'd do (resolution, bitrate, quality) without encoding. Prints JSON.
     Estimate {
@@ -156,12 +159,15 @@ fn main() -> Result<()> {
             cpu,
             out,
             split,
+            gif,
         } => {
             let mut opts = common.options()?;
             opts.out_dir = out;
             opts.split = split;
             opts.gpu = !cpu;
-            opts.mode = if keep_quality {
+            opts.mode = if gif {
+                Mode::Gif
+            } else if keep_quality {
                 Mode::KeepQuality
             } else {
                 Mode::Fit

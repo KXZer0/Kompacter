@@ -35,6 +35,37 @@ pub struct Settings {
     pub audio_format: AudioFormat,
     pub image_format: ImageFormat,
     pub archive_format: ArchiveFormat,
+    /// Global shortcut for the quick bar: "off" | "ctrl+alt+k" | "ctrl+shift+k" |
+    /// "ctrl+shift+space".
+    pub shortcut: String,
+    /// Catch Ctrl+V in Discord when the copied file is over the limit.
+    pub paste_guard: bool,
+    /// Offer the quick bar when a file over the limit is copied.
+    pub watch_copies: bool,
+    /// Shrink new clips that land in `clip_folders` on their own.
+    pub watch_folders: bool,
+    pub clip_folders: Vec<String>,
+}
+
+/// The shortcut choices, in the order Settings shows them.
+pub const SHORTCUTS: [(&str, &str); 4] = [
+    ("off", "Off"),
+    ("ctrl+alt+k", "Ctrl+Alt+K"),
+    ("ctrl+shift+k", "Ctrl+Shift+K"),
+    ("ctrl+shift+space", "Ctrl+Shift+Space"),
+];
+
+/// Windows modifier flags and virtual key for a shortcut id (None: off).
+pub fn shortcut_keys(id: &str) -> Option<(u32, u32)> {
+    const ALT: u32 = 1;
+    const CTRL: u32 = 2;
+    const SHIFT: u32 = 4;
+    match id {
+        "ctrl+alt+k" => Some((CTRL | ALT, 0x4B)),
+        "ctrl+shift+k" => Some((CTRL | SHIFT, 0x4B)),
+        "ctrl+shift+space" => Some((CTRL | SHIFT, 0x20)),
+        _ => None,
+    }
 }
 
 impl Default for Settings {
@@ -55,6 +86,11 @@ impl Default for Settings {
             audio_format: AudioFormat::default(),
             image_format: ImageFormat::default(),
             archive_format: ArchiveFormat::default(),
+            shortcut: "ctrl+alt+k".into(),
+            paste_guard: false,
+            watch_copies: false,
+            watch_folders: false,
+            clip_folders: Vec::new(),
         }
     }
 }

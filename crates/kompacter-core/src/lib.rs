@@ -38,7 +38,11 @@ pub enum Mode {
     Fit,
     /// Only cut the selected range, no re-encode (size adapts).
     KeepQuality,
+    /// A GIF of a short clip (up to `MAX_GIF_SECONDS`), sized to fit.
+    Gif,
 }
+
+pub use jobs::gif::MAX_GIF_SECONDS;
 
 /// Encoder speed vs. efficiency.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,6 +209,12 @@ impl Engine {
         thumbs::thumbnails(&self.ff, &info.path, info.duration, size, count, height)
     }
 
+    /// Width and frame rate a GIF of `seconds` of this video would likely get (a guess;
+    /// the real encode measures). `None` when it isn't a video or nothing would fit.
+    pub fn gif_guess(&self, info: &MediaInfo, seconds: f64, target: u64) -> Option<(u32, f64)> {
+        jobs::gif::guess(info, seconds, target)
+    }
+
     pub fn probe(&self, path: &Path) -> Result<MediaInfo> {
         probe::probe(&self.ff, path)
     }
@@ -259,7 +269,8 @@ impl Engine {
         let trim = resolve_trim(&info, opts.trim)?;
         let target = opts.target_bytes;
 
-        if trim.is_none() && info.size_bytes <= target && info.kind != MediaKind::Folder {
+        let as_is = trim.is_none() && opts.mode != Mode::Gif;
+        if as_is && info.size_bytes <= target && info.kind != MediaKind::Folder {
             progress(1.0);
             return Ok(outcome(
                 &info,
@@ -325,6 +336,10 @@ impl Engine {
                 })
             }
             (Mode::Fit, trim) => jobs::fit_media(&ctx, &info, trim, target, &out_base, progress)?,
+            (Mode::Gif, trim) if info.kind == MediaKind::Video => {
+                jobs::gif::fit(&ctx, &info, trim, target, &out_base, progress)?
+            }
+            (Mode::Gif, _) => return Err(Error::Unsupported("only videos become GIFs".into())),
         };
         let size = jobs::file_size(&out)?;
         Ok(outcome(&info, out, size, target, false))

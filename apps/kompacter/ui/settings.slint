@@ -26,6 +26,13 @@ export global Prefs {
     in property <int> audio-index;
     in property <int> image-index;
     in property <int> archive-index;
+    in property <[string]> shortcut-options: ["Off", "Ctrl+Alt+K", "Ctrl+Shift+K", "Ctrl+Shift+Space"];
+    in property <int> shortcut-index;
+    in property <bool> shortcut-taken;
+    in property <bool> paste-guard;
+    in property <bool> watch-copies;
+    in property <bool> watch-folders;
+    in property <[string]> clip-folders;
 
     callback set-style(int);
     callback set-theme(int);
@@ -41,6 +48,12 @@ export global Prefs {
     callback set-audio(int);
     callback set-image(int);
     callback set-archive(int);
+    callback set-shortcut(int);
+    callback set-paste-guard(bool);
+    callback set-watch-copies(bool);
+    callback set-watch-folders(bool);
+    callback add-clip-folder();
+    callback remove-clip-folder(int);
 }
 
 /// A group row in settings: label + optional small text + something on the right.
@@ -115,6 +128,42 @@ component Check inherits Rectangle {
     }
 }
 
+/// Round − / + button. Click steps once; hold repeats, speeding up after a moment.
+component StepBtn inherits Rectangle {
+    in property <string> icon;
+    callback step(int);
+    property <int> ticks;
+    width: 28px;
+    height: 28px;
+    border-radius: 14px;
+    background: ta.pressed ? Theme.fill-hover : ta.has-hover ? Theme.fill-hover : Theme.fill;
+    animate background { duration: 100ms; }
+    transform-scale: ta.pressed ? 0.9 : 1;
+    animate transform-scale { duration: 200ms; easing: ease-out-back; }
+    Icon {
+        d: root.icon;
+        size: 16px;
+        color: Theme.label;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                root.ticks = 0;
+                root.step(1);
+            }
+        }
+    }
+    Timer {
+        interval: root.ticks == 0 ? 420ms : 60ms;
+        running: ta.pressed;
+        triggered => {
+            root.ticks += 1;
+            root.step(root.ticks > 20 ? 5 : 1);
+        }
+    }
+}
+
 export component SettingsView inherits Rectangle {
     in property <[PresetItem]> presets;
     in property <int> preset-index;
@@ -164,31 +213,86 @@ export component SettingsView inherits Rectangle {
                         brand: p.brand;
                         y: (parent.height - self.height) / 2;
                     }
-                    if p.brand == "custom": Rectangle {
-                        width: 64px;
-                        height: 28px;
-                        y: (parent.height - self.height) / 2;
-                        border-radius: 7px;
-                        background: Theme.fill;
-                        TextInput {
-                            x: 8px;
-                            width: parent.width - 16px;
-                            text: Prefs.custom-mb;
-                            input-type: number;
-                            horizontal-alignment: right;
-                            vertical-alignment: center;
-                            color: Theme.label;
-                            font-size: 14px;
-                            accepted => { Prefs.set-custom-mb(self.text.to-float()); }
-                            edited => {
-                                if (self.text.is-float()) {
-                                    Prefs.set-custom-mb(self.text.to-float());
+                    // Custom limit: − [ 50 MB ] +. Type a number, or click / hold the
+                    // buttons. Touching any of it picks Custom.
+                    if p.brand == "custom": VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                        spacing: 6px;
+                        StepBtn {
+                            icon: "M7 12h10";
+                            step(n) => {
+                                root.select-preset(i);
+                                Prefs.set-custom-mb(Math.max(1, Prefs.custom-mb - n));
+                            }
+                        }
+                        Rectangle {
+                            width: 76px;
+                            height: 30px;
+                            border-radius: 8px;
+                            background: Theme.fill;
+                            border-width: 1px;
+                            border-color: mb-field.has-focus ? Theme.accent : transparent;
+                            animate border-color { duration: 120ms; }
+                            // Rust may clamp the value; keep the box showing what's saved.
+                            property <int> saved: Prefs.custom-mb;
+                            changed saved => {
+                                if (!mb-field.has-focus || mb-field.text.to-float() != self.saved) {
+                                    mb-field.text = self.saved;
+                                }
+                            }
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                spacing: 3px;
+                                mb-field := TextInput {
+                                    text: Prefs.custom-mb;
+                                    input-type: number;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    color: Theme.label;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    single-line: true;
+                                    changed has-focus => {
+                                        if (self.has-focus) {
+                                            root.select-preset(i);
+                                        } else {
+                                            self.text = Prefs.custom-mb;
+                                        }
+                                    }
+                                    accepted => {
+                                        if (self.text.to-float() >= 1) {
+                                            Prefs.set-custom-mb(self.text.to-float());
+                                        }
+                                        self.text = Prefs.custom-mb;
+                                    }
+                                    edited => {
+                                        if (self.text.is-float() && self.text.to-float() >= 1) {
+                                            Prefs.set-custom-mb(self.text.to-float());
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: "MB";
+                                    font-size: 13px;
+                                    color: Theme.label-2;
+                                    vertical-alignment: center;
                                 }
                             }
                         }
+                        StepBtn {
+                            icon: "M12 7v10M7 12h10";
+                            step(n) => {
+                                root.select-preset(i);
+                                Prefs.set-custom-mb(Prefs.custom-mb + n);
+                            }
+                        }
                     }
-                    Text {
-                        text: p.brand == "custom" ? "MB" : p.size;
+                    }
+                    if p.brand != "custom": Text {
+                        text: p.size;
                         font-size: 14px;
                         color: Theme.label-2;
                         vertical-alignment: center;
@@ -305,6 +409,71 @@ export component SettingsView inherits Rectangle {
                         index: Prefs.archive-index;
                         y: (parent.height - self.height) / 2;
                         picked(i) => { Prefs.set-archive(i); }
+                    }
+                }
+            }
+
+            // Things Kompacter does without being opened. All off except the shortcut.
+            GroupTitle { text: "AUTOMATIC"; }
+            Group {
+                Cell {
+                    label: "Shortcut";
+                    small: Prefs.shortcut-taken ? "Used by another app, pick another"
+                        : Prefs.shortcut-index == 0 ? "" : "Compress what you copied";
+                    first: true;
+                    Dropdown {
+                        options: Prefs.shortcut-options;
+                        index: Prefs.shortcut-index;
+                        y: (parent.height - self.height) / 2;
+                        picked(i) => { Prefs.set-shortcut(i); }
+                    }
+                }
+                Cell {
+                    label: "Paste guard";
+                    small: "Catch big files pasted in Discord";
+                    Switch {
+                        checked: Prefs.paste-guard;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-paste-guard(on); }
+                    }
+                }
+                Cell {
+                    label: "Copied files";
+                    small: "Offer to compress big files you copy";
+                    Switch {
+                        checked: Prefs.watch-copies;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-watch-copies(on); }
+                    }
+                }
+                Cell {
+                    label: "Clip folders";
+                    small: "Shrink new clips on their own";
+                    Switch {
+                        checked: Prefs.watch-folders;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-watch-folders(on); }
+                    }
+                }
+                if Prefs.watch-folders: VerticalLayout {
+                    for f[i] in Prefs.clip-folders: Cell {
+                        label: f;
+                        IconBtn {
+                            icon: Icons.x;
+                            y: (parent.height - self.height) / 2;
+                            clicked => { Prefs.remove-clip-folder(i); }
+                        }
+                    }
+                    Cell {
+                        label: "Add folder…";
+                        clickable: true;
+                        clicked => { Prefs.add-clip-folder(); }
+                        Icon {
+                            d: "M12 6v12M6 12h12";
+                            size: 16px;
+                            color: Theme.accent-text;
+                            y: (parent.height - self.height) / 2;
+                        }
                     }
                 }
             }

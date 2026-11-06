@@ -12,7 +12,7 @@ import { Prefs, SettingsView, PresetItem } from "settings.slint";
 
 export { Theme, Fx, Prefs, PresetItem }
 
-export enum View { idle, reading, big, trim, busy, done, error, settings }
+export enum View { idle, reading, big, trim, busy, done, error, settings, quick }
 
 /// One line of a before → after list (a folder's tree, or a video's stats).
 export struct DiffRow {
@@ -37,8 +37,9 @@ export component Tray inherits SystemTrayIcon {
     callback open();
     callback open-folder();
     callback quit();
+    in property <string> tip: "Kompacter";
     icon: @image-url("tray.png");
-    tooltip: "Kompacter";
+    tooltip: root.tip;
     clicked => { root.open(); }
     Menu {
         MenuItem {
@@ -180,6 +181,7 @@ export component AppWindow inherits Window {
     in-out property <bool> trim-playing;
     in-out property <bool> trim-sound: true;
     in property <string> trim-time;
+    in property <float> trim-pos;
     in property <string> trim-a-text;
     in property <string> trim-b-text;
 
@@ -191,6 +193,12 @@ export component AppWindow inherits Window {
     in-out property <string> note;
 
     in property <string> error-text;
+
+    // Quick bar (shortcut, paste guard, copied files): 0 reading, 1 ready, 2 compressing,
+    // 3 done, 4 error, 5 nothing copied.
+    in property <int> quick-state;
+    /// Paste guard: the bar offers Compress & paste / Trim / Paste anyway.
+    in property <bool> guard;
 
     // Formats.
 
@@ -211,12 +219,18 @@ export component AppWindow inherits Window {
     callback trim-changed();
     callback trim-compress();
     callback trim-play();
+    callback trim-seek(float);
+    callback trim-drag-start();
+    callback trim-drag-end(bool);
     callback trim-set-time(int, string);
     callback trim-nudge(int, bool);
     callback escape();
+    callback quick-expand();
+    callback quick-trim();
+    callback paste-anyway();
 
     property <length> inset: Fx.glass ? 12px : 0;
-    property <length> full-h: view == View.trim ? 624px : view == View.settings ? 600px : 472px;
+    property <length> full-h: view == View.trim ? 624px : view == View.settings ? 600px : view == View.quick ? (guard ? 168px : 136px) : 472px;
 
     title: "Kompacter";
     no-frame: true;
@@ -234,7 +248,8 @@ export component AppWindow inherits Window {
         : view == View.done ? (done-ok ? Mood.happy : Mood.worried)
         : Mood.idle;
     property <bool> stage-lg: view == View.idle || view == View.done;
-    property <bool> stage-md: view == View.reading || (view == View.big && !diff-open) || view == View.error;
+    property <bool> stage-md: view == View.reading || view == View.big || view == View.error;
+    property <bool> stage-hidden: view == View.big && diff-open;
     property <length> stage-h: stage-lg ? 312px : 124px;
 
     keys := FocusScope {
@@ -295,7 +310,7 @@ export component AppWindow inherits Window {
             height: root.full-h;
 
             // ── Header ──
-            if root.view != View.settings && root.view != View.trim: Rectangle {
+            if root.view != View.settings && root.view != View.trim && root.view != View.quick: Rectangle {
                 x: 16px;
                 y: 14px;
                 width: pill-row.preferred-width;
@@ -333,7 +348,7 @@ export component AppWindow inherits Window {
                     clicked => { menu.show(); }
                 }
             }
-            if root.view != View.settings && root.view != View.trim: IconBtn {
+            if root.view != View.settings && root.view != View.trim && root.view != View.quick: IconBtn {
                 x: parent.width - 14px - self.width;
                 y: 13px;
                 icon: Icons.gear;
@@ -442,6 +457,8 @@ export component AppWindow inherits Window {
                 width: 328px;
                 height: root.stage-h;
                 animate height { duration: 300ms; easing: ease-out-back; }
+                opacity: root.stage-hidden ? 0 : 1;
+                animate opacity { duration: Fx.rich ? 200ms : 0ms; easing: ease-out; }
                 DropZone {
                     x: 10px;
                     y: 6px;
@@ -483,6 +500,7 @@ export component AppWindow inherits Window {
                     look-y: root.look-y;
                     hop: root.hop;
                     chomp: root.chomp;
+                    touchable: !root.stage-hidden;
                 }
                 if Fx.rich && root.view == View.done && root.done-ok: Sparks {
                     width: parent.width;
@@ -498,6 +516,7 @@ export component AppWindow inherits Window {
                     mood: Mood.busy;
                     s: 0.85;
                     c: root.shown;
+                    touchable: false;
                     cx: parent.width / 2;
                     cy: parent.height / 2;
                 }
@@ -546,12 +565,15 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // Big file. "Show more" glides the content up over the blob and cross-fades the
+            // bar and summary into the before → after list. Nothing is removed and re-added,
+            // so the bar fills once when the view opens and never replays.
             if root.view == View.big: Appear {
                 x: 20px;
                 y: root.diff-open ? 52px : 186px;
-                animate y { duration: 320ms; easing: ease-out; }
+                animate y { duration: Fx.rich ? 380ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
                 width: 320px;
-                height: root.diff-open ? 400px : 266px;
+                height: 400px;
                 // File card.
                 Rectangle {
                     y: 0;
@@ -626,7 +648,7 @@ export component AppWindow inherits Window {
                             y: 3px;
                             color: more-ta.has-hover ? Theme.label : Theme.label-2;
                             transform-rotation: root.diff-open ? 180deg : 0deg;
-                            animate transform-rotation { duration: 260ms; easing: ease-out-back; }
+                            animate transform-rotation { duration: Fx.rich ? 340ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
                         }
                     }
                     more-ta := TouchArea {
@@ -634,10 +656,24 @@ export component AppWindow inherits Window {
                         clicked => { root.diff-open = !root.diff-open; }
                     }
                 }
-                if root.diff-open: Flickable {
+                // The before → after list: fades in a moment after the bar fades out.
+                if root.diff.length > 0: Flickable {
                     y: 80px;
                     width: parent.width;
                     height: 220px;
+                    interactive: root.diff-open;
+                    opacity: 0;
+                    states [
+                        open when root.diff-open: {
+                            opacity: 1;
+                            in {
+                                animate opacity { duration: Fx.rich ? 240ms : 0ms; delay: Fx.rich ? 120ms : 0ms; easing: ease-out; }
+                            }
+                            out {
+                                animate opacity { duration: Fx.rich ? 90ms : 0ms; easing: ease-in; }
+                            }
+                        }
+                    ]
                     VerticalLayout {
                         spacing: 0;
                         for r in root.diff: HorizontalLayout {
@@ -681,9 +717,21 @@ export component AppWindow inherits Window {
                     }
                 }
                 // Size against the limit; the bar fills when the view appears.
-                if !root.diff-open: meter := Rectangle {
-                    y: 78px;
+                meter := Rectangle {
+                    y: 80px;
                     height: 28px;
+                    // Fades out (stays in place, keeps its fill) while the details show.
+                    states [
+                        hidden when root.diff-open: {
+                            opacity: 0;
+                            in {
+                                animate opacity { duration: Fx.rich ? 90ms : 0ms; easing: ease-in; }
+                            }
+                            out {
+                                animate opacity { duration: Fx.rich ? 240ms : 0ms; delay: Fx.rich ? 120ms : 0ms; easing: ease-out; }
+                            }
+                        }
+                    ]
                     property <bool> shown;
                     Timer {
                         interval: 60ms;
@@ -729,10 +777,21 @@ export component AppWindow inherits Window {
                     }
                 }
                 // What it becomes, big: before (grey) → after (green); how far over, on the right.
-                if !root.diff-open: HorizontalLayout {
+                HorizontalLayout {
                     y: 114px;
                     width: parent.width;
                     height: 24px;
+                    states [
+                        hidden when root.diff-open: {
+                            opacity: 0;
+                            in {
+                                animate opacity { duration: Fx.rich ? 90ms : 0ms; easing: ease-in; }
+                            }
+                            out {
+                                animate opacity { duration: Fx.rich ? 240ms : 0ms; delay: Fx.rich ? 120ms : 0ms; easing: ease-out; }
+                            }
+                        }
+                    ]
                     spacing: 6px;
                     Text {
                         text: root.sum-before;
@@ -767,6 +826,7 @@ export component AppWindow inherits Window {
                 // Too long for one good file: trim it, or split it into parts that each fit.
                 if root.split-count > 1: HorizontalLayout {
                     y: root.diff-open ? 312px : 152px;
+                    animate y { duration: Fx.rich ? 380ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
                     height: 44px;
                     spacing: 8px;
                     Btn {
@@ -787,6 +847,7 @@ export component AppWindow inherits Window {
                 }
                 if root.split-count > 1: HorizontalLayout {
                     y: root.diff-open ? 362px : 206px;
+                    animate y { duration: Fx.rich ? 380ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
                     height: 36px;
                     alignment: center;
                     Btn {
@@ -797,6 +858,7 @@ export component AppWindow inherits Window {
                 }
                 if root.split-count <= 1: HorizontalLayout {
                     y: root.diff-open ? 312px : 152px;
+                    animate y { duration: Fx.rich ? 380ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
                     height: 44px;
                     spacing: 8px;
                     if root.can-trim && root.trim-first: Btn {
@@ -823,14 +885,240 @@ export component AppWindow inherits Window {
                         clicked => { root.open-trim(); }
                     }
                 }
-                if root.foot-text != "" && root.split-count <= 1 && !root.diff-open: Text {
+                if root.foot-text != "" && root.split-count <= 1: Text {
                     y: 206px;
                     width: parent.width;
+                    states [
+                        hidden when root.diff-open: {
+                            opacity: 0;
+                            in {
+                                animate opacity { duration: Fx.rich ? 90ms : 0ms; easing: ease-in; }
+                            }
+                            out {
+                                animate opacity { duration: Fx.rich ? 240ms : 0ms; delay: Fx.rich ? 120ms : 0ms; easing: ease-out; }
+                            }
+                        }
+                    ]
                     text: root.foot-text;
                     font-size: 12px;
                     color: Theme.label-2;
                     horizontal-alignment: center;
                     wrap: word-wrap;
+                }
+            }
+
+            // ── Quick bar: the file, what it becomes, one button ──
+            if root.view == View.quick: Appear {
+                x: 16px;
+                width: 328px;
+                height: root.full-h;
+                // File icon (or a line icon; a clipboard when nothing is copied).
+                if root.file-icon.width > 0 && root.quick-state != 5: Image {
+                    x: 0;
+                    y: 16px;
+                    width: 40px;
+                    height: 40px;
+                    source: root.file-icon;
+                    image-fit: contain;
+                }
+                if root.file-icon.width == 0 || root.quick-state == 5: Rectangle {
+                    x: 0;
+                    y: 16px;
+                    width: 40px;
+                    height: 40px;
+                    border-radius: 10px;
+                    background: root.quick-state == 3 && root.done-ok ? Theme.ok.transparentize(0.85)
+                        : root.quick-state == 4 ? Theme.bad.transparentize(0.85) : Theme.accent-soft;
+                    animate background { duration: 200ms; }
+                    Icon {
+                        d: root.quick-state == 3 && root.done-ok ? Icons.check
+                            : root.quick-state == 5 ? Icons.clip
+                            : root.file-kind == "video" ? Icons.film
+                            : root.file-kind == "audio" ? Icons.music
+                            : root.file-kind == "image" ? Icons.image
+                            : root.file-kind == "folder" ? Icons.folder
+                            : Icons.file;
+                        color: root.quick-state == 3 && root.done-ok ? Theme.ok
+                            : root.quick-state == 4 ? Theme.bad : Theme.accent-text;
+                    }
+                }
+                Text {
+                    x: 52px;
+                    y: 15px;
+                    width: parent.width - 52px - 68px;
+                    text: root.quick-state == 5 ? "Nothing copied"
+                        : root.quick-state == 3 ? root.done-title
+                        : root.file-name;
+                    font-size: 15px;
+                    font-weight: 600;
+                    color: root.quick-state == 3 && root.done-ok ? Theme.ok : Theme.label;
+                    overflow: elide;
+                }
+                // Second line: before → after, progress, the result, or what went wrong.
+                if root.quick-state == 1: HorizontalLayout {
+                    x: 52px;
+                    y: 36px;
+                    width: parent.width - 52px - 68px;
+                    height: 20px;
+                    spacing: 5px;
+                    Text {
+                        text: root.sum-before;
+                        font-size: 13px;
+                        color: Theme.label-2;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "→";
+                        font-size: 13px;
+                        color: Theme.ok;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.sum-after;
+                        font-size: 13px;
+                        font-weight: 600;
+                        color: Theme.ok;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                }
+                if root.quick-state != 1: Text {
+                    x: 52px;
+                    y: 36px;
+                    width: parent.width - 52px - 8px;
+                    height: 20px;
+                    text: root.quick-state == 0 ? "Reading…"
+                        : root.quick-state == 2 ? root.busy-left
+                        : root.quick-state == 3 ? root.done-sub
+                        : root.quick-state == 4 ? root.error-text
+                        : "Copy a file, then press the shortcut";
+                    font-size: 13px;
+                    color: root.quick-state == 4 ? Theme.bad : Theme.label-2;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                // Open the full window, close.
+                IconBtn {
+                    x: parent.width - 68px;
+                    y: 14px;
+                    icon: "M14 4h6v6M20 4l-6.5 6.5M10 20H4v-6M4 20l6.5-6.5";
+                    tip: "Open Kompacter";
+                    tip-below: true;
+                    clicked => { root.quick-expand(); }
+                }
+                IconBtn {
+                    x: parent.width - 32px;
+                    y: 14px;
+                    icon: Icons.x;
+                    clicked => { root.escape(); }
+                }
+
+                // Bottom row.
+                if root.quick-state == 1: HorizontalLayout {
+                    y: 76px;
+                    height: 44px;
+                    spacing: 8px;
+                    Btn {
+                        text: root.guard ? "Compress & paste" : root.compress-label;
+                        icon: Icons.squeeze;
+                        primary: true;
+                        large: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.compress(); }
+                    }
+                    if root.can-trim: Btn {
+                        text: "Trim";
+                        icon: Icons.scissors;
+                        large: true;
+                        clicked => { root.quick-trim(); }
+                    }
+                }
+                // Paste guard: or paste the original after all.
+                if root.quick-state == 1 && root.guard: HorizontalLayout {
+                    y: 126px;
+                    height: 32px;
+                    alignment: center;
+                    Btn {
+                        text: "Paste anyway";
+                        plain: true;
+                        clicked => { root.paste-anyway(); }
+                    }
+                }
+                if root.quick-state == 0 || root.quick-state == 2: Rectangle {
+                    y: 76px;
+                    height: 44px;
+                    // Progress: fills smoothly; reading shows a slow sweep.
+                    Rectangle {
+                        x: 0;
+                        y: 18px;
+                        width: parent.width - 124px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: Theme.fill;
+                        clip: true;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * (root.quick-state == 2 ? root.shown : 0);
+                            border-radius: 4px;
+                            background: Theme.accent;
+                        }
+                    }
+                    Text {
+                        x: parent.width - 118px;
+                        width: 36px;
+                        text: root.quick-state == 2 ? Math.round(root.shown * 100) + "%" : "";
+                        font-size: 12px;
+                        font-weight: 600;
+                        color: Theme.label-2;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                    if root.quick-state == 2: Btn {
+                        x: parent.width - self.width;
+                        y: 4px;
+                        width: 76px;
+                        text: "Cancel";
+                        plain: true;
+                        clicked => { root.cancel(); }
+                    }
+                }
+                if root.quick-state == 3: HorizontalLayout {
+                    y: 76px;
+                    height: 44px;
+                    spacing: 8px;
+                    Btn {
+                        text: "Show in folder";
+                        icon: Icons.open;
+                        large: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.show-in-folder(); }
+                    }
+                    Btn {
+                        text: "Done";
+                        primary: true;
+                        large: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.escape(); }
+                    }
+                }
+                if root.quick-state == 4 || root.quick-state == 5: HorizontalLayout {
+                    y: 76px;
+                    height: 44px;
+                    spacing: 8px;
+                    Btn {
+                        text: "Choose File…";
+                        icon: Icons.folder;
+                        primary: root.quick-state == 5;
+                        large: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.choose-file(); }
+                    }
+                    Btn {
+                        text: "Open Kompacter";
+                        large: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.quick-expand(); }
+                    }
                 }
             }
 
@@ -872,9 +1160,10 @@ export component AppWindow inherits Window {
                     pv := TouchArea {
                         clicked => { root.trim-play(); }
                     }
-                    // Controls appear while the pointer is over the video.
+                    // Controls appear while the pointer is over the video. The sound button
+                    // has its own touch area on top, so count hovering it too.
                     Rectangle {
-                        opacity: pv.has-hover ? 1 : 0;
+                        opacity: pv.has-hover || snd.has-hover ? 1 : 0;
                         animate opacity { duration: 160ms; }
                         // Play / pause.
                         Rectangle {
@@ -1023,7 +1312,7 @@ export component AppWindow inherits Window {
                     }
                     drag := TouchArea {
                         y: -8px;
-                        height: 64px;
+                        height: 60px;
                         mouse-cursor: ew-resize;
                         function move-to(f: float) {
                             if (root.trim-active == 0) {
@@ -1036,14 +1325,70 @@ export component AppWindow inherits Window {
                         pointer-event(e) => {
                             if (e.kind == PointerEventKind.down) {
                                 keys-strip.focus();
+                                root.trim-drag-start();
                                 // Grab the nearer handle.
                                 root.trim-active = Math.abs(Math.clamp(self.mouse-x / self.width, 0, 1) - strip.fa) <= Math.abs(Math.clamp(self.mouse-x / self.width, 0, 1) - strip.fb) ? 0 : 1;
                                 self.move-to(Math.clamp(self.mouse-x / self.width, 0, 1));
                             }
                         }
+                        changed pressed => {
+                            if (!self.pressed) {
+                                root.trim-drag-end(false);
+                            }
+                        }
                         moved => {
                             self.move-to(Math.clamp(self.mouse-x / self.width, 0, 1));
                         }
+                    }
+                    // Playhead: where the video is. The arrow under the strip is its only
+                    // grip, so seeking never grabs a trim handle by mistake.
+                    playhead := Rectangle {
+                        property <length> px: strip.width * Math.clamp(root.trim-pos / Math.max(0.001, root.trim-dur), 0, 1);
+                        x: self.px - 1px;
+                        y: -3px;
+                        width: 2px;
+                        height: 54px;
+                        border-radius: 1px;
+                        background: white;
+                        drop-shadow-blur: 3px;
+                        drop-shadow-color: #00000080;
+                    }
+                    Path {
+                        x: playhead.px - 9px;
+                        y: 52px;
+                        width: 18px;
+                        height: 14px;
+                        viewbox-width: 18;
+                        viewbox-height: 14;
+                        commands: "M9 1.5L16.5 12H1.5Z";
+                        fill: white;
+                        stroke: seek.pressed || seek.has-hover ? Theme.accent : #00000066;
+                        stroke-width: 1.4px;
+                        stroke-line-join: round;
+                        transform-scale: seek.pressed ? 1.2 : 1;
+                        animate transform-scale { duration: 200ms; easing: ease-out-back; }
+                    }
+                    seek := TouchArea {
+                        x: playhead.px - 14px;
+                        y: 52px;
+                        width: 28px;
+                        height: 18px;
+                        mouse-cursor: ew-resize;
+                        function seek-to() {
+                            root.trim-seek(Math.clamp((self.x + self.mouse-x) / strip.width, 0, 1) * root.trim-dur);
+                        }
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down) {
+                                root.trim-drag-start();
+                                self.seek-to();
+                            }
+                        }
+                        changed pressed => {
+                            if (!self.pressed) {
+                                root.trim-drag-end(true);
+                            }
+                        }
+                        moved => { self.seek-to(); }
                     }
                 }
                 // Start and end, typed to the millisecond (m:ss.mmm).
@@ -1051,7 +1396,7 @@ export component AppWindow inherits Window {
                     property <string> src: side == 0 ? root.trim-a-text : root.trim-b-text;
                     changed src => { field.text = self.src; }
                     x: side == 0 ? 20px : 340px - self.width;
-                    y: 288px;
+                    y: 304px;
                     width: 104px;
                     height: 26px;
                     border-radius: 7px;
@@ -1069,7 +1414,7 @@ export component AppWindow inherits Window {
                 }
                 Text {
                     x: 124px;
-                    y: 288px;
+                    y: 304px;
                     width: 112px;
                     height: 26px;
                     text: root.trim-range;
@@ -1081,9 +1426,9 @@ export component AppWindow inherits Window {
                 // Mode and live readout.
                 Seg {
                     x: 20px;
-                    y: 326px;
+                    y: 342px;
                     width: 320px;
-                    options: ["Keep quality", "Fit to " + root.target-text];
+                    options: ["Keep quality", "Fit to " + root.target-text, "GIF"];
                     index: root.trim-mode;
                     picked(i) => {
                         root.trim-mode = i;
@@ -1094,7 +1439,7 @@ export component AppWindow inherits Window {
                     property <bool> open;
                     property <length> extra: details.preferred-height;
                     x: 20px;
-                    y: 372px;
+                    y: 388px;
                     width: 320px;
                     height: 76px + (self.open ? self.extra : 0);
                     animate height { duration: 320ms; easing: Fx.rich ? ease-out-back : ease-out; }

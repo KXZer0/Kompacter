@@ -487,3 +487,60 @@ fn folder_preview_shows_the_tree_with_sizes() {
     assert!(rows[0].after < 300 * KB, "estimate {} fits", rows[0].after);
     assert_eq!(rows[6].after, 1_000); // text isn't shrunk
 }
+
+#[test]
+fn short_clip_becomes_a_gif_that_fits() {
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("clip.mp4");
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=1280x720:rate=30:duration=6",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+        ],
+        &src,
+    );
+    let engine = Engine::new(Default::default());
+    let mut opts = Options::new(MB);
+    opts.mode = Mode::Gif;
+    opts.trim = Some(Trim::new(1.0, 5.0).unwrap());
+    opts.out_dir = Some(dir.path().join("out"));
+    let out = run(&engine, &src, &opts);
+    assert!(out.fits, "{} bytes", out.output_bytes);
+    assert_eq!(out.path.extension().unwrap(), "gif");
+    let info = engine.probe(&out.path).unwrap();
+    let v = info.video.expect("a GIF has video");
+    assert!(v.width <= 640 && v.width >= 120, "width {}", v.width);
+    assert!((3.5..=4.5).contains(&info.duration), "{} s", info.duration);
+
+    // Too long for a GIF: says so instead of making a bad one.
+    let mut long = Options::new(MB);
+    long.mode = Mode::Gif;
+    long.out_dir = opts.out_dir.clone();
+    let src_long = dir.path().join("long.mp4");
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x180:rate=10:duration=40",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+        ],
+        &src_long,
+    );
+    let err = engine
+        .compress(&src_long, &long, &mut |_| {}, &AtomicBool::new(false))
+        .unwrap_err();
+    assert!(matches!(err, kompacter_core::error::Error::TooLong { .. }));
+}

@@ -44,6 +44,8 @@ export component Blob inherits Rectangle {
     in property <int> hop;
     /// Bump this to make the blob squish (a file landed).
     in property <int> chomp;
+    /// Press and hold works (off while the blob is faded out behind other things).
+    in property <bool> touchable: true;
 
     property <float> grow: swell ? 1.08 : 1;
     animate grow { duration: 260ms; easing: ease-out-back; }
@@ -59,9 +61,21 @@ export component Blob inherits Rectangle {
     // Squish (click or chomp) and hop (done): quick in, springy out.
     property <bool> squished;
     property <float> squish;
+    /// Pressed and held: squashes flat and stays there, springs back on release.
+    property <bool> held: touch.pressed && root.touchable;
+    property <float> press;
     property <bool> hopping;
     property <length> lift;
     states [
+        pressing when root.held: {
+            press: 1;
+            in {
+                animate press { duration: 160ms; easing: ease-out; }
+            }
+            out {
+                animate press { duration: 700ms; easing: ease-out-elastic; }
+            }
+        }
         squashed when root.squished: {
             squish: 1;
             in {
@@ -101,9 +115,9 @@ export component Blob inherits Rectangle {
         }
     }
 
-    // Squish: an even little bounce (both axes), not a stretch.
-    property <float> sx: s * grow * (1 + 0.2 * c) * (1 + 0.02 * breath - 0.08 * squish);
-    property <float> sy: s * grow * (1 - 0.5 * c) * (1 - 0.015 * breath - 0.08 * squish);
+    // Squish: an even little bounce (both axes), not a stretch. Holding squashes it flat.
+    property <float> sx: s * grow * (1 + 0.2 * c) * (1 + 0.02 * breath - 0.08 * squish + 0.16 * press);
+    property <float> sy: s * grow * (1 - 0.5 * c) * (1 - 0.015 * breath - 0.08 * squish - 0.24 * press);
     property <float> k: s * grow;
     property <bool> blink;
 
@@ -120,12 +134,9 @@ export component Blob inherits Rectangle {
         triggered => { root.blink = !root.blink; }
     }
 
-    TouchArea {
-        clicked => {
-            if (Fx.rich) {
-                root.squished = true;
-            }
-        }
+    // Press and hold: squashed with a scrunched face until let go.
+    touch := TouchArea {
+        enabled: root.touchable;
     }
 
     // Soft contact shadow.
@@ -158,27 +169,41 @@ export component Blob inherits Rectangle {
         running: Fx.rich && root.mood == Mood.worried;
         triggered => { root.wob = !root.wob; }
     }
-    Image {
-        width: parent.width;
-        height: parent.height;
-        source: Theme.style == 1
-            ? (Theme.is-dark ? @image-url("blob-discord-dark.png") : @image-url("blob-discord-light.png"))
-            : (Theme.is-dark ? @image-url("blob-dark.png") : @image-url("blob-light.png"));
-        image-fit: fill;
-        transform-rotation: (Fx.rich && root.mood != Mood.busy ? Math.mod(animation-tick() / 1ms, 18000) / 18000 * 360deg : 0deg) - root.wobble * 5deg;
-    }
-    Image {
-        width: parent.width;
-        height: parent.height;
-        source: @image-url("blob-gloss.png");
-        image-fit: fill;
+    // Holding squashes the turning body along the screen, not along its own turn: with
+    // full effects the body keeps its unsquashed size and is scaled after it is rotated.
+    // (CPU drawing doesn't turn it, so its size alone does the squash there.)
+    property <float> hx: Fx.rich ? 1 + 0.16 * press : 1;
+    property <float> hy: Fx.rich ? 1 - 0.24 * press : 1;
+    body := Rectangle {
+        width: root.width / root.hx;
+        height: root.height / root.hy;
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height;
+        transform-origin: { x: self.width / 2, y: self.height };
+        transform-scale-x: root.hx;
+        transform-scale-y: root.hy;
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: Theme.style == 1
+                ? (Theme.is-dark ? @image-url("blob-discord-dark.png") : @image-url("blob-discord-light.png"))
+                : (Theme.is-dark ? @image-url("blob-dark.png") : @image-url("blob-light.png"));
+            image-fit: fill;
+            transform-rotation: (Fx.rich && root.mood != Mood.busy ? Math.mod(animation-tick() / 1ms, 18000) / 18000 * 360deg : 0deg) - root.wobble * 5deg;
+        }
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: @image-url("blob-gloss.png");
+            image-fit: fill;
+        }
     }
 
     // Face: 52×28 units, follows the pointer a little.
     face := Rectangle {
         property <float> k: root.k;
         // Rounded-rectangle eyes for most moods.
-        property <bool> plain-eyes: root.mood != Mood.busy && root.mood != Mood.happy;
+        property <bool> plain-eyes: !root.held && root.mood != Mood.busy && root.mood != Mood.happy;
         property <float> ew: root.mood == Mood.hungry ? 9 : 8;
         property <float> eh: (root.mood == Mood.hungry ? 15 : root.mood == Mood.worried ? 10 : 13) * (root.blink ? 0.12 : 1);
         property <float> ey: root.mood == Mood.worried ? 3 : 0;
@@ -186,7 +211,7 @@ export component Blob inherits Rectangle {
         property <length> dy: root.look-y * 3px * k;
         animate dx, dy { duration: 140ms; easing: ease-out; }
         x: (parent.width - 52px * k) / 2 + dx;
-        y: parent.height * 0.44 - 4px * k * root.c + dy;
+        y: parent.height * 0.44 - 4px * k * root.c + 2px * k * root.press + dy;
         width: 52px * k;
         height: 28px * k;
 
@@ -209,44 +234,57 @@ export component Blob inherits Rectangle {
             animate height, y { duration: 70ms; }
         }
 
+        // Held: scrunched > < eyes and a wobbly mouth.
+        if root.held: Mark {
+            k: face.k; ux: 8; uy: 3; bw: 10; bh: 9; line: 3;
+            commands: "M0 0L10 4.5L0 9";
+        }
+        if root.held: Mark {
+            k: face.k; ux: 34; uy: 3; bw: 10; bh: 9; line: 3;
+            commands: "M10 0L0 4.5L10 9";
+        }
+        if root.held: Mark {
+            k: face.k; ux: 17; uy: 19; bw: 18; bh: 4; line: 2.4;
+            commands: "M0 2C1.5 0 3 0 4.5 2C6 4 7.5 4 9 2C10.5 0 12 0 13.5 2C15 4 16.5 4 18 2";
+        }
         // Busy: squinting, more as the press closes.
-        if root.mood == Mood.busy: Mark {
+        if !root.held && root.mood == Mood.busy: Mark {
             k: face.k; ux: 8; uy: 4; bw: 11; bh: 3 + root.c * 3; line: 3;
             commands: "M0 0L11 " + (3 + root.c * 3);
         }
-        if root.mood == Mood.busy: Mark {
+        if !root.held && root.mood == Mood.busy: Mark {
             k: face.k; ux: 33; uy: 4; bw: 11; bh: 3 + root.c * 3; line: 3;
             commands: "M0 " + (3 + root.c * 3) + "L11 0";
         }
-        if root.mood == Mood.busy: Mark {
+        if !root.held && root.mood == Mood.busy: Mark {
             k: face.k; ux: 22.5; uy: 17; bw: 7; bh: 7; line: 2;
             commands: "M0 3.5A3.5 3.5 0 1 0 7 3.5A3.5 3.5 0 1 0 0 3.5Z";
         }
 
         // Happy: arched eyes and a big smile.
-        if root.mood == Mood.happy: Mark {
+        if !root.held && root.mood == Mood.happy: Mark {
             k: face.k; ux: 8; uy: 3; bw: 11; bh: 7; line: 2.4;
             commands: "M0 7A5.5 6 0 0 1 11 7";
         }
-        if root.mood == Mood.happy: Mark {
+        if !root.held && root.mood == Mood.happy: Mark {
             k: face.k; ux: 33; uy: 3; bw: 11; bh: 7; line: 2.4;
             commands: "M0 7A5.5 6 0 0 1 11 7";
         }
-        if root.mood == Mood.happy: Mark {
+        if !root.held && root.mood == Mood.happy: Mark {
             k: face.k; ux: 17; uy: 18; bw: 18; bh: 9; filled: true;
             commands: "M0 0L18 0A9 9 0 0 1 0 0Z";
         }
 
         // Mouths for the other moods.
-        if root.mood == Mood.idle: Mark {
+        if !root.held && root.mood == Mood.idle: Mark {
             k: face.k; ux: 20; uy: 18; bw: 12; bh: 6;
             commands: "M0 0A6 6 0 0 0 12 0";
         }
-        if root.mood == Mood.hungry: Mark {
+        if !root.held && root.mood == Mood.hungry: Mark {
             k: face.k; ux: 19.5; uy: 17; bw: 13; bh: 13; filled: true;
             commands: "M0 6.5A6.5 6.5 0 1 0 13 6.5A6.5 6.5 0 1 0 0 6.5Z";
         }
-        if root.mood == Mood.worried: Mark {
+        if !root.held && root.mood == Mood.worried: Mark {
             k: face.k; ux: 20; uy: 21; bw: 12; bh: 5;
             commands: "M0 5A6 5 0 0 1 12 5";
         }

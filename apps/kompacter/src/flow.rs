@@ -19,11 +19,13 @@ impl App {
     /// the obvious next step, or show the choices.
     pub fn open(self: &Rc<Self>, path: PathBuf) {
         let ui = self.ui();
-        if matches!(ui.get_view(), View::Busy | View::Reading) {
+        if matches!(self.view(), View::Busy | View::Reading) {
             return;
         }
         *self.current.borrow_mut() = None;
+        self.batch.borrow_mut().clear();
         ui.set_file_name(file_name(&path).into());
+        ui.set_file_icon(icon(&path));
         ui.set_chomp(ui.get_chomp() + 1);
         self.set_view(View::Reading);
 
@@ -44,15 +46,17 @@ impl App {
                     Err(e) => app.fail(&e),
                     Ok((info, estimate)) => {
                         let kind = info.kind;
+                        // The paste guard always offers its choices first.
                         let direct = !matches!(kind, MediaKind::Folder)
-                            && (estimate.fits_as_is || !matches!(kind, MediaKind::Video));
+                            && (estimate.fits_as_is || !matches!(kind, MediaKind::Video))
+                            && app.guard.get().is_none();
                         *app.current.borrow_mut() = Some(Current {
                             path,
                             info,
                             estimate,
                         });
                         if direct {
-                            app.compress(None, false, false);
+                            app.compress(None, Mode::Fit, false);
                         } else {
                             app.show_big();
                         }
@@ -70,7 +74,7 @@ impl App {
             1 => self.open(files.remove(0)),
             n => {
                 let ui = self.ui();
-                if matches!(ui.get_view(), View::Busy | View::Reading) {
+                if matches!(self.view(), View::Busy | View::Reading) {
                     return;
                 }
                 *self.current.borrow_mut() = None;
@@ -225,6 +229,9 @@ impl App {
                     if ok {
                         ui.set_hop(ui.get_hop() + 1);
                     }
+                    if !app.guard_done(ok && copied) {
+                        app.quick_done();
+                    }
                 });
             },
         );
@@ -250,13 +257,7 @@ impl App {
         ui.set_file_name(file_name(&c.path).into());
         ui.set_file_meta(meta.join(" · ").into());
         ui.set_file_kind(kind_name(c.info.kind).into());
-        ui.set_file_icon(
-            sys::file_icon(&c.path)
-                .map(|(w, h, px)| {
-                    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(&px, w, h))
-                })
-                .unwrap_or_default(),
-        );
+        ui.set_file_icon(icon(&c.path));
 
         let max = size.max(target) as f64 * 1.08;
         ui.set_meter_fill((size as f64 / max) as f32);
@@ -274,7 +275,9 @@ impl App {
 
         // The button just says Compress; "Show more" has the before → after details.
         let plan = c.estimate.video.as_ref();
-        let label = if folder {
+        let label = if self.guard.get().is_some() {
+            "Compress & paste".into()
+        } else if folder {
             format!("Compress & {}", self.settings.borrow().archive_format.ext())
         } else {
             "Compress".into()
@@ -401,15 +404,16 @@ impl App {
         }
     }
 
-    /// Compress the current file. `range` trims it; `keep` keeps the original quality
-    /// (a cut without re-encoding); `split` makes parts that each fit when one can't.
-    pub fn compress(self: &Rc<Self>, range: Option<(f64, f64)>, keep: bool, split: bool) {
+    /// Compress the current file. `range` trims it; `mode` is Fit, KeepQuality (a cut
+    /// without re-encoding) or Gif; `split` makes parts that each fit when one can't.
+    pub fn compress(self: &Rc<Self>, range: Option<(f64, f64)>, mode: Mode, split: bool) {
+        let keep = mode == Mode::KeepQuality;
         let ui = self.ui();
         let cur = self.current.borrow();
         let Some(c) = cur.as_ref() else { return };
         let path = c.path.clone();
-        let quick = c.estimate.fits_as_is && range.is_none();
-        let height = if keep {
+        let quick = c.estimate.fits_as_is && range.is_none() && mode != Mode::Gif;
+        let height = if keep || mode == Mode::Gif {
             None
         } else {
             c.estimate.video.as_ref().map(|v| v.height)
@@ -419,7 +423,7 @@ impl App {
         let prefs = self.settings.borrow().clone();
         let target = self.target().bytes;
         let mut opts = self.options(target);
-        opts.mode = if keep { Mode::KeepQuality } else { Mode::Fit };
+        opts.mode = mode;
         opts.split = split;
         self.last_range.set(range);
         if let Some((a, b)) = range {
@@ -489,7 +493,7 @@ impl App {
                         let delay = if quick { 0 } else { 420 };
                         slint::Timer::single_shot(Duration::from_millis(delay), move || {
                             if let Some(app) = weak.upgrade() {
-                                app.done(out, copied, height, keep);
+                                app.done(out, copied, height, mode);
                             }
                         });
                     }
@@ -524,7 +528,7 @@ impl App {
             move || {
                 let Some(app) = weak.upgrade() else { return };
                 let ui = app.ui();
-                if ui.get_view() != View::Busy {
+                if app.view() != View::Busy {
                     return;
                 }
                 let Some(t) = app.started.get() else { return };
@@ -552,7 +556,7 @@ impl App {
         ETA.with(|e| *e.borrow_mut() = Some(timer));
     }
 
-    fn done(self: &Rc<Self>, out: Outcome, copied: bool, height: Option<u32>, keep: bool) {
+    fn done(self: &Rc<Self>, out: Outcome, copied: bool, height: Option<u32>, mode: Mode) {
         ETA.with(|e| *e.borrow_mut() = None);
         let ui = self.ui();
         let parts = out.parts.len();
@@ -573,7 +577,9 @@ impl App {
         ui.set_done_split(can_split);
         let ratio = out.original_bytes as f64 / out.output_bytes.max(1) as f64;
         let mut details = vec![bytes(out.output_bytes)];
-        if keep {
+        if mode == Mode::Gif {
+            details.push("GIF".into());
+        } else if mode == Mode::KeepQuality {
             details.push("original quality".into());
         } else if let Some(h) = height.filter(|_| !out.untouched) {
             details.push(format!("{h}p"));
@@ -606,6 +612,11 @@ impl App {
         if out.fits {
             ui.set_hop(ui.get_hop() + 1);
         }
+        // Paste guard: straight into Discord. Quick bar: fold away after a moment.
+        if self.guard_done(out.fits && copied) {
+            return;
+        }
+        self.quick_done();
         // If the user already went back to their chat, fold away after a moment.
         if !ui
             .window()
@@ -635,11 +646,20 @@ impl App {
                 .window()
                 .with_winit_window(|w| w.has_focus())
                 .unwrap_or(true);
-            if !focused && ui.get_view() != View::Busy && !ui.get_dragging() {
+            if !focused && app.view() != View::Busy && !ui.get_dragging() {
                 app.close();
             }
         });
     }
+}
+
+/// The file's own Windows icon (empty elsewhere: the UI draws a line icon).
+fn icon(path: &std::path::Path) -> slint::Image {
+    sys::file_icon(path)
+        .map(|(w, h, px)| {
+            slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(&px, w, h))
+        })
+        .unwrap_or_default()
 }
 
 thread_local! {

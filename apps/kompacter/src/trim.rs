@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use kompacter_core::{MediaKind, Quality};
+use kompacter_core::{MediaKind, Mode, Quality};
 use slint::{Image, ModelRc, Rgb8Pixel, SharedPixelBuffer, VecModel};
 
 use crate::format::{bytes, clock_ms, parse_time, rate};
@@ -26,6 +26,10 @@ pub struct Trim {
     want: Cell<Option<f64>>,
     /// Stops the playback in progress.
     stop: RefCell<Option<Arc<AtomicBool>>>,
+    /// Was playing when a drag started (resume from the new position on release).
+    resume: Cell<bool>,
+    /// Handles at the last update, so only a handle move jumps the preview to it.
+    last_ab: Cell<(f64, f64)>,
 }
 
 fn image(w: u32, h: u32, px: &[u8]) -> Image {
@@ -41,6 +45,8 @@ impl App {
         ui.set_trim_dur(dur);
         ui.set_trim_a(0.0);
         ui.set_trim_b(dur);
+        ui.set_trim_pos(0.0);
+        self.trim.last_ab.set((-1.0, -1.0));
         ui.set_trim_active(0);
         ui.set_trim_mode(0);
 
@@ -95,7 +101,9 @@ impl App {
         ui.set_trim_b_text(clock_ms(b).into());
 
         // Preview: the exact frame under the handle being moved (while not playing).
-        if !ui.get_trim_playing() {
+        // Other updates (mode, thumbnails) leave the playhead where it is.
+        let moved = self.trim.last_ab.replace((a, b)) != (a, b);
+        if moved && !ui.get_trim_playing() {
             let t = if ui.get_trim_active() == 0 { a } else { b };
             self.show_frame(t);
         }
@@ -133,7 +141,29 @@ impl App {
             rows
         };
 
-        if ui.get_trim_mode() == 0 {
+        if ui.get_trim_mode() == 2 {
+            // GIF: short clips only; the size is a guess until it's made.
+            let max = kompacter_core::MAX_GIF_SECONDS;
+            let guess = self.engine.gif_guess(&c.info, sec, target);
+            let ok = video.is_some() && sec <= max + 0.05 && guess.is_some();
+            ui.set_trim_big("GIF".into());
+            ui.set_trim_grade(0);
+            ui.set_trim_ok(ok);
+            ui.set_trim_status(
+                if video.is_none() {
+                    "GIFs need a video".to_string()
+                } else if sec > max + 0.05 {
+                    format!("Up to {max:.0} s · cut {:.0} s more", (sec - max).ceil())
+                } else if let Some((w, fps)) = guess {
+                    format!("About {w} px wide · {fps:.0} fps")
+                } else {
+                    "Too long for a GIF this small".into()
+                }
+                .into(),
+            );
+            self.set_details(Vec::new());
+            ui.set_trim_button("Make GIF".into());
+        } else if ui.get_trim_mode() == 0 {
             self.set_details(original());
             // Keep quality: a cut, no re-encode.
             ui.set_trim_big(format!("≈ {}", bytes(keep_bytes)).into());
@@ -228,6 +258,9 @@ impl App {
     fn show_frame(self: &Rc<Self>, t: f64) {
         let ui = self.ui();
         ui.set_trim_time(clock_ms(t).into());
+        if !ui.get_trim_playing() {
+            ui.set_trim_pos(t as f32);
+        }
         if self.trim.fetching.get() {
             self.trim.want.set(Some(t));
             return;
@@ -264,13 +297,61 @@ impl App {
             self.trim_stop();
             return;
         }
+        let (a, b) = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
+        let pos = ui.get_trim_pos() as f64;
+        let start = if pos >= a && pos < b - 0.25 { pos } else { a };
+        self.trim_play_from(start, b);
+    }
+
+    /// A drag (trim handle or playhead) began. Playing pauses so the preview follows
+    /// the drag; it resumes on release.
+    pub fn trim_drag_start(self: &Rc<Self>) {
+        if self.ui().get_trim_playing() {
+            self.trim.resume.set(true);
+            self.trim_stop();
+        }
+    }
+
+    /// The drag ended. If it was playing: the playhead resumes where it was let go,
+    /// the start handle from the new start, the end handle a moment before the new end.
+    pub fn trim_drag_end(self: &Rc<Self>, playhead: bool) {
+        if !self.trim.resume.take() {
+            return;
+        }
+        let ui = self.ui();
+        let (a, b) = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
+        let from = if playhead {
+            ui.get_trim_pos() as f64
+        } else if ui.get_trim_active() == 0 {
+            a
+        } else {
+            (b - 3.0).max(a)
+        };
+        self.trim_play_from(from.clamp(a, (b - 0.1).max(a)), b);
+    }
+
+    /// Move the playhead (inside the selection) and show that exact frame.
+    pub fn trim_seek(self: &Rc<Self>, pos: f64) {
+        let ui = self.ui();
+        if ui.get_trim_playing() {
+            self.trim.resume.set(true);
+            self.trim_stop();
+        }
+        let (a, b) = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
+        let pos = pos.clamp(a, b);
+        ui.set_trim_pos(pos as f32);
+        self.show_frame(pos);
+    }
+
+    fn trim_play_from(self: &Rc<Self>, from: f64, until: f64) {
+        let ui = self.ui();
         let Some(info) = self.current.borrow().as_ref().map(|c| c.info.clone()) else {
             return;
         };
         if !matches!(info.kind, MediaKind::Video) {
             return;
         }
-        let (a, b) = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
+        let (a, b) = (from, until);
         let sound = ui.get_trim_sound() && info.audio.is_some();
         let stop = Arc::new(AtomicBool::new(false));
         *self.trim.stop.borrow_mut() = Some(stop.clone());
@@ -278,6 +359,7 @@ impl App {
         let engine = self.engine.clone();
         let w = self.ui.clone();
         let weak = Rc::downgrade(self);
+        let mine = stop.clone();
         let fps = 24.0;
         run(
             move || {
@@ -293,28 +375,44 @@ impl App {
                     let t = a + n as f64 / fps;
                     n += 1;
                     let w = w.clone();
+                    let stop_ui = stop.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = w.upgrade() {
-                            if ui.get_trim_playing() {
+                            if ui.get_trim_playing() && !stop_ui.load(Ordering::Relaxed) {
                                 ui.set_trim_frame(image(fw, fh, &px));
                                 ui.set_trim_time(clock_ms(t).into());
+                                ui.set_trim_pos(t as f32);
                             }
                         }
                     });
                     !stop.load(Ordering::Relaxed)
                 });
-                sys::stop_sound();
+                // Ended by itself: end the sound before its file goes. (When stopped, the
+                // stopper already did, and a newer playback's sound may be starting.)
+                if !stop.load(Ordering::Relaxed) {
+                    sys::stop_sound();
+                }
                 drop(tmp);
             },
             move |_| {
+                // Ended by itself: stop. If a newer playback has started since (seek,
+                // resume after a drag), leave that one alone.
                 if let Some(app) = weak.upgrade() {
-                    app.trim_stop();
+                    let current = app
+                        .trim
+                        .stop
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|s| Arc::ptr_eq(s, &mine));
+                    if current {
+                        app.trim_stop();
+                    }
                 }
             },
         );
     }
 
-    /// Stop playback and go back to the frame under the active handle.
+    /// Stop playback; the playhead stays where it was and shows that exact frame.
     pub fn trim_stop(self: &Rc<Self>) {
         if let Some(stop) = self.trim.stop.borrow_mut().take() {
             stop.store(true, Ordering::Relaxed);
@@ -323,12 +421,7 @@ impl App {
         let ui = self.ui();
         if ui.get_trim_playing() {
             ui.set_trim_playing(false);
-            let t = if ui.get_trim_active() == 0 {
-                ui.get_trim_a()
-            } else {
-                ui.get_trim_b()
-            };
-            self.show_frame(t as f64);
+            self.show_frame(ui.get_trim_pos() as f64);
         }
     }
 
@@ -374,6 +467,13 @@ impl App {
 
     pub fn trim_compress(self: &Rc<Self>) {
         let ui = self.ui();
+        let range = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
+        if ui.get_trim_mode() == 2 {
+            if ui.get_trim_ok() {
+                self.compress(Some(range), Mode::Gif, false);
+            }
+            return;
+        }
         let keep = ui.get_trim_mode() == 0;
         if keep && !self.trim.keep_ok.get() {
             // Doesn't fit at original quality: switch to Fit, so the user sees what it gives.
@@ -381,8 +481,8 @@ impl App {
             self.trim_update();
             return;
         }
-        let range = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
-        self.compress(Some(range), keep, false);
+        let mode = if keep { Mode::KeepQuality } else { Mode::Fit };
+        self.compress(Some(range), mode, false);
     }
 }
 
