@@ -182,7 +182,14 @@ impl Job<'_> {
         progress: Progress,
     ) -> Result<PathBuf> {
         let mut last = 0;
-        for attempt in 0..2 {
+        // Without a peak cap SVT-AV1 can overshoot more: start a bit lower, allow a third try.
+        let tries = if codec == VideoCodec::Av1 {
+            plan.video_kbps = (plan.video_kbps as f64 * 0.9) as u32;
+            3
+        } else {
+            2
+        };
+        for attempt in 0..tries {
             let mut a = self.head();
             let kbps = plan.video_kbps;
             match codec {
