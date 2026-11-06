@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use kompacter_core::{MediaKind, Quality};
+use kompacter_core::{MediaKind, Mode, Quality};
 use slint::{Image, ModelRc, Rgb8Pixel, SharedPixelBuffer, VecModel};
 
 use crate::format::{bytes, clock_ms, parse_time, rate};
@@ -141,7 +141,29 @@ impl App {
             rows
         };
 
-        if ui.get_trim_mode() == 0 {
+        if ui.get_trim_mode() == 2 {
+            // GIF: short clips only; the size is a guess until it's made.
+            let max = kompacter_core::MAX_GIF_SECONDS;
+            let guess = self.engine.gif_guess(&c.info, sec, target);
+            let ok = video.is_some() && sec <= max + 0.05 && guess.is_some();
+            ui.set_trim_big("GIF".into());
+            ui.set_trim_grade(0);
+            ui.set_trim_ok(ok);
+            ui.set_trim_status(
+                if video.is_none() {
+                    "GIFs need a video".to_string()
+                } else if sec > max + 0.05 {
+                    format!("Up to {max:.0} s · cut {:.0} s more", (sec - max).ceil())
+                } else if let Some((w, fps)) = guess {
+                    format!("About {w} px wide · {fps:.0} fps")
+                } else {
+                    "Too long for a GIF this small".into()
+                }
+                .into(),
+            );
+            self.set_details(Vec::new());
+            ui.set_trim_button("Make GIF".into());
+        } else if ui.get_trim_mode() == 0 {
             self.set_details(original());
             // Keep quality: a cut, no re-encode.
             ui.set_trim_big(format!("≈ {}", bytes(keep_bytes)).into());
@@ -445,6 +467,13 @@ impl App {
 
     pub fn trim_compress(self: &Rc<Self>) {
         let ui = self.ui();
+        let range = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
+        if ui.get_trim_mode() == 2 {
+            if ui.get_trim_ok() {
+                self.compress(Some(range), Mode::Gif, false);
+            }
+            return;
+        }
         let keep = ui.get_trim_mode() == 0;
         if keep && !self.trim.keep_ok.get() {
             // Doesn't fit at original quality: switch to Fit, so the user sees what it gives.
@@ -452,8 +481,8 @@ impl App {
             self.trim_update();
             return;
         }
-        let range = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
-        self.compress(Some(range), keep, false);
+        let mode = if keep { Mode::KeepQuality } else { Mode::Fit };
+        self.compress(Some(range), mode, false);
     }
 }
 

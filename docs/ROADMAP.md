@@ -7,8 +7,8 @@
 | 0. UI mockups | Clickable mockup of popup, trimmer, settings; iterate on look | In progress |
 | 1. Engine | Rust library + CLI: probe, fit video/audio/image/folder, trim, estimates, GPU | **Working** |
 | 2. App shell | Native tray app (Slint, no web view): popup, drag & drop, result on clipboard, settings | **Rewritten natively**, testing |
-| 3. Triggers | Right-click menu, hotkey, paste guard, heads-up on copy, per-app profiles | |
-| 4. Trimmer + extras | Live trimmer, GPU encoding, pre-compress on copy, clip-folder watcher, queue | |
+| 3. Triggers | Right-click menu, hotkey, paste guard, heads-up on copy, per-app profiles | Hotkey, paste guard (Discord), heads-up on copy **built**, testing |
+| 4. Trimmer + extras | Live trimmer, GPU encoding, GIFs, pre-compress on copy, clip-folder watcher, queue | Trimmer, GPU, GIFs, clip-folder watcher **built** |
 | 5. Release | Signed per-user installer, auto-update, macOS/Linux builds | |
 
 ## Design direction
@@ -33,7 +33,9 @@ Not doing: intercepting drag-and-drop into Discord, hooking its upload dialog, o
 ## Decisions
 
 - **Big paste: ask first.** The paste is held and the tray flyout opens with Compress & paste / Trim / Paste anyway. Never compress silently.
-- **Paste guard UI:** reuses the tray flyout (same fixed size) instead of a separate card; a small "On hold" hint is shown and focus stays in the chat app.
+- **Paste guard UI:** the quick bar (a small card in the same corner) with Compress & paste / Trim / Paste anyway. Trim opens the full trimmer.
+- **Global shortcut:** Ctrl+Alt+K by default (changeable or off in Settings). Opens the quick bar for what's on the clipboard.
+- **Clip folders:** Medal, Game Bar captures and AMD ReLive folders are found on their own; ShadowPlay and OBS save into Videos, so those are added by hand. Only clips saved after it's turned on count; results never pop up over a full-screen game.
 - **Flyout size:** one fixed base size for all quick states; only Settings, the folder queue and the trimmer extend.
 - **Theme:** Kompacter blue by default, plus a Discord-style palette. Light/dark follows Windows.
   Auto-matching Discord's own theme is best effort: Discord keeps its theme in synced account settings, which we won't read (no tokens). Options to explore: Discord's "sync with computer" default (= follow Windows), or sampling the Discord window's background colour.

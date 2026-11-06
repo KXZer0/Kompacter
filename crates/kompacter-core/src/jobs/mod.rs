@@ -3,6 +3,7 @@
 pub(crate) mod audio;
 pub(crate) mod docs;
 pub(crate) mod folder;
+pub(crate) mod gif;
 pub(crate) mod image;
 pub(crate) mod split;
 pub(crate) mod video;

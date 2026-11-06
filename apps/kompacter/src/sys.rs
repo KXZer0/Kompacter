@@ -1,10 +1,21 @@
 //! The few things that talk to the operating system directly: files on the clipboard,
-//! the screen corner above the taskbar, the Recycle Bin, start with Windows, and making
-//! sure only one Kompacter runs. Windows today; other systems get their own version later.
+//! the screen corner above the taskbar, the Recycle Bin, start with Windows, making sure
+//! only one Kompacter runs, the global shortcut and the paste guard. Windows today; other systems get their own version later.
 
 use std::path::{Path, PathBuf};
 
 pub use imp::*;
+
+/// Keyboard events from outside Kompacter (Windows).
+pub enum InputEvent {
+    /// The global shortcut was pressed.
+    Shortcut,
+    /// Ctrl+V in Discord while the clipboard holds files over the limit. The paste was
+    /// held back; `window` is the Discord window, to paste into later.
+    Guard { files: Vec<PathBuf>, window: isize },
+    /// Whether the shortcut is taken by another app (true) or registered / off (false).
+    ShortcutTaken(bool),
+}
 
 /// Open a folder in the file manager.
 pub fn open_folder(dir: &Path) {
@@ -588,6 +599,276 @@ mod imp {
             on_show();
         });
     }
+
+    // ── The global shortcut and the paste guard ──
+    //
+    // One background thread owns both: the shortcut is a registered hotkey and the guard
+    // a low-level keyboard hook (installed only while the guard is on). Both need a
+    // message loop, which that thread runs. The UI thread talks to it with thread messages.
+
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+    use std::sync::{Mutex, OnceLock};
+
+    use super::InputEvent;
+
+    static ON_INPUT: OnceLock<Box<dyn Fn(InputEvent) + Send + Sync>> = OnceLock::new();
+    static INPUT_THREAD: AtomicU32 = AtomicU32::new(0);
+    static GUARD_LIMIT: AtomicU64 = AtomicU64::new(u64::MAX);
+    /// Clipboard sequence number and limit → the too-big files on it (empty: none), so
+    /// repeated Ctrl+V doesn't read the clipboard each time.
+    static GUARD_SEEN: Mutex<Option<(u32, u64, Vec<PathBuf>)>> = Mutex::new(None);
+
+    const WM_APP: u32 = 0x8000;
+    const MSG_SHORTCUT: u32 = WM_APP + 1;
+    const MSG_GUARD: u32 = WM_APP + 2;
+
+    fn emit(e: InputEvent) {
+        if let Some(f) = ON_INPUT.get() {
+            f(e);
+        }
+    }
+
+    /// Start the input thread. `on_event` runs on that thread; keep it quick.
+    pub fn start_input(on_event: impl Fn(InputEvent) + Send + Sync + 'static) {
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetMessageW, PeekMessageW, SetWindowsHookExW, UnhookWindowsHookEx, MSG, PM_NOREMOVE,
+            WH_KEYBOARD_LL, WM_HOTKEY, WM_USER,
+        };
+        if ON_INPUT.set(Box::new(on_event)).is_err() {
+            return;
+        }
+        let (ready, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || unsafe {
+            let mut msg: MSG = std::mem::zeroed();
+            // Makes this thread's message queue, so posts to it work from now on.
+            PeekMessageW(&mut msg, null_mut(), WM_USER, WM_USER, PM_NOREMOVE);
+            INPUT_THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
+            let _ = ready.send(());
+            let mut hook: windows_sys::Win32::UI::WindowsAndMessaging::HHOOK = null_mut();
+            let mut have_key = false;
+            while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+                match msg.message {
+                    WM_HOTKEY => emit(InputEvent::Shortcut),
+                    MSG_SHORTCUT => {
+                        if have_key {
+                            UnregisterHotKey(null_mut(), 1);
+                            have_key = false;
+                        }
+                        if msg.lParam != 0 {
+                            have_key = RegisterHotKey(
+                                null_mut(),
+                                1,
+                                msg.wParam as u32 | MOD_NOREPEAT,
+                                msg.lParam as u32,
+                            ) != 0;
+                            emit(InputEvent::ShortcutTaken(!have_key));
+                        } else {
+                            emit(InputEvent::ShortcutTaken(false));
+                        }
+                    }
+                    MSG_GUARD => {
+                        let on = msg.wParam != 0;
+                        if on && hook.is_null() {
+                            hook = SetWindowsHookExW(
+                                WH_KEYBOARD_LL,
+                                Some(guard_proc),
+                                windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(null()),
+                                0,
+                            );
+                        } else if !on && !hook.is_null() {
+                            UnhookWindowsHookEx(hook);
+                            hook = null_mut();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let _ = wait.recv_timeout(std::time::Duration::from_secs(2));
+    }
+
+    fn post(msg: u32, w: usize, l: isize) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
+        let t = INPUT_THREAD.load(Ordering::SeqCst);
+        if t != 0 {
+            unsafe { PostThreadMessageW(t, msg, w, l) };
+        }
+    }
+
+    /// Register the global shortcut: (modifiers, virtual key), or None for no shortcut.
+    /// The answer comes back as `InputEvent::ShortcutTaken`.
+    pub fn set_shortcut(key: Option<(u32, u32)>) {
+        let (mods, vk) = key.unwrap_or((0, 0));
+        post(MSG_SHORTCUT, mods as usize, vk as isize);
+    }
+
+    /// Turn the paste guard on or off; `limit` is the current target in bytes.
+    pub fn set_guard(on: bool, limit: u64) {
+        GUARD_LIMIT.store(limit, Ordering::SeqCst);
+        post(MSG_GUARD, on as usize, 0);
+    }
+
+    /// The window in front is Discord (the app, or Discord in a browser tab).
+    fn is_discord(h: windows_sys::Win32::Foundation::HWND) -> bool {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowTextW, GetWindowThreadProcessId,
+        };
+        unsafe {
+            let mut title = [0u16; 256];
+            let n = GetWindowTextW(h, title.as_mut_ptr(), title.len() as i32);
+            if String::from_utf16_lossy(&title[..n.max(0) as usize]).contains("Discord") {
+                return true;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(h, &mut pid);
+            let p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if p.is_null() {
+                return false;
+            }
+            let mut buf = [0u16; 512];
+            let mut len = buf.len() as u32;
+            let ok = QueryFullProcessImageNameW(p, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len);
+            CloseHandle(p);
+            ok != 0
+                && Path::new(&String::from_utf16_lossy(&buf[..len as usize]))
+                    .file_name()
+                    .is_some_and(|f| f.to_string_lossy().to_lowercase().starts_with("discord"))
+        }
+    }
+
+    /// The files on the clipboard if any of them is over the limit (else empty).
+    fn too_big_on_clipboard() -> Vec<PathBuf> {
+        let seq = clipboard_seq();
+        let limit = GUARD_LIMIT.load(Ordering::SeqCst);
+        let mut seen = GUARD_SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((s, l, files)) = seen.as_ref() {
+            if *s == seq && *l == limit {
+                return files.clone();
+            }
+        }
+        let files = clipboard_files();
+        let over = files
+            .iter()
+            .any(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() > limit));
+        let files = if over { files } else { Vec::new() };
+        *seen = Some((seq, limit, files.clone()));
+        files
+    }
+
+    unsafe extern "system" fn guard_proc(code: i32, wp: usize, lp: isize) -> isize {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            GetAsyncKeyState, VK_CONTROL, VK_MENU, VK_V,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CallNextHookEx, GetForegroundWindow, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
+            WM_KEYDOWN, WM_SYSKEYDOWN,
+        };
+        unsafe {
+            if code == HC_ACTION as i32
+                && (wp == WM_KEYDOWN as usize || wp == WM_SYSKEYDOWN as usize)
+            {
+                let kb = &*(lp as *const KBDLLHOOKSTRUCT);
+                let down = |vk: u16| GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0;
+                if kb.vkCode == VK_V as u32
+                    && kb.flags & LLKHF_INJECTED == 0
+                    && down(VK_CONTROL)
+                    && !down(VK_MENU)
+                {
+                    let front = GetForegroundWindow();
+                    if !front.is_null() && is_discord(front) {
+                        let files = too_big_on_clipboard();
+                        if !files.is_empty() {
+                            emit(InputEvent::Guard {
+                                files,
+                                window: front as isize,
+                            });
+                            return 1; // Discord never sees this paste.
+                        }
+                    }
+                }
+            }
+            CallNextHookEx(null_mut(), code, wp, lp)
+        }
+    }
+
+    /// Bring a window to the front (Kompacter is in front, so Windows allows it).
+    pub fn focus_window(window: isize) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+        unsafe { SetForegroundWindow(window as _) };
+    }
+
+    /// `window` is the one in front.
+    pub fn is_foreground(window: isize) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        unsafe { GetForegroundWindow() as isize == window }
+    }
+
+    /// Press Ctrl+V for the window in front (marked as injected, so the guard lets it by).
+    pub fn send_paste() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL,
+            VK_V,
+        };
+        let key = |vk: u16, up: bool| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let keys = [
+            key(VK_CONTROL, false),
+            key(VK_V, false),
+            key(VK_V, true),
+            key(VK_CONTROL, true),
+        ];
+        unsafe {
+            SendInput(
+                keys.len() as u32,
+                keys.as_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            );
+        }
+    }
+
+    /// Changes whenever anything is copied.
+    pub fn clipboard_seq() -> u32 {
+        unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() }
+    }
+
+    /// A full-screen app (usually a game) is in front: don't pop up over it.
+    pub fn fullscreen_in_front() -> bool {
+        use windows_sys::Win32::Graphics::Gdi::MonitorFromWindow;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect};
+        unsafe {
+            let h = GetForegroundWindow();
+            if h.is_null() || browsing_files() {
+                return false;
+            }
+            let mut r: RECT = std::mem::zeroed();
+            let mon = MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST);
+            let mut info: MONITORINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            if GetWindowRect(h, &mut r) == 0 || GetMonitorInfoW(mon, &mut info) == 0 {
+                return false;
+            }
+            let m = info.rcMonitor;
+            r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -639,4 +920,18 @@ mod imp {
         true
     }
     pub fn listen_for_show(_on_show: impl Fn() + Send + 'static) {}
+    pub fn start_input(_on_event: impl Fn(super::InputEvent) + Send + Sync + 'static) {}
+    pub fn set_shortcut(_key: Option<(u32, u32)>) {}
+    pub fn set_guard(_on: bool, _limit: u64) {}
+    pub fn focus_window(_window: isize) {}
+    pub fn is_foreground(_window: isize) -> bool {
+        true
+    }
+    pub fn send_paste() {}
+    pub fn clipboard_seq() -> u32 {
+        0
+    }
+    pub fn fullscreen_in_front() -> bool {
+        false
+    }
 }

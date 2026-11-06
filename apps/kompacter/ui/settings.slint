@@ -26,6 +26,13 @@ export global Prefs {
     in property <int> audio-index;
     in property <int> image-index;
     in property <int> archive-index;
+    in property <[string]> shortcut-options: ["Off", "Ctrl+Alt+K", "Ctrl+Shift+K", "Ctrl+Shift+Space"];
+    in property <int> shortcut-index;
+    in property <bool> shortcut-taken;
+    in property <bool> paste-guard;
+    in property <bool> watch-copies;
+    in property <bool> watch-folders;
+    in property <[string]> clip-folders;
 
     callback set-style(int);
     callback set-theme(int);
@@ -41,6 +48,12 @@ export global Prefs {
     callback set-audio(int);
     callback set-image(int);
     callback set-archive(int);
+    callback set-shortcut(int);
+    callback set-paste-guard(bool);
+    callback set-watch-copies(bool);
+    callback set-watch-folders(bool);
+    callback add-clip-folder();
+    callback remove-clip-folder(int);
 }
 
 /// A group row in settings: label + optional small text + something on the right.
@@ -396,6 +409,71 @@ export component SettingsView inherits Rectangle {
                         index: Prefs.archive-index;
                         y: (parent.height - self.height) / 2;
                         picked(i) => { Prefs.set-archive(i); }
+                    }
+                }
+            }
+
+            // Things Kompacter does without being opened. All off except the shortcut.
+            GroupTitle { text: "AUTOMATIC"; }
+            Group {
+                Cell {
+                    label: "Shortcut";
+                    small: Prefs.shortcut-taken ? "Used by another app, pick another"
+                        : Prefs.shortcut-index == 0 ? "" : "Compress what you copied";
+                    first: true;
+                    Dropdown {
+                        options: Prefs.shortcut-options;
+                        index: Prefs.shortcut-index;
+                        y: (parent.height - self.height) / 2;
+                        picked(i) => { Prefs.set-shortcut(i); }
+                    }
+                }
+                Cell {
+                    label: "Paste guard";
+                    small: "Catch big files pasted in Discord";
+                    Switch {
+                        checked: Prefs.paste-guard;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-paste-guard(on); }
+                    }
+                }
+                Cell {
+                    label: "Copied files";
+                    small: "Offer to compress big files you copy";
+                    Switch {
+                        checked: Prefs.watch-copies;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-watch-copies(on); }
+                    }
+                }
+                Cell {
+                    label: "Clip folders";
+                    small: "Shrink new clips on their own";
+                    Switch {
+                        checked: Prefs.watch-folders;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-watch-folders(on); }
+                    }
+                }
+                if Prefs.watch-folders: VerticalLayout {
+                    for f[i] in Prefs.clip-folders: Cell {
+                        label: f;
+                        IconBtn {
+                            icon: Icons.x;
+                            y: (parent.height - self.height) / 2;
+                            clicked => { Prefs.remove-clip-folder(i); }
+                        }
+                    }
+                    Cell {
+                        label: "Add folder…";
+                        clickable: true;
+                        clicked => { Prefs.add-clip-folder(); }
+                        Icon {
+                            d: "M12 6v12M6 12h12";
+                            size: 16px;
+                            color: Theme.accent-text;
+                            y: (parent.height - self.height) / 2;
+                        }
                     }
                 }
             }

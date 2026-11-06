@@ -11,9 +11,11 @@ mod flow;
 mod format;
 mod motion;
 mod output;
+mod quick;
 mod settings;
 mod sys;
 mod trim;
+mod watch;
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -24,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use kompacter_core::size::PRESETS;
 use kompacter_core::{
-    ArchiveFormat, AudioFormat, Engine, Estimate, ImageFormat, MediaInfo, MediaKind, Options,
+    ArchiveFormat, AudioFormat, Engine, Estimate, ImageFormat, MediaInfo, MediaKind, Mode, Options,
     VideoCodec,
 };
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
@@ -107,6 +109,18 @@ pub struct App {
     pub glass: bool,
     pub motion: motion::Motion,
     pub trim: trim::Trim,
+    pub tray: slint::Weak<Tray>,
+    /// The quick bar is showing (see quick.rs); `quick_real` is the flow's screen.
+    pub quick: Cell<bool>,
+    pub quick_real: Cell<View>,
+    /// Paste guard: the Discord window whose Ctrl+V was held back.
+    pub guard: Cell<Option<isize>>,
+    /// The shortcut currently registered (so it's only re-registered when it changes).
+    pub shortcut_set: RefCell<String>,
+    pub watch: watch::Watch,
+    /// New clips waiting to shrink on their own, one at a time.
+    pub auto_queue: RefCell<std::collections::VecDeque<PathBuf>>,
+    pub auto_busy: Cell<bool>,
 }
 
 impl App {
@@ -224,6 +238,7 @@ impl App {
         prefs.set_archive_index((s.archive_format == ArchiveFormat::SevenZ) as i32);
         prefs.set_custom_mb((s.custom_bytes / (1024 * 1024)) as i32);
         drop(s);
+        self.sync_automatic();
         self.apply_theme();
     }
 
@@ -251,6 +266,8 @@ impl App {
     pub fn another(&self) {
         *self.current.borrow_mut() = None;
         self.batch.borrow_mut().clear();
+        self.guard.set(None);
+        self.ui().set_guard(false);
         self.set_view(View::Idle);
     }
 
@@ -357,6 +374,17 @@ impl<F> Drop for UiOnly<F> {
 thread_local! {
     /// What a second launch does: open the window (set once in main).
     static SHOW: RefCell<Box<dyn Fn()>> = RefCell::new(Box::new(|| {}));
+    /// The app, for events from background threads (shortcut, guard, watcher).
+    static APP: RefCell<std::rc::Weak<App>> = const { RefCell::new(std::rc::Weak::new()) };
+}
+
+/// Run `f` with the app on the UI thread (from any thread).
+fn with_app(f: impl FnOnce(&Rc<App>) + Send + 'static) {
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(app) = APP.with(|a| a.borrow().upgrade()) {
+            f(&app);
+        }
+    });
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -433,7 +461,17 @@ fn main() -> Result<(), slint::PlatformError> {
         glass: gpu,
         motion: motion::Motion::default(),
         trim: trim::Trim::default(),
+        tray: tray.as_weak(),
+        quick: Cell::new(false),
+        quick_real: Cell::new(View::Idle),
+        guard: Cell::new(None),
+        shortcut_set: RefCell::new(String::from("unset")),
+        watch: watch::Watch::start(|e| with_app(move |a| a.on_watch(e))),
+        auto_queue: RefCell::new(Default::default()),
+        auto_busy: Cell::new(false),
     });
+    APP.with(|a| *a.borrow_mut() = Rc::downgrade(&app));
+    sys::start_input(|e| with_app(move |a| a.on_input(e)));
     // The Run entry is the truth (it can be turned off in Task Manager).
     app.settings.borrow_mut().start_with_windows = sys::starts_with_windows();
     app.sync_settings();
@@ -471,18 +509,15 @@ fn main() -> Result<(), slint::PlatformError> {
             match event {
                 winit::event::WindowEvent::Focused(false) => {
                     let s = a.settings.borrow();
-                    if s.auto_hide
-                        && !a.modal.get()
-                        && !ui.get_dragging()
-                        && ui.get_view() != View::Busy
+                    if s.auto_hide && !a.modal.get() && !ui.get_dragging() && a.view() != View::Busy
                     {
                         drop(s);
                         a.away();
                     }
                 }
                 winit::event::WindowEvent::HoveredFile(_) => {
-                    if ui.get_view() != View::Busy && !ui.get_dragging() {
-                        if !matches!(ui.get_view(), View::Idle | View::Reading) {
+                    if a.view() != View::Busy && !ui.get_dragging() {
+                        if a.quick.get() || !matches!(a.view(), View::Idle | View::Reading) {
                             a.another();
                         }
                         ui.set_dragging(true);
@@ -537,7 +572,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let a = app.clone();
         ui.on_compress(move || {
             if a.batch.borrow().is_empty() {
-                a.compress(None, false, false)
+                a.compress(None, Mode::Fit, false)
             } else {
                 a.compress_batch()
             }
@@ -545,7 +580,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let a = app.clone();
         ui.on_split(move || {
             let range = a.last_range.get();
-            a.compress(range, false, true)
+            a.compress(range, Mode::Fit, true)
         });
         let a = app.clone();
         ui.on_cancel(move || a.cancel.store(true, Ordering::Relaxed));
@@ -566,7 +601,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 a.settings.borrow_mut().preset = t.id.clone();
                 a.save();
                 a.sync_settings();
-                match a.ui().get_view() {
+                match a.view() {
                     // Re-check the file against the new limit.
                     View::Big => {
                         let path = a.current.borrow().as_ref().map(|c| c.path.clone());
@@ -581,7 +616,7 @@ fn main() -> Result<(), slint::PlatformError> {
         });
         let a = app.clone();
         ui.on_open_settings(move || {
-            if a.ui().get_view() != View::Busy {
+            if a.view() != View::Busy {
                 a.set_view(View::Settings);
             }
         });
@@ -619,6 +654,37 @@ fn main() -> Result<(), slint::PlatformError> {
             View::Trim => a.set_view(View::Big),
             _ => a.close(),
         });
+        let a = app.clone();
+        ui.on_quick_expand(move || a.quick_expand());
+        let a = app.clone();
+        ui.on_quick_trim(move || a.quick_trim());
+        let a = app.clone();
+        ui.on_paste_anyway(move || a.paste_anyway());
+        let a = app.clone();
+        prefs.on_set_shortcut(move |i| {
+            let id = settings::SHORTCUTS[i.clamp(0, 3) as usize].0;
+            a.settings.borrow_mut().shortcut = id.into();
+            a.save();
+            a.sync_settings();
+        });
+        let a = app.clone();
+        prefs.on_set_paste_guard(move |on| {
+            a.settings.borrow_mut().paste_guard = on;
+            a.save();
+            a.sync_settings();
+        });
+        let a = app.clone();
+        prefs.on_set_watch_copies(move |on| {
+            a.settings.borrow_mut().watch_copies = on;
+            a.save();
+            a.sync_settings();
+        });
+        let a = app.clone();
+        prefs.on_set_watch_folders(move |on| a.set_watch_folders(on));
+        let a = app.clone();
+        prefs.on_add_clip_folder(move || a.add_clip_folder());
+        let a = app.clone();
+        prefs.on_remove_clip_folder(move |i| a.remove_clip_folder(i.max(0) as usize));
         let a = app.clone();
         prefs.on_set_style(move |i| {
             a.settings.borrow_mut().style = if i == 1 { "discord" } else { "kompacter" }.into();
@@ -752,7 +818,13 @@ fn main() -> Result<(), slint::PlatformError> {
     if let Ok(p) = std::env::var("KOMPACTER_OPEN") {
         app.open(PathBuf::from(p));
     }
-    if !quiet {
+    // Dev builds only: the quick bar (or the paste guard's) for this file.
+    #[cfg(debug_assertions)]
+    if let Ok(p) = std::env::var("KOMPACTER_QUICK") {
+        let guard = std::env::var("KOMPACTER_GUARD").is_ok().then_some(0);
+        app.quick_open(vec![PathBuf::from(p)], guard);
+    }
+    if !quiet && !app.quick.get() {
         app.show();
     }
     slint::run_event_loop_until_quit()?;
@@ -885,6 +957,55 @@ fn demo(app: &Rc<App>, which: &str) {
             ui.set_view(View::Settings);
         }
         "drag" => ui.set_dragging(true),
+        "quick" | "quick-busy" | "quick-done" | "guard" | "quick-empty" => {
+            app.quick.set(true);
+            ui.set_guard(which == "guard");
+            app.guard.set((which == "guard").then_some(1));
+            ui.set_sum_after("≤ 20 MB".into());
+            let real = match which {
+                "quick-busy" => View::Busy,
+                "quick-done" => View::Done,
+                "quick-empty" => View::Quick,
+                _ => View::Big,
+            };
+            if which == "quick-empty" {
+                ui.set_quick_state(5);
+                app.quick_real.set(View::Idle);
+            }
+            if which == "quick-done" {
+                ui.set_done_sub("19.4 MB · 6.6× smaller".into());
+            }
+            ui.set_busy_left("About 40 s left".into());
+            app.set_view(real);
+        }
+        "trim-gif" => {
+            ui.set_trim_a_text("0:12.000".into());
+            ui.set_trim_b_text("0:20.000".into());
+            ui.set_trim_b(20.0);
+            ui.set_trim_pos(15.0);
+            ui.set_trim_range("8.0 s".into());
+            ui.set_trim_time("0:15.000".into());
+            ui.set_trim_mode(2);
+            ui.set_trim_big("GIF".into());
+            ui.set_trim_grade(0);
+            ui.set_trim_status("About 480 px wide · 15 fps".into());
+            ui.set_trim_button("Make GIF".into());
+            ui.set_win_h(624.0);
+            ui.set_view(View::Trim);
+        }
+        "auto" => {
+            let mut s = app.settings.borrow_mut();
+            s.paste_guard = true;
+            s.watch_folders = true;
+            s.clip_folders = vec![
+                "C:\\Users\\LS\\Videos\\Medal".into(),
+                "C:\\Users\\LS\\Videos\\Captures".into(),
+            ];
+            drop(s);
+            app.sync_settings();
+            ui.set_win_h(600.0);
+            ui.set_view(View::Settings);
+        }
         "discord" => {
             app.settings.borrow_mut().style = "discord".into();
             app.settings.borrow_mut().discord_theme = "ash".into();

@@ -30,12 +30,23 @@
 - UI files: `ui/app.slint` (window, screens), `ui/settings.slint` (Settings screen and the
   `Prefs` global it reads and calls), `ui/stage.slint` (blob, press), `ui/theme.slint`
   (colors, buttons, dropdown, switch).
-- `src/flow.rs` (file → compress → clipboard), `src/trim.rs` (trimmer, live estimates),
-  `src/motion.rs` (open/close, eyes, press, marching dashes), `src/sys.rs` (Windows bits).
+- `src/flow.rs` (file → compress → clipboard), `src/trim.rs` (trimmer, live estimates,
+  playhead, GIF), `src/motion.rs` (open/close, eyes, press, marching dashes),
+  `src/quick.rs` (the quick bar, paste guard, clips that shrink on their own),
+  `src/watch.rs` (background look at the clipboard and clip folders), `src/sys.rs`
+  (Windows bits, including the global shortcut and the paste guard's keyboard hook).
+- Quick bar: a 136 px view on top of the normal flow. While it shows, `set_view` turns
+  Reading / Big / Busy / Done / Error into its states, so the flow code is the same.
+- Paste guard: a low-level keyboard hook (only while the setting is on) sees Ctrl+V in
+  Discord, and if a copied file is over the limit it holds that paste back and opens the
+  quick bar. After Compress & paste, Kompacter brings Discord back and presses Ctrl+V,
+  only if Discord really is in front.
 - Platform code lives in `src/sys.rs` (Windows now; macOS/Linux get their own part later).
 - ffmpeg runs as a hidden child process at below-normal priority, so games stay smooth.
-- Dev builds: `KOMPACTER_DEMO=big|trim|busy|done|error|settings|drag|discord` shows a screen
-  with sample data.
+- Dev builds: `KOMPACTER_DEMO=big|details|trim|trim-gif|busy|done|error|settings|auto|drag|discord|quick|quick-busy|quick-done|quick-empty|guard`
+  shows a screen with sample data. `KOMPACTER_OPEN=<file>` opens a file at start;
+  `KOMPACTER_QUICK=<file>` opens it in the quick bar (add `KOMPACTER_GUARD=1` for the
+  paste guard's bar).
 
 ## kompacter-core
 
@@ -54,6 +65,7 @@
 | `jobs::split` | Too long for one good file: cuts video/audio into equal parts that each fit (up to 10). |
 | `jobs::docs` | PDFs and Office files (docx, pptx, xlsx, OpenDocument): shrinks the photos inside and keeps a normal document; falls back to an archive. |
 | `jobs::cut` | Keep-quality trim: stream copy, no re-encode (snaps to keyframes). |
+| `jobs::gif` | Short clips (up to 30 s) as GIFs: one test encode predicts the width and frame rate that fit, then at most a few more encodes walk down until it does. |
 
 Public API: `Engine::probe`, `Engine::estimate` (live numbers), `Engine::compress` (does the work).
 

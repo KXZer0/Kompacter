@@ -28,11 +28,13 @@ pub struct Motion {
     look: Cell<(f32, f32)>,
 }
 
-/// Content height of each screen.
-pub fn view_height(v: View) -> f32 {
-    match v {
+/// Content height of the screen showing (the paste guard's quick bar has one more row).
+pub fn view_height(ui: &AppWindow) -> f32 {
+    match ui.get_view() {
+        View::Quick if ui.get_guard() => 168.0,
         View::Trim => 624.0,
         View::Settings => 600.0,
+        View::Quick => 136.0,
         _ => 472.0,
     }
 }
@@ -72,13 +74,35 @@ fn ease_out(t: f32) -> f32 {
 impl App {
     pub fn set_view(&self, v: View) {
         let ui = self.ui();
-        let was = ui.get_view();
+        let was = self.view();
+        // The quick bar shows the flow's screens as its own states; any other screen
+        // (idle, trimmer, settings) turns it off.
+        let state = match v {
+            View::Reading => Some(0),
+            View::Big => Some(1),
+            View::Busy => Some(2),
+            View::Done => Some(3),
+            View::Error => Some(4),
+            _ => None,
+        };
+        if self.quick.get() && v != View::Quick && state.is_none() {
+            self.quick.set(false);
+        }
+        let v = if self.quick.get() {
+            if let Some(s) = state {
+                ui.set_quick_state(s);
+                self.quick_real.set(v);
+            }
+            View::Quick
+        } else {
+            v
+        };
         ui.set_view(v);
         // Reset the press while it's out of sight, so the next run starts open.
-        if was == View::Busy && v != View::Busy {
+        if was == View::Busy && self.view() != View::Busy {
             ui.set_squeeze(0.0);
         }
-        let want = view_height(v);
+        let want = view_height(&ui);
         let have = ui.get_win_h();
         if want > have || !self.glass {
             ui.set_win_h(want);
@@ -91,7 +115,7 @@ impl App {
             let glass = self.glass;
             slint::Timer::single_shot(Duration::from_millis(400), move || {
                 if let Some(ui) = w.upgrade() {
-                    if view_height(ui.get_view()) == want && ui.get_win_h() != want {
+                    if view_height(&ui) == want && ui.get_win_h() != want {
                         ui.set_win_h(want);
                         place(&ui, glass);
                     }
@@ -110,6 +134,11 @@ impl App {
     }
 
     pub fn show(self: &Rc<Self>) {
+        self.show_with(true);
+    }
+
+    /// Show the window; `focus` false leaves the keyboard where it is (a notice).
+    pub fn show_with(self: &Rc<Self>, focus: bool) {
         let ui = self.ui();
         let generation = self.motion.generation.get() + 1;
         self.motion.generation.set(generation);
@@ -120,7 +149,9 @@ impl App {
         let _ = ui.show();
         // Again once the window exists (first show), then focus it.
         let pos = place(&ui, self.glass).or(pos);
-        ui.window().with_winit_window(|w| w.focus_window());
+        if focus {
+            ui.window().with_winit_window(|w| w.focus_window());
+        }
 
         if self.glass {
             // Grow in (next frame, so the folded state is drawn first).
@@ -158,7 +189,7 @@ impl App {
                 }
                 let waiting = app.modal.get()
                     || ui.get_dragging()
-                    || ui.get_view() == View::Busy
+                    || app.view() == View::Busy
                     || sys::browsing_files();
                 if !waiting {
                     app.motion.away.stop();
@@ -208,6 +239,7 @@ impl App {
         if ui.get_view() == View::Settings {
             self.close_settings();
         }
+        self.quick_hidden();
         self.motion.ticker.stop();
         let _ = ui.hide();
     }

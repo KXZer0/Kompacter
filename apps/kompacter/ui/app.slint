@@ -12,7 +12,7 @@ import { Prefs, SettingsView, PresetItem } from "settings.slint";
 
 export { Theme, Fx, Prefs, PresetItem }
 
-export enum View { idle, reading, big, trim, busy, done, error, settings }
+export enum View { idle, reading, big, trim, busy, done, error, settings, quick }
 
 /// One line of a before → after list (a folder's tree, or a video's stats).
 export struct DiffRow {
@@ -37,8 +37,9 @@ export component Tray inherits SystemTrayIcon {
     callback open();
     callback open-folder();
     callback quit();
+    in property <string> tip: "Kompacter";
     icon: @image-url("tray.png");
-    tooltip: "Kompacter";
+    tooltip: root.tip;
     clicked => { root.open(); }
     Menu {
         MenuItem {
@@ -193,6 +194,12 @@ export component AppWindow inherits Window {
 
     in property <string> error-text;
 
+    // Quick bar (shortcut, paste guard, copied files): 0 reading, 1 ready, 2 compressing,
+    // 3 done, 4 error, 5 nothing copied.
+    in property <int> quick-state;
+    /// Paste guard: the bar offers Compress & paste / Trim / Paste anyway.
+    in property <bool> guard;
+
     // Formats.
 
     // ── Calls into Rust ──
@@ -218,9 +225,12 @@ export component AppWindow inherits Window {
     callback trim-set-time(int, string);
     callback trim-nudge(int, bool);
     callback escape();
+    callback quick-expand();
+    callback quick-trim();
+    callback paste-anyway();
 
     property <length> inset: Fx.glass ? 12px : 0;
-    property <length> full-h: view == View.trim ? 624px : view == View.settings ? 600px : 472px;
+    property <length> full-h: view == View.trim ? 624px : view == View.settings ? 600px : view == View.quick ? (guard ? 168px : 136px) : 472px;
 
     title: "Kompacter";
     no-frame: true;
@@ -300,7 +310,7 @@ export component AppWindow inherits Window {
             height: root.full-h;
 
             // ── Header ──
-            if root.view != View.settings && root.view != View.trim: Rectangle {
+            if root.view != View.settings && root.view != View.trim && root.view != View.quick: Rectangle {
                 x: 16px;
                 y: 14px;
                 width: pill-row.preferred-width;
@@ -338,7 +348,7 @@ export component AppWindow inherits Window {
                     clicked => { menu.show(); }
                 }
             }
-            if root.view != View.settings && root.view != View.trim: IconBtn {
+            if root.view != View.settings && root.view != View.trim && root.view != View.quick: IconBtn {
                 x: parent.width - 14px - self.width;
                 y: 13px;
                 icon: Icons.gear;
@@ -897,6 +907,221 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // ── Quick bar: the file, what it becomes, one button ──
+            if root.view == View.quick: Appear {
+                x: 16px;
+                width: 328px;
+                height: root.full-h;
+                // File icon (or a line icon; a clipboard when nothing is copied).
+                if root.file-icon.width > 0 && root.quick-state != 5: Image {
+                    x: 0;
+                    y: 16px;
+                    width: 40px;
+                    height: 40px;
+                    source: root.file-icon;
+                    image-fit: contain;
+                }
+                if root.file-icon.width == 0 || root.quick-state == 5: Rectangle {
+                    x: 0;
+                    y: 16px;
+                    width: 40px;
+                    height: 40px;
+                    border-radius: 10px;
+                    background: root.quick-state == 3 && root.done-ok ? Theme.ok.transparentize(0.85)
+                        : root.quick-state == 4 ? Theme.bad.transparentize(0.85) : Theme.accent-soft;
+                    animate background { duration: 200ms; }
+                    Icon {
+                        d: root.quick-state == 3 && root.done-ok ? Icons.check
+                            : root.quick-state == 5 ? Icons.clip
+                            : root.file-kind == "video" ? Icons.film
+                            : root.file-kind == "audio" ? Icons.music
+                            : root.file-kind == "image" ? Icons.image
+                            : root.file-kind == "folder" ? Icons.folder
+                            : Icons.file;
+                        color: root.quick-state == 3 && root.done-ok ? Theme.ok
+                            : root.quick-state == 4 ? Theme.bad : Theme.accent-text;
+                    }
+                }
+                Text {
+                    x: 52px;
+                    y: 15px;
+                    width: parent.width - 52px - 68px;
+                    text: root.quick-state == 5 ? "Nothing copied"
+                        : root.quick-state == 3 ? root.done-title
+                        : root.file-name;
+                    font-size: 15px;
+                    font-weight: 600;
+                    color: root.quick-state == 3 && root.done-ok ? Theme.ok : Theme.label;
+                    overflow: elide;
+                }
+                // Second line: before → after, progress, the result, or what went wrong.
+                if root.quick-state == 1: HorizontalLayout {
+                    x: 52px;
+                    y: 36px;
+                    width: parent.width - 52px - 68px;
+                    height: 20px;
+                    spacing: 5px;
+                    Text {
+                        text: root.sum-before;
+                        font-size: 13px;
+                        color: Theme.label-2;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "→";
+                        font-size: 13px;
+                        color: Theme.ok;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.sum-after;
+                        font-size: 13px;
+                        font-weight: 600;
+                        color: Theme.ok;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                }
+                if root.quick-state != 1: Text {
+                    x: 52px;
+                    y: 36px;
+                    width: parent.width - 52px - 8px;
+                    height: 20px;
+                    text: root.quick-state == 0 ? "Reading…"
+                        : root.quick-state == 2 ? root.busy-left
+                        : root.quick-state == 3 ? root.done-sub
+                        : root.quick-state == 4 ? root.error-text
+                        : "Copy a file, then press the shortcut";
+                    font-size: 13px;
+                    color: root.quick-state == 4 ? Theme.bad : Theme.label-2;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                // Open the full window, close.
+                IconBtn {
+                    x: parent.width - 68px;
+                    y: 14px;
+                    icon: "M14 4h6v6M20 4l-6.5 6.5M10 20H4v-6M4 20l6.5-6.5";
+                    tip: "Open Kompacter";
+                    tip-below: true;
+                    clicked => { root.quick-expand(); }
+                }
+                IconBtn {
+                    x: parent.width - 32px;
+                    y: 14px;
+                    icon: Icons.x;
+                    clicked => { root.escape(); }
+                }
+
+                // Bottom row.
+                if root.quick-state == 1: HorizontalLayout {
+                    y: 76px;
+                    height: 44px;
+                    spacing: 8px;
+                    Btn {
+                        text: root.guard ? "Compress & paste" : root.compress-label;
+                        icon: Icons.squeeze;
+                        primary: true;
+                        large: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.compress(); }
+                    }
+                    if root.can-trim: Btn {
+                        text: "Trim";
+                        icon: Icons.scissors;
+                        large: true;
+                        clicked => { root.quick-trim(); }
+                    }
+                }
+                // Paste guard: or paste the original after all.
+                if root.quick-state == 1 && root.guard: HorizontalLayout {
+                    y: 126px;
+                    height: 32px;
+                    alignment: center;
+                    Btn {
+                        text: "Paste anyway";
+                        plain: true;
+                        clicked => { root.paste-anyway(); }
+                    }
+                }
+                if root.quick-state == 0 || root.quick-state == 2: Rectangle {
+                    y: 76px;
+                    height: 44px;
+                    // Progress: fills smoothly; reading shows a slow sweep.
+                    Rectangle {
+                        x: 0;
+                        y: 18px;
+                        width: parent.width - 124px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: Theme.fill;
+                        clip: true;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * (root.quick-state == 2 ? root.shown : 0);
+                            border-radius: 4px;
+                            background: Theme.accent;
+                        }
+                    }
+                    Text {
+                        x: parent.width - 118px;
+                        width: 36px;
+                        text: root.quick-state == 2 ? Math.round(root.shown * 100) + "%" : "";
+                        font-size: 12px;
+                        font-weight: 600;
+                        color: Theme.label-2;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                    if root.quick-state == 2: Btn {
+                        x: parent.width - self.width;
+                        y: 4px;
+                        width: 76px;
+                        text: "Cancel";
+                        plain: true;
+                        clicked => { root.cancel(); }
+                    }
+                }
+                if root.quick-state == 3: HorizontalLayout {
+                    y: 76px;
+                    height: 44px;
+                    spacing: 8px;
+                    Btn {
+                        text: "Show in folder";
+                        icon: Icons.open;
+                        large: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.show-in-folder(); }
+                    }
+                    Btn {
+                        text: "Done";
+                        primary: true;
+                        large: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.escape(); }
+                    }
+                }
+                if root.quick-state == 4 || root.quick-state == 5: HorizontalLayout {
+                    y: 76px;
+                    height: 44px;
+                    spacing: 8px;
+                    Btn {
+                        text: "Choose File…";
+                        icon: Icons.folder;
+                        primary: root.quick-state == 5;
+                        large: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.choose-file(); }
+                    }
+                    Btn {
+                        text: "Open Kompacter";
+                        large: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.quick-expand(); }
+                    }
+                }
+            }
+
             if root.view == View.trim: Appear {
                 width: 360px;
                 height: 624px;
@@ -1203,7 +1428,7 @@ export component AppWindow inherits Window {
                     x: 20px;
                     y: 342px;
                     width: 320px;
-                    options: ["Keep quality", "Fit to " + root.target-text];
+                    options: ["Keep quality", "Fit to " + root.target-text, "GIF"];
                     index: root.trim-mode;
                     picked(i) => {
                         root.trim-mode = i;
