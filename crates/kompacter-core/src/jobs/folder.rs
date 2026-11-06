@@ -322,3 +322,107 @@ fn walk(dir: &Path, rel: &Path, out: &mut Vec<RelAbs>) -> Result<()> {
     }
     Ok(())
 }
+
+/// Guess the kind from the extension (no probing, so a preview of a big folder is instant).
+fn guess_kind(p: &Path) -> MediaKind {
+    let ext = p
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "mp4" | "mkv" | "mov" | "avi" | "webm" | "m4v" | "wmv" | "flv" | "ts" | "mts" | "m2ts"
+        | "3gp" => MediaKind::Video,
+        "mp3" | "wav" | "flac" | "m4a" | "aac" | "ogg" | "opus" | "wma" | "aiff" => {
+            MediaKind::Audio
+        }
+        "jpg" | "jpeg" | "png" | "webp" | "bmp" | "gif" | "tif" | "tiff" | "heic" => {
+            MediaKind::Image
+        }
+        _ => MediaKind::Other,
+    }
+}
+
+/// Before → after for every file and subfolder, using the same budget sharing as `fit`
+/// (each shrinkable file gets its share of the limit; everything else stays the same).
+pub(crate) fn preview(dir: &Path, target: u64) -> Result<Vec<crate::TreeRow>> {
+    let mut files = Vec::new();
+    walk(dir, Path::new(""), &mut files)?;
+    let sized: Vec<(PathBuf, u64, bool)> = files
+        .into_iter()
+        .map(|(rel, abs)| {
+            let size = std::fs::metadata(&abs).map(|m| m.len()).unwrap_or(0);
+            let shrink = is_media(guess_kind(&abs)) || super::docs::kind(&abs).is_some();
+            (rel, size, shrink)
+        })
+        .collect();
+    let usable = (target as f64 * ZIP_SLACK) as u64;
+    let total: u64 = sized.iter().map(|f| f.1).sum();
+    let overhead = PER_ENTRY_OVERHEAD * sized.len() as u64;
+    let fixed: u64 = sized.iter().filter(|f| !f.2).map(|f| f.1).sum::<u64>() + overhead;
+    let shrink_total: u64 = sized.iter().filter(|f| f.2).map(|f| f.1).sum();
+    let needs = total + overhead > usable;
+    let budget = usable.saturating_sub(fixed);
+    let after = |size: u64, shrink: bool| {
+        if !needs || !shrink || shrink_total == 0 {
+            return size;
+        }
+        let share = (size as f64 * budget as f64 / shrink_total as f64) as u64;
+        size.min(share)
+    };
+
+    // Build the tree: folders first in walk order, each with the sum of what's inside.
+    let mut rows = vec![crate::TreeRow {
+        depth: 0,
+        name: name_of(dir),
+        is_dir: true,
+        before: 0,
+        after: 0,
+    }];
+    let mut open: Vec<PathBuf> = Vec::new(); // folders currently shown, as relative paths
+    for (rel, size, shrink) in &sized {
+        let parent = rel.parent().unwrap_or(Path::new("")).to_path_buf();
+        // Close folders we've left, open the ones we entered.
+        while open.last().is_some_and(|o| !parent.starts_with(o)) {
+            open.pop();
+        }
+        let mut walked = open.last().cloned().unwrap_or_default();
+        for part in parent.strip_prefix(&walked).unwrap_or(&parent).components() {
+            walked = walked.join(part);
+            rows.push(crate::TreeRow {
+                depth: open.len() as u32 + 1,
+                name: part.as_os_str().to_string_lossy().into_owned(),
+                is_dir: true,
+                before: 0,
+                after: 0,
+            });
+            open.push(walked.clone());
+        }
+        let a = after(*size, *shrink);
+        rows.push(crate::TreeRow {
+            depth: open.len() as u32 + 1,
+            name: rel
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            is_dir: false,
+            before: *size,
+            after: a,
+        });
+    }
+    // Fill in folder sums: each folder row adds up the rows below it that are deeper.
+    for i in (0..rows.len()).rev() {
+        if rows[i].is_dir {
+            let depth = rows[i].depth;
+            let (mut b, mut a) = (0, 0);
+            for r in rows[i + 1..].iter().take_while(|r| r.depth > depth) {
+                if !r.is_dir {
+                    b += r.before;
+                    a += r.after;
+                }
+            }
+            rows[i].before = b;
+            rows[i].after = a;
+        }
+    }
+    Ok(rows)
+}

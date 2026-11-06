@@ -60,7 +60,7 @@ Public API: `Engine::probe`, `Engine::estimate` (live numbers), `Engine::compres
 ### Key rules
 
 - ffmpeg runs only during a job, so idle cost is close to zero.
-- Results go to `<name>.kompact.<ext>`, by default in a `Kompacted` folder next to the app, cleaned after 7 days.
+- Results go to `<name>.kompacter.<ext>`, by default in a `Kompacted` folder next to the app, cleaned after 7 days.
 - Everything is local. The engine never touches the network.
 
 ## Known gaps

@@ -265,6 +265,8 @@ export component SettingsView inherits Rectangle {
                     first: true;
                     Dropdown {
                         options: ["H.264", "H.265", "AV1"];
+                        notes: ["Most compatible, plays everywhere", "Smaller files, fast on most GPUs", "Smallest files, best quality"];
+                        best: 2;
                         index: Prefs.video-index;
                         y: (parent.height - self.height) / 2;
                         picked(i) => { Prefs.set-video(i); }

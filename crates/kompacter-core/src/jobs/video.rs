@@ -182,7 +182,14 @@ impl Job<'_> {
         progress: Progress,
     ) -> Result<PathBuf> {
         let mut last = 0;
-        for attempt in 0..2 {
+        // Without a peak cap SVT-AV1 can overshoot more: start a bit lower, allow a third try.
+        let tries = if codec == VideoCodec::Av1 {
+            plan.video_kbps = (plan.video_kbps as f64 * 0.9) as u32;
+            3
+        } else {
+            2
+        };
+        for attempt in 0..tries {
             let mut a = self.head();
             let kbps = plan.video_kbps;
             match codec {
@@ -208,10 +215,14 @@ impl Job<'_> {
             }
             a.extend(args(["-pix_fmt", "yuv420p", "-b:v"]));
             a.push(format!("{kbps}k").into());
-            a.extend(args(["-maxrate"]));
-            a.push(format!("{}k", kbps * 3 / 2).into());
-            a.extend(args(["-bufsize"]));
-            a.push(format!("{}k", kbps * 2).into());
+            // x265 takes a peak cap; SVT-AV1 refuses one outside CRF mode (some versions
+            // fail to start), so AV1 relies on its own rate control plus the retry below.
+            if codec != VideoCodec::Av1 {
+                a.extend(args(["-maxrate"]));
+                a.push(format!("{}k", kbps * 3 / 2).into());
+                a.extend(args(["-bufsize"]));
+                a.push(format!("{}k", kbps * 2).into());
+            }
             self.tail(&mut a, &plan);
             let (from, to) = if attempt == 0 { (0.0, 1.0) } else { (0.6, 1.0) };
             self.ctx.ff.run(

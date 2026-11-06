@@ -101,6 +101,18 @@ pub struct Outcome {
     pub parts: Vec<PathBuf>,
 }
 
+/// One line of a folder's before → after view.
+#[derive(Debug, Clone, Serialize)]
+pub struct TreeRow {
+    /// 0 is the folder itself.
+    pub depth: u32,
+    pub name: String,
+    pub is_dir: bool,
+    pub before: u64,
+    /// Estimated (media and documents shrink to their share of the limit).
+    pub after: u64,
+}
+
 /// Live numbers for the UI. Cheap enough to recompute on every trim-handle drag.
 #[derive(Debug, Clone, Serialize)]
 pub struct Estimate {
@@ -152,6 +164,41 @@ impl Engine {
     }
 
     /// `count` small JPEG frames across a video, for the trimmer's filmstrip.
+    /// The exact frame at `t` seconds (raw RGB), for the trimmer's preview.
+    pub fn frame_at(&self, info: &MediaInfo, t: f64, height: u32) -> Result<thumbs::Frames> {
+        let size = info.video.as_ref().map_or((0, 0), |v| (v.width, v.height));
+        thumbs::frame_at(&self.ff, &info.path, size, t, height)
+    }
+
+    /// Play `start..end` silently in real time as small RGB frames (see `thumbs::play`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn play(
+        &self,
+        info: &MediaInfo,
+        start: f64,
+        end: f64,
+        height: u32,
+        fps: f64,
+        stop: &AtomicBool,
+        on_frame: &mut dyn FnMut(u32, u32, Vec<u8>) -> bool,
+    ) -> Result<()> {
+        let size = info.video.as_ref().map_or((0, 0), |v| (v.width, v.height));
+        thumbs::play(
+            &self.ff, &info.path, size, start, end, height, fps, stop, on_frame,
+        )
+    }
+
+    /// The audio of `start..end` as a WAV file, to play along with `play`.
+    pub fn audio_wav(&self, info: &MediaInfo, start: f64, end: f64, out: &Path) -> Result<()> {
+        thumbs::wav(&self.ff, &info.path, start, end, out)
+    }
+
+    /// What a folder would become: every file and subfolder with its size now and its
+    /// estimated size after (fast: no file is opened). For the before → after view.
+    pub fn folder_preview(&self, dir: &Path, target: u64) -> Result<Vec<TreeRow>> {
+        jobs::folder::preview(dir, target)
+    }
+
     /// Filmstrip frames for the trimmer (raw RGB).
     pub fn thumbnails(&self, info: &MediaInfo, count: u32, height: u32) -> Result<thumbs::Frames> {
         let size = info.video.as_ref().map_or((0, 0), |v| (v.width, v.height));
@@ -333,7 +380,7 @@ fn resolve_trim(info: &MediaInfo, trim: Option<Trim>) -> Result<Option<Trim>> {
     }
 }
 
-/// `<out_dir or input folder>/<name>.kompact` (each job adds its own extension).
+/// `<out_dir or input folder>/<name>.kompacter` (each job adds its own extension).
 fn out_base(input: &Path, out_dir: Option<&Path>) -> Result<PathBuf> {
     let dir = match out_dir {
         Some(d) => d.to_path_buf(),
@@ -352,5 +399,5 @@ fn out_base(input: &Path, out_dir: Option<&Path>) -> Result<PathBuf> {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default()
     };
-    Ok(dir.join(format!("{stem}.kompact")))
+    Ok(dir.join(format!("{stem}.kompacter")))
 }

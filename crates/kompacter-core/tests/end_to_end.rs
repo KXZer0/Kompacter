@@ -458,3 +458,32 @@ fn office_pictures_are_shrunk_and_it_stays_a_document() {
     assert!(out.by_name("word/document.xml").is_ok());
     assert!(out.by_name("word/media/image1.jpeg").is_ok());
 }
+
+#[test]
+fn folder_preview_shows_the_tree_with_sizes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Memes");
+    std::fs::create_dir_all(root.join("clips/old")).unwrap();
+    std::fs::write(root.join("a.mp4"), vec![1u8; 300_000]).unwrap();
+    std::fs::write(root.join("clips/b.mp4"), vec![1u8; 200_000]).unwrap();
+    std::fs::write(root.join("clips/old/c.png"), vec![1u8; 100_000]).unwrap();
+    std::fs::write(root.join("notes.txt"), vec![b'x'; 1_000]).unwrap();
+    let rows = Engine::default().folder_preview(&root, 300 * KB).unwrap();
+    let names: Vec<(u32, &str)> = rows.iter().map(|r| (r.depth, r.name.as_str())).collect();
+    assert_eq!(
+        names,
+        vec![
+            (0, "Memes"),
+            (1, "a.mp4"),
+            (1, "clips"),
+            (2, "b.mp4"),
+            (2, "old"),
+            (3, "c.png"),
+            (1, "notes.txt"),
+        ]
+    );
+    assert_eq!(rows[0].before, 601_000);
+    assert_eq!(rows[2].before, 300_000); // clips = b + old/c
+    assert!(rows[0].after < 300 * KB, "estimate {} fits", rows[0].after);
+    assert_eq!(rows[6].after, 1_000); // text isn't shrunk
+}

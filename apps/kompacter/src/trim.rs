@@ -5,12 +5,14 @@
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use kompacter_core::{MediaKind, Quality};
 use slint::{Image, ModelRc, Rgb8Pixel, SharedPixelBuffer, VecModel};
 
-use crate::format::{bytes, clock};
-use crate::{run, App, DetailRow, View};
+use crate::format::{bytes, clock_ms, parse_time, rate};
+use crate::{run, sys, App, DetailRow, View};
 
 #[derive(Default)]
 pub struct Trim {
@@ -19,6 +21,15 @@ pub struct Trim {
     path: RefCell<Option<PathBuf>>,
     /// "Keep quality" fits the limit at the current selection.
     keep_ok: Cell<bool>,
+    /// An exact frame is being fetched; `want` is the newest time asked for meanwhile.
+    fetching: Cell<bool>,
+    want: Cell<Option<f64>>,
+    /// Stops the playback in progress.
+    stop: RefCell<Option<Arc<AtomicBool>>>,
+}
+
+fn image(w: u32, h: u32, px: &[u8]) -> Image {
+    Image::from_rgb8(SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(px, w, h))
 }
 
 impl App {
@@ -52,11 +63,7 @@ impl App {
                         let images: Vec<Image> = f
                             .rgb
                             .iter()
-                            .map(|px| {
-                                Image::from_rgb8(SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(
-                                    px, f.width, f.height,
-                                ))
-                            })
+                            .map(|px| image(f.width, f.height, px))
                             .collect();
                         app.ui()
                             .set_thumbs(ModelRc::new(VecModel::from(images.clone())));
@@ -75,7 +82,7 @@ impl App {
     }
 
     /// Recompute the readout for the current handles and mode.
-    pub fn trim_update(&self) {
+    pub fn trim_update(self: &Rc<Self>) {
         let ui = self.ui();
         let cur = self.current.borrow();
         let Some(c) = cur.as_ref() else { return };
@@ -83,14 +90,14 @@ impl App {
         let dur = c.info.duration.max(1.0);
         let sec = (b - a).max(0.0);
         let target = self.target().bytes;
-        ui.set_trim_range(format!("{} – {} · {} s", clock(a), clock(b), sec.round()).into());
+        ui.set_trim_range(format!("{sec:.1} s").into());
+        ui.set_trim_a_text(clock_ms(a).into());
+        ui.set_trim_b_text(clock_ms(b).into());
 
-        // Preview: the frame under the handle being moved.
-        let frames = self.trim.frames.borrow();
-        if !frames.is_empty() {
+        // Preview: the exact frame under the handle being moved (while not playing).
+        if !ui.get_trim_playing() {
             let t = if ui.get_trim_active() == 0 { a } else { b };
-            let i = ((t / dur) * (frames.len() - 1) as f64).round() as usize;
-            ui.set_trim_frame(frames[i.min(frames.len() - 1)].clone());
+            self.show_frame(t);
         }
 
         let mut opts = self.options(target);
@@ -216,6 +223,150 @@ impl App {
         }
     }
 
+    /// Show the exact frame at `t`. One fetch at a time; while one runs, only the newest
+    /// request is kept, so dragging stays smooth and always ends on the right frame.
+    fn show_frame(self: &Rc<Self>, t: f64) {
+        let ui = self.ui();
+        ui.set_trim_time(clock_ms(t).into());
+        if self.trim.fetching.get() {
+            self.trim.want.set(Some(t));
+            return;
+        }
+        let Some(info) = self.current.borrow().as_ref().map(|c| c.info.clone()) else {
+            return;
+        };
+        if !matches!(info.kind, MediaKind::Video) {
+            return;
+        }
+        self.trim.fetching.set(true);
+        let engine = self.engine.clone();
+        let weak = Rc::downgrade(self);
+        run(
+            move || engine.frame_at(&info, t, 360).ok(),
+            move |f| {
+                let Some(app) = weak.upgrade() else { return };
+                app.trim.fetching.set(false);
+                let ui = app.ui();
+                if let Some(f) = f.filter(|_| !ui.get_trim_playing()) {
+                    ui.set_trim_frame(image(f.width, f.height, &f.rgb[0]));
+                }
+                if let Some(next) = app.trim.want.take() {
+                    app.show_frame(next);
+                }
+            },
+        );
+    }
+
+    /// Play or pause the selection (with sound unless it's muted).
+    pub fn trim_play(self: &Rc<Self>) {
+        let ui = self.ui();
+        if ui.get_trim_playing() {
+            self.trim_stop();
+            return;
+        }
+        let Some(info) = self.current.borrow().as_ref().map(|c| c.info.clone()) else {
+            return;
+        };
+        if !matches!(info.kind, MediaKind::Video) {
+            return;
+        }
+        let (a, b) = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
+        let sound = ui.get_trim_sound() && info.audio.is_some();
+        let stop = Arc::new(AtomicBool::new(false));
+        *self.trim.stop.borrow_mut() = Some(stop.clone());
+        ui.set_trim_playing(true);
+        let engine = self.engine.clone();
+        let w = self.ui.clone();
+        let weak = Rc::downgrade(self);
+        let fps = 24.0;
+        run(
+            move || {
+                let tmp = tempfile::tempdir().ok();
+                let wav = tmp.as_ref().map(|d| d.path().join("sound.wav"));
+                if let (true, Some(wav)) = (sound, &wav) {
+                    if engine.audio_wav(&info, a, b, wav).is_ok() {
+                        sys::play_wav(wav);
+                    }
+                }
+                let mut n = 0u32;
+                let _ = engine.play(&info, a, b, 360, fps, &stop, &mut |fw, fh, px| {
+                    let t = a + n as f64 / fps;
+                    n += 1;
+                    let w = w.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = w.upgrade() {
+                            if ui.get_trim_playing() {
+                                ui.set_trim_frame(image(fw, fh, &px));
+                                ui.set_trim_time(clock_ms(t).into());
+                            }
+                        }
+                    });
+                    !stop.load(Ordering::Relaxed)
+                });
+                sys::stop_sound();
+                drop(tmp);
+            },
+            move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.trim_stop();
+                }
+            },
+        );
+    }
+
+    /// Stop playback and go back to the frame under the active handle.
+    pub fn trim_stop(self: &Rc<Self>) {
+        if let Some(stop) = self.trim.stop.borrow_mut().take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+        sys::stop_sound();
+        let ui = self.ui();
+        if ui.get_trim_playing() {
+            ui.set_trim_playing(false);
+            let t = if ui.get_trim_active() == 0 {
+                ui.get_trim_a()
+            } else {
+                ui.get_trim_b()
+            };
+            self.show_frame(t as f64);
+        }
+    }
+
+    /// A typed start (side 0) or end (side 1) time.
+    pub fn trim_set_time(self: &Rc<Self>, side: i32, text: &str) {
+        let ui = self.ui();
+        let dur = ui.get_trim_dur() as f64;
+        if let Some(t) = parse_time(text) {
+            let (a, b) = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
+            if side == 0 {
+                ui.set_trim_a(t.clamp(0.0, (b - 0.1).max(0.0)) as f32);
+            } else {
+                ui.set_trim_b(t.clamp(a + 0.1, dur) as f32);
+            }
+            ui.set_trim_active(side);
+        }
+        self.trim_update();
+    }
+
+    /// Move the active handle one frame (or one second with Shift).
+    pub fn trim_nudge(self: &Rc<Self>, dir: i32, big: bool) {
+        let ui = self.ui();
+        let fps = self
+            .current
+            .borrow()
+            .as_ref()
+            .and_then(|c| c.info.video.as_ref().map(|v| v.fps))
+            .filter(|f| *f > 0.0)
+            .unwrap_or(30.0);
+        let step = if big { 1.0 } else { 1.0 / fps } * dir as f64;
+        let text = if ui.get_trim_active() == 0 {
+            clock_ms(ui.get_trim_a() as f64 + step)
+        } else {
+            clock_ms(ui.get_trim_b() as f64 + step)
+        };
+        self.trim_set_time(ui.get_trim_active(), &text);
+    }
+
     fn set_details(&self, rows: Vec<DetailRow>) {
         self.ui()
             .set_trim_details(ModelRc::new(VecModel::from(rows)));
@@ -239,15 +390,5 @@ fn row(label: &str, value: String) -> DetailRow {
     DetailRow {
         label: label.into(),
         value: value.into(),
-    }
-}
-
-/// "2.4 Mbps" / "900 kbps".
-fn rate(kbps: u32) -> String {
-    if kbps >= 1000 {
-        let m = format!("{:.1}", kbps as f64 / 1000.0);
-        format!("{} Mbps", m.trim_end_matches(".0"))
-    } else {
-        format!("{kbps} kbps")
     }
 }

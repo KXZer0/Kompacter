@@ -257,6 +257,11 @@ export component Switch inherits Rectangle {
 export component Dropdown inherits Rectangle {
     in property <[string]> options;
     in property <int> index;
+    /// Optional one-line note under each option in the menu.
+    in property <[string]> notes;
+    /// Option that gets a green "Best" label (-1: none).
+    in property <int> best: -1;
+    in property <length> menu-width: notes.length > 0 ? 250px : 180px;
     callback picked(int);
     height: 28px;
     width: row.preferred-width;
@@ -289,9 +294,9 @@ export component Dropdown inherits Rectangle {
     }
     menu := PopupWindow {
         // Opens over the button, right-aligned, like a macOS pop-up menu.
-        x: root.width - 180px;
+        x: root.width - root.menu-width;
         y: -4px;
-        width: 180px;
+        width: root.menu-width;
         Rectangle {
             property <bool> on;
             Timer {
@@ -313,8 +318,9 @@ export component Dropdown inherits Rectangle {
             animate transform-scale { duration: 220ms; easing: ease-out-back; }
             VerticalLayout {
                 padding: 4px;
-                for opt[i] in root.options: Rectangle {
-                    height: 28px;
+                for opt[i] in root.options: opt-row := Rectangle {
+                    property <string> note: i < root.notes.length ? root.notes[i] : "";
+                    height: self.note != "" ? 44px : 28px;
                     border-radius: 6px;
                     background: item.has-hover ? Theme.accent : transparent;
                     HorizontalLayout {
@@ -328,12 +334,42 @@ export component Dropdown inherits Rectangle {
                             color: item.has-hover ? white : Theme.label;
                             opacity: i == root.index ? 1 : 0;
                         }
-                        Text {
-                            text: opt;
-                            font-size: 13px;
-                            color: item.has-hover ? white : Theme.label;
-                            vertical-alignment: center;
+                        VerticalLayout {
+                            alignment: center;
                             horizontal-stretch: 1;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: opt;
+                                    font-size: 13px;
+                                    font-weight: opt-row.note != "" ? 600 : 400;
+                                    color: item.has-hover ? white : Theme.label;
+                                    vertical-alignment: center;
+                                }
+                                // Green outlined "Best" label.
+                                if i == root.best: Rectangle {
+                                    width: best-text.preferred-width + 10px;
+                                    height: 16px;
+                                    y: 1px;
+                                    border-radius: 8px;
+                                    border-width: 1px;
+                                    border-color: item.has-hover ? white : Theme.ok;
+                                    best-text := Text {
+                                        text: "Best";
+                                        font-size: 10px;
+                                        font-weight: 700;
+                                        color: item.has-hover ? white : Theme.ok;
+                                    }
+                                }
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                            if opt-row.note != "": Text {
+                                text: opt-row.note;
+                                font-size: 11px;
+                                color: item.has-hover ? #ffffffd9 : Theme.label-2;
+                            }
                         }
                     }
                     item := TouchArea {

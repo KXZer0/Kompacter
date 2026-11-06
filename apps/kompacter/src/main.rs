@@ -92,6 +92,10 @@ pub struct App {
     pub result: RefCell<Option<PathBuf>>,
     /// The trim range of the last compress (so "Split into parts" can reuse it).
     pub last_range: Cell<Option<(f64, f64)>>,
+    /// Several files at once: each is compressed to the limit on its own.
+    pub batch: RefCell<Vec<PathBuf>>,
+    /// Files dropped together arrive one event each; they're collected briefly.
+    pub dropped: RefCell<Vec<PathBuf>>,
     pub started: Cell<Option<Instant>>,
     /// A file dialog is open: don't auto-hide while the user picks.
     pub modal: Cell<bool>,
@@ -235,7 +239,23 @@ impl App {
 
     pub fn another(&self) {
         *self.current.borrow_mut() = None;
+        self.batch.borrow_mut().clear();
         self.set_view(View::Idle);
+    }
+
+    /// Native picker for one or more files, on a worker thread.
+    pub fn pick_files(self: &Rc<Self>) {
+        self.modal.set(true);
+        let weak = Rc::downgrade(self);
+        run(
+            || rfd::FileDialog::new().pick_files().unwrap_or_default(),
+            move |picked| {
+                let Some(app) = weak.upgrade() else { return };
+                app.modal.set(false);
+                app.show();
+                app.open_many(picked);
+            },
+        );
     }
 
     /// Native file or folder picker on a worker thread, so the window keeps drawing.
@@ -393,6 +413,8 @@ fn main() -> Result<(), slint::PlatformError> {
         current: RefCell::new(None),
         result: RefCell::new(None),
         last_range: Cell::new(None),
+        batch: RefCell::new(Vec::new()),
+        dropped: RefCell::new(Vec::new()),
         started: Cell::new(None),
         modal: Cell::new(false),
         auto_hidden: Cell::new(None),
@@ -444,8 +466,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         && ui.get_view() != View::Busy
                     {
                         drop(s);
-                        a.auto_hidden.set(Some(Instant::now()));
-                        a.close();
+                        a.away();
                     }
                 }
                 winit::event::WindowEvent::HoveredFile(_) => {
@@ -460,7 +481,18 @@ fn main() -> Result<(), slint::PlatformError> {
                 winit::event::WindowEvent::HoveredFileCancelled => ui.set_dragging(false),
                 winit::event::WindowEvent::DroppedFile(p) => {
                     ui.set_dragging(false);
-                    a.open(p.clone());
+                    // One event per file: collect them for a moment, then open them all.
+                    let first = a.dropped.borrow().is_empty();
+                    a.dropped.borrow_mut().push(p.clone());
+                    if first {
+                        let weak = Rc::downgrade(&a);
+                        slint::Timer::single_shot(Duration::from_millis(120), move || {
+                            if let Some(a) = weak.upgrade() {
+                                let files = std::mem::take(&mut *a.dropped.borrow_mut());
+                                a.open_many(files);
+                            }
+                        });
+                    }
                 }
                 winit::event::WindowEvent::ThemeChanged(_) => a.apply_theme(),
                 _ => {}
@@ -473,11 +505,12 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let prefs = ui.global::<Prefs>();
         let a = app.clone();
-        ui.on_choose_file(move || a.pick(false, |app, p| app.open(p)));
+        ui.on_choose_file(move || a.pick_files());
         let a = app.clone();
         ui.on_paste(move || {
-            if let Some(p) = sys::clipboard_files().into_iter().next() {
-                a.open(p);
+            let files = sys::clipboard_files();
+            if !files.is_empty() {
+                a.open_many(files);
             } else {
                 // Say it in the title for a moment.
                 let ui = a.ui();
@@ -491,7 +524,13 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
         let a = app.clone();
-        ui.on_compress(move || a.compress(None, false, false));
+        ui.on_compress(move || {
+            if a.batch.borrow().is_empty() {
+                a.compress(None, false, false)
+            } else {
+                a.compress_batch()
+            }
+        });
         let a = app.clone();
         ui.on_split(move || {
             let range = a.last_range.get();
@@ -540,11 +579,23 @@ fn main() -> Result<(), slint::PlatformError> {
         let a = app.clone();
         ui.on_open_trim(move || a.open_trim());
         let a = app.clone();
-        ui.on_close_trim(move || a.set_view(View::Big));
+        ui.on_close_trim(move || {
+            a.trim_stop();
+            a.set_view(View::Big)
+        });
         let a = app.clone();
         ui.on_trim_changed(move || a.trim_update());
         let a = app.clone();
-        ui.on_trim_compress(move || a.trim_compress());
+        ui.on_trim_compress(move || {
+            a.trim_stop();
+            a.trim_compress()
+        });
+        let a = app.clone();
+        ui.on_trim_play(move || a.trim_play());
+        let a = app.clone();
+        ui.on_trim_set_time(move |side, text| a.trim_set_time(side, &text));
+        let a = app.clone();
+        ui.on_trim_nudge(move |dir, big| a.trim_nudge(dir, big));
         let a = app.clone();
         ui.on_escape(move || match a.ui().get_view() {
             View::Settings => a.close_settings(),
@@ -707,11 +758,12 @@ fn demo(app: &Rc<App>, which: &str) {
     ui.set_meter_fill(0.92);
     ui.set_meter_limit(0.15);
     ui.set_over_text("108 MB too big".into());
+    ui.set_sum_before("128 MB".into());
+    ui.set_sum_after("≤ 20 MB".into());
     ui.set_compress_label("Compress to 720p".into());
     ui.set_can_trim(true);
     ui.set_progress(0.42);
     ui.set_squeeze(0.42);
-    ui.set_intro(1.0);
     ui.set_busy_left("About 40 s left".into());
     ui.set_done_ok(true);
     ui.set_done_title("Copied".into());
@@ -741,6 +793,43 @@ fn demo(app: &Rc<App>, which: &str) {
     ])));
     match which {
         "big" => ui.set_view(View::Big),
+        "details" | "folder" => {
+            let r = |depth: i32, icon: &str, label: &str, before: &str, after: &str| DiffRow {
+                depth,
+                icon: icon.into(),
+                label: label.into(),
+                before: before.into(),
+                after: after.into(),
+                changed: before != after,
+            };
+            let rows = if which == "folder" {
+                ui.set_file_name("Memes".into());
+                ui.set_file_meta("84.1 MB".into());
+                ui.set_file_kind("folder".into());
+                vec![
+                    r(0, "dir", "Memes", "84.1 MB", "19.6 MB"),
+                    r(1, "dir", "clips", "61.2 MB", "13.9 MB"),
+                    r(2, "file", "funny cat.mp4", "40.8 MB", "9.3 MB"),
+                    r(2, "file", "fail.mp4", "20.4 MB", "4.6 MB"),
+                    r(1, "dir", "pics", "22.6 MB", "5.4 MB"),
+                    r(2, "file", "dog.png", "12.1 MB", "2.8 MB"),
+                    r(2, "file", "meme.jpg", "10.5 MB", "2.6 MB"),
+                    r(1, "file", "readme.txt", "3 KB", "3 KB"),
+                ]
+            } else {
+                vec![
+                    r(0, "", "Resolution", "2560×1440", "1280×720"),
+                    r(0, "", "Frame rate", "60 fps", "30 fps"),
+                    r(0, "", "Codec", "H.264", "AV1"),
+                    r(0, "", "Bitrate", "10 Mbps", "1.6 Mbps"),
+                    r(0, "", "Size", "128 MB", "≤ 20 MB"),
+                ]
+            };
+            ui.set_diff(ModelRc::new(VecModel::from(rows)));
+            ui.set_diff_open(true);
+            ui.set_compress_label("Compress".into());
+            ui.set_view(View::Big);
+        }
         "split" => {
             ui.set_split_count(3);
             ui.set_view(View::Big);
@@ -758,6 +847,10 @@ fn demo(app: &Rc<App>, which: &str) {
             ui.set_view(View::Done);
         }
         "trim" => {
+            ui.set_trim_a_text("0:12.000".into());
+            ui.set_trim_b_text("0:40.000".into());
+            ui.set_trim_range("28.0 s".into());
+            ui.set_trim_time("0:12.000".into());
             ui.set_win_h(624.0);
             ui.set_view(View::Trim);
         }

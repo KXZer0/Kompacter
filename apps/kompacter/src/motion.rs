@@ -19,11 +19,11 @@ use crate::{format, sys, App, AppWindow, View};
 pub struct Motion {
     ticker: slint::Timer,
     slide: slint::Timer,
+    /// Watches what has focus after Kompacter lost it (see `away`).
+    away: slint::Timer,
     /// Bumped on every show/close, so a stale close never hides a reopened window.
     generation: Cell<u32>,
     last: Cell<Option<Instant>>,
-    squeeze: Cell<f32>,
-    intro: Cell<f32>,
     dash: Cell<f64>,
     look: Cell<(f32, f32)>,
 }
@@ -74,11 +74,9 @@ impl App {
         let ui = self.ui();
         let was = ui.get_view();
         ui.set_view(v);
-        if v == View::Busy && was != View::Busy {
-            self.motion.squeeze.set(0.0);
-            self.motion.intro.set(0.0);
+        // Reset the press while it's out of sight, so the next run starts open.
+        if was == View::Busy && v != View::Busy {
             ui.set_squeeze(0.0);
-            ui.set_intro(0.0);
         }
         let want = view_height(v);
         let have = ui.get_win_h();
@@ -137,6 +135,38 @@ impl App {
             self.slide(h, x, y, scale, true, generation);
         }
         self.wake();
+    }
+
+    /// Kompacter lost focus (auto-hide on). Don't hide while the user is finding a file to
+    /// drag in (File Explorer, desktop, a file dialog, the taskbar): wait, and hide once
+    /// they've moved on to something else.
+    pub fn away(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.motion.away.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(200),
+            move || {
+                let Some(app) = weak.upgrade() else { return };
+                let ui = app.ui();
+                let focused = ui
+                    .window()
+                    .with_winit_window(|w| w.has_focus())
+                    .unwrap_or(false);
+                if focused || !ui.window().is_visible() {
+                    app.motion.away.stop();
+                    return;
+                }
+                let waiting = app.modal.get()
+                    || ui.get_dragging()
+                    || ui.get_view() == View::Busy
+                    || sys::browsing_files();
+                if !waiting {
+                    app.motion.away.stop();
+                    app.auto_hidden.set(Some(Instant::now()));
+                    app.close();
+                }
+            },
+        );
     }
 
     /// Fold or slide away, then hide.
@@ -293,20 +323,6 @@ impl App {
             .replace(Some(now))
             .map_or(0.016, |l| now.duration_since(l).as_secs_f32().min(0.1));
         let view = ui.get_view();
-        let mut busy = false;
-
-        // The press follows real progress smoothly instead of jumping in steps.
-        if view == View::Busy {
-            busy = true;
-            let target = ui.get_progress().clamp(0.0, 1.0);
-            let cur = self.motion.squeeze.get();
-            let next = cur + (target - cur) * (1.0 - (-dt / 0.22).exp());
-            self.motion.squeeze.set(next);
-            ui.set_squeeze(next);
-            let i = (self.motion.intro.get() + dt / 0.55).min(1.0);
-            self.motion.intro.set(i);
-            ui.set_intro(ease_out(i));
-        }
 
         if self.rich {
             // Eyes follow the mouse, anywhere on screen.
@@ -324,7 +340,9 @@ impl App {
                     124.0
                 };
                 let bx = pos.x as f32 + (inset + 180.0) * scale;
-                let by = pos.y as f32 + (inset + 50.0 + stage_h / 2.0) * scale;
+                // The idle blob sits a bit higher, above the drop hint.
+                let lift = if view == View::Idle { 40.0 } else { 0.0 };
+                let by = pos.y as f32 + (inset + 50.0 + stage_h / 2.0 - lift) * scale;
                 let lx = ((cx as f32 - bx) / (240.0 * scale)).clamp(-1.0, 1.0);
                 let ly = ((cy as f32 - by) / (240.0 * scale)).clamp(-1.0, 1.0);
                 let (ox, oy) = self.motion.look.get();
@@ -341,6 +359,6 @@ impl App {
                 ui.set_dash_path(format::dashed_round_rect(308.0, 300.0, 28.0, 6.0, 7.0, d).into());
             }
         }
-        busy || self.rich
+        self.rich
     }
 }

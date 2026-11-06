@@ -8,7 +8,7 @@ use crate::settings::Settings;
 /// Compressed files in Kompacter's own folder are kept this long, then deleted.
 const KEEP: Duration = Duration::from_secs(7 * 24 * 3600);
 
-/// Where results go (setting `output`). Files keep the `name.kompact.ext` name.
+/// Where results go (setting `output`). Files keep the `name.kompacter.ext` name.
 /// - "app" (default): Kompacter's own folder (see `app_dir`), cleaned after 7 days
 /// - "beside": a `Kompacted` folder next to the original
 /// - "custom": the folder in `output_dir`
