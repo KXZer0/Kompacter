@@ -28,7 +28,7 @@ use kompacter_core::{
     VideoCodec,
 };
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::format::bytes;
 use crate::settings::Settings;
@@ -154,7 +154,18 @@ impl App {
             })
             .collect();
         let index = list.iter().position(|t| t.id == s.preset).unwrap_or(0);
-        ui.set_presets(ModelRc::new(VecModel::from(items)));
+        // Update rows in place: replacing the list would rebuild every row, dropping a
+        // held button or the cursor in the Custom box.
+        let model = ui.get_presets();
+        if model.row_count() == items.len() {
+            for (i, item) in items.into_iter().enumerate() {
+                if model.row_data(i).as_ref() != Some(&item) {
+                    model.set_row_data(i, item);
+                }
+            }
+        } else {
+            ui.set_presets(ModelRc::new(VecModel::from(items)));
+        }
         ui.set_preset_index(index as i32);
         ui.set_target_text(bytes(list[index].bytes).into());
 
@@ -597,7 +608,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let a = app.clone();
         ui.on_trim_drag_start(move || a.trim_drag_start());
         let a = app.clone();
-        ui.on_trim_drag_end(move || a.trim_drag_end());
+        ui.on_trim_drag_end(move |playhead| a.trim_drag_end(playhead));
         let a = app.clone();
         ui.on_trim_set_time(move |side, text| a.trim_set_time(side, &text));
         let a = app.clone();
@@ -735,6 +746,11 @@ fn main() -> Result<(), slint::PlatformError> {
     #[cfg(debug_assertions)]
     if let Ok(v) = std::env::var("KOMPACTER_DEMO") {
         demo(&app, &v);
+    }
+    // Dev builds only: open this file at startup (for testing on a virtual display).
+    #[cfg(debug_assertions)]
+    if let Ok(p) = std::env::var("KOMPACTER_OPEN") {
+        app.open(PathBuf::from(p));
     }
     if !quiet {
         app.show();

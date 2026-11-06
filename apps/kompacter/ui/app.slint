@@ -214,7 +214,7 @@ export component AppWindow inherits Window {
     callback trim-play();
     callback trim-seek(float);
     callback trim-drag-start();
-    callback trim-drag-end();
+    callback trim-drag-end(bool);
     callback trim-set-time(int, string);
     callback trim-nudge(int, bool);
     callback escape();
@@ -238,7 +238,8 @@ export component AppWindow inherits Window {
         : view == View.done ? (done-ok ? Mood.happy : Mood.worried)
         : Mood.idle;
     property <bool> stage-lg: view == View.idle || view == View.done;
-    property <bool> stage-md: view == View.reading || (view == View.big && !diff-open) || view == View.error;
+    property <bool> stage-md: view == View.reading || view == View.big || view == View.error;
+    property <bool> stage-hidden: view == View.big && diff-open;
     property <length> stage-h: stage-lg ? 312px : 124px;
 
     keys := FocusScope {
@@ -445,7 +446,9 @@ export component AppWindow inherits Window {
                 y: 50px;
                 width: 328px;
                 height: root.stage-h;
-                animate height { duration: Fx.rich ? 300ms : 80ms; easing: ease-in-out; }
+                animate height { duration: 300ms; easing: ease-out-back; }
+                opacity: root.stage-hidden ? 0 : 1;
+                animate opacity { duration: Fx.rich ? 200ms : 0ms; easing: ease-out; }
                 DropZone {
                     x: 10px;
                     y: 6px;
@@ -487,6 +490,7 @@ export component AppWindow inherits Window {
                     look-y: root.look-y;
                     hop: root.hop;
                     chomp: root.chomp;
+                    touchable: !root.stage-hidden;
                 }
                 if Fx.rich && root.view == View.done && root.done-ok: Sparks {
                     width: parent.width;
@@ -502,6 +506,7 @@ export component AppWindow inherits Window {
                     mood: Mood.busy;
                     s: 0.85;
                     c: root.shown;
+                    touchable: false;
                     cx: parent.width / 2;
                     cy: parent.height / 2;
                 }
@@ -550,9 +555,13 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // Big file. "Show more" glides the content up over the blob and cross-fades the
+            // bar and summary into the before → after list. Nothing is removed and re-added,
+            // so the bar fills once when the view opens and never replays.
             if root.view == View.big: Appear {
                 x: 20px;
-                y: 52px;
+                y: root.diff-open ? 52px : 186px;
+                animate y { duration: Fx.rich ? 380ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
                 width: 320px;
                 height: 400px;
                 // File card.
@@ -629,7 +638,7 @@ export component AppWindow inherits Window {
                             y: 3px;
                             color: more-ta.has-hover ? Theme.label : Theme.label-2;
                             transform-rotation: root.diff-open ? 180deg : 0deg;
-                            animate transform-rotation { duration: Fx.rich ? 260ms : 80ms; easing: ease-out; }
+                            animate transform-rotation { duration: Fx.rich ? 340ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
                         }
                     }
                     more-ta := TouchArea {
@@ -637,20 +646,24 @@ export component AppWindow inherits Window {
                         clicked => { root.diff-open = !root.diff-open; }
                     }
                 }
-                // Details list: stays mounted, height animates up/down (no replay, no clip pop).
-                if root.diff.length > 0: Rectangle {
-                    x: 0;
+                // The before → after list: fades in a moment after the bar fades out.
+                if root.diff.length > 0: Flickable {
                     y: 80px;
                     width: parent.width;
-                    height: root.diff-open ? 220px : 0;
-                    clip: true;
-                    opacity: root.diff-open ? 1 : 0;
-                    animate height { duration: Fx.rich ? 280ms : 80ms; easing: ease-in-out; }
-                    animate opacity { duration: Fx.rich ? 200ms : 60ms; easing: ease-out; }
-                    Flickable {
-                        y: 0;
-                        width: parent.width;
-                        height: 220px;
+                    height: 220px;
+                    interactive: root.diff-open;
+                    opacity: 0;
+                    states [
+                        open when root.diff-open: {
+                            opacity: 1;
+                            in {
+                                animate opacity { duration: Fx.rich ? 240ms : 0ms; delay: Fx.rich ? 120ms : 0ms; easing: ease-out; }
+                            }
+                            out {
+                                animate opacity { duration: Fx.rich ? 90ms : 0ms; easing: ease-in; }
+                            }
+                        }
+                    ]
                     VerticalLayout {
                         spacing: 0;
                         for r in root.diff: HorizontalLayout {
@@ -692,22 +705,23 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    }
                 }
-                // Size against the limit; the bar fills once when the view opens and
-                // never replays from "Show more"/"Show less" (node stays mounted).
-                meter-box := Rectangle {
-                    x: 0;
-                    y: 80px;
-                    width: parent.width;
-                    height: root.diff-open ? 0 : 58px;
-                    clip: true;
-                    opacity: root.diff-open ? 0 : 1;
-                    animate height { duration: Fx.rich ? 280ms : 80ms; easing: ease-in-out; }
-                    animate opacity { duration: Fx.rich ? 200ms : 60ms; easing: ease-out; }
+                // Size against the limit; the bar fills when the view appears.
                 meter := Rectangle {
-                    y: 0;
+                    y: 80px;
                     height: 28px;
+                    // Fades out (stays in place, keeps its fill) while the details show.
+                    states [
+                        hidden when root.diff-open: {
+                            opacity: 0;
+                            in {
+                                animate opacity { duration: Fx.rich ? 90ms : 0ms; easing: ease-in; }
+                            }
+                            out {
+                                animate opacity { duration: Fx.rich ? 240ms : 0ms; delay: Fx.rich ? 120ms : 0ms; easing: ease-out; }
+                            }
+                        }
+                    ]
                     property <bool> shown;
                     Timer {
                         interval: 60ms;
@@ -733,13 +747,13 @@ export component AppWindow inherits Window {
                         Rectangle {
                             x: 0;
                             width: meter.shown ? parent.width * root.meter-fill : 0;
-                            animate width { duration: Fx.rich ? 700ms : 80ms; easing: ease-out; }
+                            animate width { duration: 700ms; easing: ease-out; }
                             background: Theme.bad;
                         }
                         Rectangle {
                             x: 0;
                             width: meter.shown ? parent.width * Math.min(root.meter-fill, root.meter-limit) : 0;
-                            animate width { duration: Fx.rich ? 700ms : 80ms; easing: ease-out; }
+                            animate width { duration: 700ms; easing: ease-out; }
                             background: Theme.accent;
                         }
                     }
@@ -752,21 +766,22 @@ export component AppWindow inherits Window {
                         background: Theme.label;
                     }
                 }
-                }
                 // What it becomes, big: before (grey) → after (green); how far over, on the right.
-                summary-box := Rectangle {
-                    x: 0;
+                HorizontalLayout {
                     y: 114px;
                     width: parent.width;
-                    height: root.diff-open ? 0 : 24px;
-                    clip: true;
-                    opacity: root.diff-open ? 0 : 1;
-                    animate height { duration: Fx.rich ? 280ms : 80ms; easing: ease-in-out; }
-                    animate opacity { duration: Fx.rich ? 200ms : 60ms; easing: ease-out; }
-                HorizontalLayout {
-                    y: 0;
-                    width: parent.width;
                     height: 24px;
+                    states [
+                        hidden when root.diff-open: {
+                            opacity: 0;
+                            in {
+                                animate opacity { duration: Fx.rich ? 90ms : 0ms; easing: ease-in; }
+                            }
+                            out {
+                                animate opacity { duration: Fx.rich ? 240ms : 0ms; delay: Fx.rich ? 120ms : 0ms; easing: ease-out; }
+                            }
+                        }
+                    ]
                     spacing: 6px;
                     Text {
                         text: root.sum-before;
@@ -798,10 +813,10 @@ export component AppWindow inherits Window {
                         vertical-alignment: center;
                     }
                 }
-                }
                 // Too long for one good file: trim it, or split it into parts that each fit.
                 if root.split-count > 1: HorizontalLayout {
                     y: root.diff-open ? 312px : 152px;
+                    animate y { duration: Fx.rich ? 380ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
                     height: 44px;
                     spacing: 8px;
                     Btn {
@@ -822,6 +837,7 @@ export component AppWindow inherits Window {
                 }
                 if root.split-count > 1: HorizontalLayout {
                     y: root.diff-open ? 362px : 206px;
+                    animate y { duration: Fx.rich ? 380ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
                     height: 36px;
                     alignment: center;
                     Btn {
@@ -832,7 +848,7 @@ export component AppWindow inherits Window {
                 }
                 if root.split-count <= 1: HorizontalLayout {
                     y: root.diff-open ? 312px : 152px;
-                    animate y { duration: Fx.rich ? 280ms : 80ms; easing: ease-in-out; }
+                    animate y { duration: Fx.rich ? 380ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
                     height: 44px;
                     spacing: 8px;
                     if root.can-trim && root.trim-first: Btn {
@@ -859,13 +875,20 @@ export component AppWindow inherits Window {
                         clicked => { root.open-trim(); }
                     }
                 }
-                if root.foot-text != "" && root.split-count <= 1: foot := Text {
+                if root.foot-text != "" && root.split-count <= 1: Text {
                     y: 206px;
                     width: parent.width;
-                    height: root.diff-open ? 0 : 24px;
-                    opacity: root.diff-open ? 0 : 1;
-                    clip: true;
-                    animate opacity { duration: Fx.rich ? 200ms : 60ms; easing: ease-out; }
+                    states [
+                        hidden when root.diff-open: {
+                            opacity: 0;
+                            in {
+                                animate opacity { duration: Fx.rich ? 90ms : 0ms; easing: ease-in; }
+                            }
+                            out {
+                                animate opacity { duration: Fx.rich ? 240ms : 0ms; delay: Fx.rich ? 120ms : 0ms; easing: ease-out; }
+                            }
+                        }
+                    ]
                     text: root.foot-text;
                     font-size: 12px;
                     color: Theme.label-2;
@@ -912,14 +935,10 @@ export component AppWindow inherits Window {
                     pv := TouchArea {
                         clicked => { root.trim-play(); }
                     }
-                    // Controls appear while the pointer is over the video or while
-                    // playing. (Hover on the Rectangle, not the TouchArea: hovering a
-                    // nested TouchArea like the sound button made pv.has-hover false
-                    // and the controls vanished mid-playback.)
-                    ov := Rectangle {
-                        width: parent.width;
-                        height: parent.height;
-                        opacity: ov.has-hover || root.trim-playing ? 1 : 0;
+                    // Controls appear while the pointer is over the video. The sound button
+                    // has its own touch area on top, so count hovering it too.
+                    Rectangle {
+                        opacity: pv.has-hover || snd.has-hover ? 1 : 0;
                         animate opacity { duration: 160ms; }
                         // Play / pause.
                         Rectangle {
@@ -1017,51 +1036,6 @@ export component AppWindow inherits Window {
                         border-color: Theme.accent;
                         border-radius: 6px;
                     }
-                    // Playhead: where the video is right now. White vertical line
-                    // across the strip; the chevron below is its handle, so seeking
-                    // never grabs the trim handles by mistake.
-                    Rectangle {
-                        x: strip.width * Math.clamp(root.trim-pos / Math.max(0.001, root.trim-dur), 0, 1) - 1px;
-                        y: -2px;
-                        width: 2px;
-                        height: 52px;
-                        border-radius: 1px;
-                        background: #ffffff;
-                        drop-shadow-blur: 3px;
-                        drop-shadow-color: #00000099;
-                    }
-                    // Chevron handle under the playhead (the only seek handle).
-                    Rectangle {
-                        x: strip.width * Math.clamp(root.trim-pos / Math.max(0.001, root.trim-dur), 0, 1) - 10px;
-                        y: 50px;
-                        width: 20px;
-                        height: 18px;
-                        Icon {
-                            x: 2px;
-                            y: 2px;
-                            d: "M6 11l6-6 6 6";
-                            size: 16px;
-                            color: #ffffff;
-                        }
-                    }
-                    ph := TouchArea {
-                        x: strip.width * Math.clamp(root.trim-pos / Math.max(0.001, root.trim-dur), 0, 1) - 14px;
-                        y: 44px;
-                        width: 28px;
-                        height: 24px;
-                        mouse-cursor: ew-resize;
-                        function seek-to(f: float) {
-                            root.trim-seek(Math.clamp(f, 0, 1) * root.trim-dur);
-                        }
-                        pointer-event(e) => {
-                            if (e.kind == PointerEventKind.down) {
-                                self.seek-to(Math.clamp((self.mouse-x + 14px) / strip.width, 0, 1));
-                            }
-                        }
-                        moved => {
-                            self.seek-to(Math.clamp((self.mouse-x + 14px) / strip.width, 0, 1));
-                        }
-                    }
                     for side in 2: Rectangle {
                         property <float> f: side == 0 ? strip.fa : strip.fb;
                         property <bool> on: root.trim-active == side && drag.pressed;
@@ -1113,7 +1087,7 @@ export component AppWindow inherits Window {
                     }
                     drag := TouchArea {
                         y: -8px;
-                        height: 64px;
+                        height: 60px;
                         mouse-cursor: ew-resize;
                         function move-to(f: float) {
                             if (root.trim-active == 0) {
@@ -1131,13 +1105,65 @@ export component AppWindow inherits Window {
                                 root.trim-active = Math.abs(Math.clamp(self.mouse-x / self.width, 0, 1) - strip.fa) <= Math.abs(Math.clamp(self.mouse-x / self.width, 0, 1) - strip.fb) ? 0 : 1;
                                 self.move-to(Math.clamp(self.mouse-x / self.width, 0, 1));
                             }
-                            if (e.kind == PointerEventKind.up) {
-                                root.trim-drag-end();
+                        }
+                        changed pressed => {
+                            if (!self.pressed) {
+                                root.trim-drag-end(false);
                             }
                         }
                         moved => {
                             self.move-to(Math.clamp(self.mouse-x / self.width, 0, 1));
                         }
+                    }
+                    // Playhead: where the video is. The arrow under the strip is its only
+                    // grip, so seeking never grabs a trim handle by mistake.
+                    playhead := Rectangle {
+                        property <length> px: strip.width * Math.clamp(root.trim-pos / Math.max(0.001, root.trim-dur), 0, 1);
+                        x: self.px - 1px;
+                        y: -3px;
+                        width: 2px;
+                        height: 54px;
+                        border-radius: 1px;
+                        background: white;
+                        drop-shadow-blur: 3px;
+                        drop-shadow-color: #00000080;
+                    }
+                    Path {
+                        x: playhead.px - 9px;
+                        y: 52px;
+                        width: 18px;
+                        height: 14px;
+                        viewbox-width: 18;
+                        viewbox-height: 14;
+                        commands: "M9 1.5L16.5 12H1.5Z";
+                        fill: white;
+                        stroke: seek.pressed || seek.has-hover ? Theme.accent : #00000066;
+                        stroke-width: 1.4px;
+                        stroke-line-join: round;
+                        transform-scale: seek.pressed ? 1.2 : 1;
+                        animate transform-scale { duration: 200ms; easing: ease-out-back; }
+                    }
+                    seek := TouchArea {
+                        x: playhead.px - 14px;
+                        y: 52px;
+                        width: 28px;
+                        height: 18px;
+                        mouse-cursor: ew-resize;
+                        function seek-to() {
+                            root.trim-seek(Math.clamp((self.x + self.mouse-x) / strip.width, 0, 1) * root.trim-dur);
+                        }
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down) {
+                                root.trim-drag-start();
+                                self.seek-to();
+                            }
+                        }
+                        changed pressed => {
+                            if (!self.pressed) {
+                                root.trim-drag-end(true);
+                            }
+                        }
+                        moved => { self.seek-to(); }
                     }
                 }
                 // Start and end, typed to the millisecond (m:ss.mmm).
@@ -1145,7 +1171,7 @@ export component AppWindow inherits Window {
                     property <string> src: side == 0 ? root.trim-a-text : root.trim-b-text;
                     changed src => { field.text = self.src; }
                     x: side == 0 ? 20px : 340px - self.width;
-                    y: 288px;
+                    y: 304px;
                     width: 104px;
                     height: 26px;
                     border-radius: 7px;
@@ -1163,7 +1189,7 @@ export component AppWindow inherits Window {
                 }
                 Text {
                     x: 124px;
-                    y: 288px;
+                    y: 304px;
                     width: 112px;
                     height: 26px;
                     text: root.trim-range;
@@ -1175,7 +1201,7 @@ export component AppWindow inherits Window {
                 // Mode and live readout.
                 Seg {
                     x: 20px;
-                    y: 326px;
+                    y: 342px;
                     width: 320px;
                     options: ["Keep quality", "Fit to " + root.target-text];
                     index: root.trim-mode;
@@ -1188,7 +1214,7 @@ export component AppWindow inherits Window {
                     property <bool> open;
                     property <length> extra: details.preferred-height;
                     x: 20px;
-                    y: 372px;
+                    y: 388px;
                     width: 320px;
                     height: 76px + (self.open ? self.extra : 0);
                     animate height { duration: 320ms; easing: Fx.rich ? ease-out-back : ease-out; }

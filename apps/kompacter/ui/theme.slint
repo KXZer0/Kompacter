@@ -433,7 +433,7 @@ export component Appear inherits Rectangle {
     }
     Rectangle {
         y: root.on || !Fx.rich ? 0 : 8px;
-        animate y { duration: Fx.rich ? 340ms : 80ms; easing: Fx.rich ? ease-out : ease-out; }
+        animate y { duration: 340ms; easing: ease-out-back; }
         @children
     }
 }
