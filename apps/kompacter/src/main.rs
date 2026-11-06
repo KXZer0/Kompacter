@@ -758,6 +758,8 @@ fn demo(app: &Rc<App>, which: &str) {
     ui.set_meter_fill(0.92);
     ui.set_meter_limit(0.15);
     ui.set_over_text("108 MB too big".into());
+    ui.set_sum_before("128 MB".into());
+    ui.set_sum_after("≤ 20 MB".into());
     ui.set_compress_label("Compress to 720p".into());
     ui.set_can_trim(true);
     ui.set_progress(0.42);

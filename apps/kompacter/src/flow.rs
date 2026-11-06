@@ -113,6 +113,9 @@ impl App {
                         }
                     })
                     .collect();
+                let after: u64 = files.iter().map(|p| size(p).min(target)).sum();
+                ui.set_sum_before(bytes(total).into());
+                ui.set_sum_after(format!("≤ {}", bytes(after)).into());
                 ui.set_diff(ModelRc::new(VecModel::from(rows)));
                 ui.set_diff_open(true);
                 ui.set_compress_label(format!("Compress all {n}").into());
@@ -276,7 +279,16 @@ impl App {
         } else {
             "Compress".into()
         };
-        ui.set_diff(ModelRc::new(VecModel::from(self.diff_rows(c, target))));
+        let rows = self.diff_rows(c, target);
+        // Big summary: the folder's own row when there's a tree, else the size cap.
+        let after = match (folder, rows.first()) {
+            (true, Some(r)) => r.after.to_string(),
+            _ if size > target => format!("≤ {}", bytes(target)),
+            _ => bytes(size),
+        };
+        ui.set_sum_before(bytes(size).into());
+        ui.set_sum_after(after.into());
+        ui.set_diff(ModelRc::new(VecModel::from(rows)));
         ui.set_diff_open(false);
         let too_long = plan.is_some_and(|v| !v.fits);
         let can_trim =

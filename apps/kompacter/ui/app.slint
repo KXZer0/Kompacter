@@ -154,6 +154,9 @@ export component AppWindow inherits Window {
     /// Before → after details under the file card ("Show more").
     in property <[DiffRow]> diff;
     in-out property <bool> diff-open;
+    /// Big summary: size now → size after (estimated).
+    in property <string> sum-before;
+    in property <string> sum-after;
     /// Too long for one good file: how many parts would each fit well (0 = don't offer).
     in property <int> split-count;
     /// The result was still too big, and splitting can help.
@@ -725,14 +728,41 @@ export component AppWindow inherits Window {
                         background: Theme.label;
                     }
                 }
-                if !root.diff-open: Text {
-                    y: 116px;
+                // What it becomes, big: before (grey) → after (green); how far over, on the right.
+                if !root.diff-open: HorizontalLayout {
+                    y: 114px;
                     width: parent.width;
-                    height: 20px;
-                    text: root.over-text;
-                    font-size: 13px;
-                    font-weight: 600;
-                    color: root.over-ok ? Theme.ok : Theme.bad;
+                    height: 24px;
+                    spacing: 6px;
+                    Text {
+                        text: root.sum-before;
+                        font-size: 15px;
+                        font-weight: 600;
+                        color: Theme.label-2;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "→";
+                        font-size: 15px;
+                        font-weight: 600;
+                        color: Theme.ok;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.sum-after;
+                        font-size: 15px;
+                        font-weight: 700;
+                        color: Theme.ok;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: root.over-text;
+                        font-size: 12px;
+                        font-weight: 600;
+                        color: root.over-ok ? Theme.ok : Theme.bad;
+                        vertical-alignment: center;
+                    }
                 }
                 // Too long for one good file: trim it, or split it into parts that each fit.
                 if root.split-count > 1: HorizontalLayout {
