@@ -157,6 +157,7 @@ export component SettingsView inherits Rectangle {
             Group {
                 for p[i] in root.presets: Cell {
                     label: p.name;
+                    small: p.brand == "custom" ? "Type the limit in MB, or use the arrows" : "";
                     first: i == 0;
                     clickable: true;
                     clicked => { root.select-preset(i); }
@@ -164,31 +165,90 @@ export component SettingsView inherits Rectangle {
                         brand: p.brand;
                         y: (parent.height - self.height) / 2;
                     }
-                    if p.brand == "custom": Rectangle {
-                        width: 64px;
-                        height: 28px;
+                    if p.brand == "custom": HorizontalLayout {
+                        spacing: 4px;
+                        alignment: center;
                         y: (parent.height - self.height) / 2;
-                        border-radius: 7px;
-                        background: Theme.fill;
-                        TextInput {
-                            x: 8px;
-                            width: parent.width - 16px;
-                            text: Prefs.custom-mb;
-                            input-type: number;
-                            horizontal-alignment: right;
-                            vertical-alignment: center;
-                            color: Theme.label;
-                            font-size: 14px;
-                            accepted => { Prefs.set-custom-mb(self.text.to-float()); }
-                            edited => {
-                                if (self.text.is-float()) {
-                                    Prefs.set-custom-mb(self.text.to-float());
+                        Rectangle {
+                            width: 72px;
+                            height: 32px;
+                            border-radius: 8px;
+                            background: Theme.fill;
+                            border-width: 1px;
+                            border-color: Theme.sep;
+                            clip: true;
+                            TextInput {
+                                x: 8px;
+                                width: parent.width - 16px;
+                                text: Prefs.custom-mb;
+                                input-type: number;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                                color: Theme.label;
+                                font-size: 15px;
+                                font-weight: 600;
+                                initiate-edit => {
+                                    // Clicking the field picks Custom.
+                                    root.select-preset(i);
+                                }
+                                accepted => { Prefs.set-custom-mb(self.text.to-float()); }
+                                edited => {
+                                    if (self.text.is-float()) {
+                                        Prefs.set-custom-mb(self.text.to-float());
+                                    }
+                                }
+                            }
+                            Text {
+                                x: parent.width - 30px;
+                                width: 26px;
+                                text: "MB";
+                                font-size: 11px;
+                                color: Theme.label-2;
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 2px;
+                            alignment: center;
+                            Rectangle {
+                                width: 20px;
+                                height: 15px;
+                                border-radius: 4px;
+                                background: Theme.fill;
+                                Icon {
+                                    d: "M7 14l5-5 5 5";
+                                    size: 12px;
+                                    color: Theme.label;
+                                }
+                                up-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.select-preset(i);
+                                        Prefs.set-custom-mb(Prefs.custom-mb + 1);
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                width: 20px;
+                                height: 15px;
+                                border-radius: 4px;
+                                background: Theme.fill;
+                                Icon {
+                                    d: "M7 10l5 5 5-5";
+                                    size: 12px;
+                                    color: Theme.label;
+                                }
+                                dn-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.select-preset(i);
+                                        Prefs.set-custom-mb(Math.max(1, Prefs.custom-mb - 1));
+                                    }
                                 }
                             }
                         }
                     }
-                    Text {
-                        text: p.brand == "custom" ? "MB" : p.size;
+                    if p.brand != "custom": Text {
+                        text: p.size;
                         font-size: 14px;
                         color: Theme.label-2;
                         vertical-alignment: center;

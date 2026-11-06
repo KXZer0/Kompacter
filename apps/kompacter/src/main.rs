@@ -593,6 +593,12 @@ fn main() -> Result<(), slint::PlatformError> {
         let a = app.clone();
         ui.on_trim_play(move || a.trim_play());
         let a = app.clone();
+        ui.on_trim_seek(move |pos| a.trim_seek(pos as f64));
+        let a = app.clone();
+        ui.on_trim_drag_start(move || a.trim_drag_start());
+        let a = app.clone();
+        ui.on_trim_drag_end(move || a.trim_drag_end());
+        let a = app.clone();
         ui.on_trim_set_time(move |side, text| a.trim_set_time(side, &text));
         let a = app.clone();
         ui.on_trim_nudge(move |dir, big| a.trim_nudge(dir, big));
@@ -849,6 +855,7 @@ fn demo(app: &Rc<App>, which: &str) {
         "trim" => {
             ui.set_trim_a_text("0:12.000".into());
             ui.set_trim_b_text("0:40.000".into());
+            ui.set_trim_pos(20.0);
             ui.set_trim_range("28.0 s".into());
             ui.set_trim_time("0:12.000".into());
             ui.set_win_h(624.0);

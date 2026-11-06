@@ -1,0 +1,25 @@
+<!doctype html><meta charset="utf-8"><title>Kompacter polish preview (mock)</title>
+<style>body{background:#232323;color:#fff;font:14px Segoe UI,system-ui;margin:24px;display:flex;gap:24px;flex-wrap:wrap}.card{background:#2c2c30;border:1px solid #ffffff1a;border-radius:22px;width:360px;padding:20px;box-sizing:border-box}h2{font-size:15px;margin:0 0 14px}.dim{color:#b4b4ba;font-size:12px}.bar{height:8px;background:#7878803d;border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;width:15%;background:#0071e3}.bar b{display:block;height:100%;width:92%;background:#d70015;opacity:.35}.row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #ffffff14}.ok{color:#30d158}.field{display:flex;align-items:center;gap:8px}.input{background:#7878803d;border:1px solid #ffffff26;border-radius:8px;padding:8px 10px;width:66px;text-align:right;font-weight:600}.steps{display:flex;flex-direction:column;gap:2px}.steps button{background:#7878803d;color:#fff;border:0;border-radius:4px;width:20px;height:15px;font-size:9px}.strip{position:relative;height:48px;border-radius:8px;background:repeating-linear-gradient(90deg,#3a6,#357,#36c 40px);margin-top:26px}.dimL{position:absolute;top:0;height:100%;background:#000000a6;left:0;width:12%;border-radius:8px 0 0 8px}.dimR{position:absolute;top:0;height:100%;background:#000000a6;right:0;width:40%;border-radius:0 8px 8px 0}.sel{position:absolute;top:0;height:100%;border:2px solid #0071e3;left:12%;width:48%;border-radius:6px;box-sizing:border-box}.play{position:absolute;top:-2px;height:52px;width:2px;background:#fff;left:37%;box-shadow:0 0 3px #000}.chev{position:absolute;left:calc(37% - 10px);top:50px;font-size:18px;text-shadow:0 1px 2px #000}.handle{position:absolute;top:-4px;height:56px;width:14px;background:#0071e3;border-radius:5px;left:12%}.handle2{left:60%}.led{font-size:11px;color:#b4b4ba;margin-top:8px}</style>
+<div class="card"><h2>Big file — Show more / Show less</h2>
+<div style="display:flex;gap:12px;align-items:center"><div style="width:40px;height:40px;border-radius:10px;background:#0071e31f;display:grid;place-items:center">🎬</div><div><b>Valorant clutch 4K.mp4</b><br><span class="dim">1:42 · 2560×1440 · 128 MB</span></div></div>
+<p class="dim" style="margin:16px 0 8px">Show less ᐱ</p>
+<div class="row"><span>Resolution</span><span>2560×1440 → <span class="ok">1280×720</span></span></div>
+<div class="row"><span>Frame rate</span><span>60 fps → <span class="ok">30 fps</span></span></div>
+<div class="row"><span>Bitrate</span><span>10 Mbps → <span class="ok">1.6 Mbps</span></span></div>
+<div class="row"><span>Size</span><span>128 MB → <span class="ok">≤ 20 MB</span></span></div>
+<p class="led">Details slide up/down, meter does NOT refill. Buttons glide. Low-memory: quick fade, no bounce.</p>
+</div>
+<div class="card"><h2>Settings — Custom limit</h2>
+<div class="row"><span>Custom</span><span class="field"><span class="input">50 MB</span><span class="steps"><button>▲</button><button>▼</button></span></span></div>
+<div class="row"><span>Discord</span><span>20 MB ✓</span></div>
+<p class="led">Bigger field, arrows step ±1 MB, typing works, clicking field picks Custom. Hint under label: “Type the limit in MB, or use the arrows”. New gear icon: filled cog, not sun.</p>
+</div>
+<div class="card"><h2>Trimmer — playhead</h2>
+<div style="height:150px;border-radius:12px;background:#7878803d;display:grid;place-items:center;color:#b4b4ba">video frame 0:20.000 · controls stay visible while playing</div>
+<div class="strip"><div class="dimL"></div><div class="dimR"></div><div class="sel"></div><div class="handle"></div><div class="handle handle2"></div><div class="play"></div><div class="chev">⌃</div></div>
+<p class="led">White line = where video is. Drag the ⌃ chevron below to seek (never grabs trim bars). Dragging a trim bar pauses; releasing resumes from new point.</p>
+</div>
+<div class="card"><h2>Blob — press &amp; hold</h2>
+<div style="width:160px;height:140px;margin:10px auto;border-radius:50%;background:linear-gradient(135deg,#9cc4ff,#0071e3);display:grid;place-items:center;transform:scaleY(.92)"><div style="font-size:34px;font-weight:800;letter-spacing:6px">&gt; &lt;</div></div>
+<p class="led">Hold: blob stays squeezed with &gt;&lt; face + flat mouth. Release: pops back. Plain click does nothing ugly.</p>
+</div>

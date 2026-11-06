@@ -59,10 +59,13 @@ export component Blob inherits Rectangle {
     // Squish (click or chomp) and hop (done): quick in, springy out.
     property <bool> squished;
     property <float> squish;
+    /// Held down: stays squeezed (no click bounce).
+    property <bool> held;
+    changed held => { if (self.held) { root.squished = false; } }
     property <bool> hopping;
     property <length> lift;
     states [
-        squashed when root.squished: {
+        squashed when root.squished && !root.held: {
             squish: 1;
             in {
                 animate squish { duration: 90ms; easing: ease-out; }
@@ -101,9 +104,10 @@ export component Blob inherits Rectangle {
         }
     }
 
+    property <float> sq: root.held ? 1 : squish;
     // Squish: an even little bounce (both axes), not a stretch.
-    property <float> sx: s * grow * (1 + 0.2 * c) * (1 + 0.02 * breath - 0.08 * squish);
-    property <float> sy: s * grow * (1 - 0.5 * c) * (1 - 0.015 * breath - 0.08 * squish);
+    property <float> sx: s * grow * (1 + 0.2 * c) * (1 + 0.02 * breath - 0.08 * root.sq);
+    property <float> sy: s * grow * (1 - 0.5 * c) * (1 - 0.015 * breath - 0.08 * root.sq);
     property <float> k: s * grow;
     property <bool> blink;
 
@@ -120,10 +124,14 @@ export component Blob inherits Rectangle {
         triggered => { root.blink = !root.blink; }
     }
 
+    // Press and hold: stays squeezed while held, releases on let go.
     TouchArea {
-        clicked => {
-            if (Fx.rich) {
-                root.squished = true;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.held = true;
+            }
+            if (e.kind == PointerEventKind.up) {
+                root.held = false;
             }
         }
     }
@@ -178,7 +186,7 @@ export component Blob inherits Rectangle {
     face := Rectangle {
         property <float> k: root.k;
         // Rounded-rectangle eyes for most moods.
-        property <bool> plain-eyes: root.mood != Mood.busy && root.mood != Mood.happy;
+        property <bool> plain-eyes: !root.held && root.mood != Mood.busy && root.mood != Mood.happy;
         property <float> ew: root.mood == Mood.hungry ? 9 : 8;
         property <float> eh: (root.mood == Mood.hungry ? 15 : root.mood == Mood.worried ? 10 : 13) * (root.blink ? 0.12 : 1);
         property <float> ey: root.mood == Mood.worried ? 3 : 0;
@@ -209,6 +217,19 @@ export component Blob inherits Rectangle {
             animate height, y { duration: 70ms; }
         }
 
+        // Held / squeezed: > < eyes and a flat gritted mouth.
+        if root.held: Mark {
+            k: face.k; ux: 8; uy: 4; bw: 11; bh: 8; line: 3;
+            commands: "M0 0L11 4L0 8";
+        }
+        if root.held: Mark {
+            k: face.k; ux: 33; uy: 4; bw: 11; bh: 8; line: 3;
+            commands: "M11 0L0 4L11 8";
+        }
+        if root.held: Mark {
+            k: face.k; ux: 17; uy: 18; bw: 18; bh: 4; line: 2.4;
+            commands: "M0 2H18M3 2V6M8 2V6M13 2V6";
+        }
         // Busy: squinting, more as the press closes.
         if root.mood == Mood.busy: Mark {
             k: face.k; ux: 8; uy: 4; bw: 11; bh: 3 + root.c * 3; line: 3;

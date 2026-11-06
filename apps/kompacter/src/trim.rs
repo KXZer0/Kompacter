@@ -26,6 +26,8 @@ pub struct Trim {
     want: Cell<Option<f64>>,
     /// Stops the playback in progress.
     stop: RefCell<Option<Arc<AtomicBool>>>,
+    /// Was playing when a trim drag started (resume from the new position on release).
+    resume: Cell<bool>,
 }
 
 fn image(w: u32, h: u32, px: &[u8]) -> Image {
@@ -41,6 +43,7 @@ impl App {
         ui.set_trim_dur(dur);
         ui.set_trim_a(0.0);
         ui.set_trim_b(dur);
+        ui.set_trim_pos(0.0);
         ui.set_trim_active(0);
         ui.set_trim_mode(0);
 
@@ -97,6 +100,7 @@ impl App {
         // Preview: the exact frame under the handle being moved (while not playing).
         if !ui.get_trim_playing() {
             let t = if ui.get_trim_active() == 0 { a } else { b };
+            ui.set_trim_pos(t as f32);
             self.show_frame(t);
         }
 
@@ -228,6 +232,9 @@ impl App {
     fn show_frame(self: &Rc<Self>, t: f64) {
         let ui = self.ui();
         ui.set_trim_time(clock_ms(t).into());
+        if !ui.get_trim_playing() {
+            ui.set_trim_pos(t as f32);
+        }
         if self.trim.fetching.get() {
             self.trim.want.set(Some(t));
             return;
@@ -264,13 +271,53 @@ impl App {
             self.trim_stop();
             return;
         }
+        let (a, b) = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
+        let pos = ui.get_trim_pos() as f64;
+        let start = if pos >= a && pos < b { pos } else { a };
+        self.trim_play_from(start, b);
+    }
+
+    /// Dragging a handle while playing: stop now (preview follows handle), resume later.
+    pub fn trim_drag_start(self: &Rc<Self>) {
+        if self.ui().get_trim_playing() {
+            self.trim.resume.set(true);
+            self.trim_stop();
+        }
+    }
+
+    pub fn trim_drag_end(self: &Rc<Self>) {
+        if self.trim.resume.take() {
+            let ui = self.ui();
+            let (a, b) = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
+            let pos = ui.get_trim_pos() as f64;
+            self.trim_play_from(pos.clamp(a, (b - 0.1).max(a)), b);
+        }
+    }
+
+    /// Seek with the playhead. Restarts playback from the new point when playing;
+    /// otherwise just shows that frame.
+    pub fn trim_seek(self: &Rc<Self>, pos: f64) {
+        let ui = self.ui();
+        let (a, b) = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
+        let pos = pos.clamp(a, b);
+        ui.set_trim_pos(pos as f32);
+        if ui.get_trim_playing() {
+            self.trim_stop();
+            self.trim_play_from(pos, b);
+        } else {
+            self.show_frame(pos);
+        }
+    }
+
+    fn trim_play_from(self: &Rc<Self>, from: f64, until: f64) {
+        let ui = self.ui();
         let Some(info) = self.current.borrow().as_ref().map(|c| c.info.clone()) else {
             return;
         };
         if !matches!(info.kind, MediaKind::Video) {
             return;
         }
-        let (a, b) = (ui.get_trim_a() as f64, ui.get_trim_b() as f64);
+        let (a, b) = (from, until);
         let sound = ui.get_trim_sound() && info.audio.is_some();
         let stop = Arc::new(AtomicBool::new(false));
         *self.trim.stop.borrow_mut() = Some(stop.clone());
@@ -298,6 +345,7 @@ impl App {
                             if ui.get_trim_playing() {
                                 ui.set_trim_frame(image(fw, fh, &px));
                                 ui.set_trim_time(clock_ms(t).into());
+                                ui.set_trim_pos(t as f32);
                             }
                         }
                     });
