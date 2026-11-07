@@ -268,8 +268,10 @@ fn trim_reencode_preserves_vfr_boundaries_and_audio_cues() {
     );
     let samples: Vec<_> = audio
         .stdout
-        .chunks_exact(2)
-        .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&sample| i16::from_le_bytes(sample))
         .collect();
     let cue = |sample: &i16| sample.unsigned_abs() > 3000;
     let onset = samples.iter().position(cue).unwrap() as f64 / 48_000.0;
