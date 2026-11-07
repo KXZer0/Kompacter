@@ -20,13 +20,11 @@
 
 ## apps/kompacter
 
-- One process, one window, no browser. Nothing runs while the window is hidden.
-- Two drawing modes. Normal: GPU drawing (Slint femtovg) with a floating, slightly
-  see-through card that grows out of the taskbar, and all animations. Low-memory mode
-  (setting, restarts the app): CPU drawing and only the basic animations. Without a working
-  GPU, Slint falls back to CPU drawing by itself and the animations stay on.
-- The CPU renderer can't round or cut gradient shapes, so the blob body, its gloss and the
-  press heads are pre-drawn images (`tools/art.py` makes `ui/*.png`).
+- One tray process and one flyout, with FFmpeg as a child process for media jobs.
+- The Windows UI uses Skia raster. Other platforms use FemtoVG/OpenGL. The flyout
+  keeps its translucent fold and reuses a shadow image.
+- The blob body, its gloss and the press heads use pre-drawn images
+  (`tools/art.py` makes `ui/*.png`).
 - UI files: `ui/app.slint` (window, screens), `ui/settings.slint` (Settings screen and the
   `Prefs` global it reads and calls), `ui/stage.slint` (blob, press), `ui/theme.slint`
   (colors, buttons, dropdown, switch).

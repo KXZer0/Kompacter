@@ -77,6 +77,15 @@ body("#e6e8ff", "#9aa4ff", "#5865f2", "ui/blob-discord-light.png")
 body("#d6daff", "#8891f2", "#5865f2", "ui/blob-discord-dark.png")
 shadow("ui/blob-shadow.png")
 
+# Flyout shadow with a 34 px nine-slice border, stretched only along straight edges.
+y, x = np.mgrid[0.5:72, 0.5:72]
+dx = np.maximum(np.abs(x - 36) - 2, 0)
+dy = np.maximum(np.abs(y - 38) - 2, 0)
+distance = np.maximum(np.hypot(dx, dy) - 22, 0)
+flyout = np.zeros((72, 72, 4), dtype=np.uint8)
+flyout[..., 3] = np.rint(108 * np.exp(-0.5 * (distance / 4.5) ** 2))
+Image.fromarray(flyout, "RGBA").save("ui/flyout-shadow.png", optimize=True)
+
 
 def press_head(path_top, path_bottom, scale=2):
     """One hydraulic head: pole, hazard collar, trapezoid, plate (124×252 units)."""

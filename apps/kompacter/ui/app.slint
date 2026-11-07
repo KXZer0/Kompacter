@@ -1,9 +1,8 @@
 // The Kompacter flyout: a calm 360×472 card; the trimmer and settings are taller.
 // Rust owns the logic (src/main.rs) and sets the properties below; this file only draws.
 //
-// With GPU drawing the window is see-through and the card floats in it: big rounded
-// corners, soft shadow, grows up out of the taskbar and folds back down. Without (Low-memory
-// mode, or no GPU) the card fills a plain window and Rust slides the window in and out.
+// With translucency the rounded card floats inside the window and folds toward the taskbar.
+// On a plain window, Rust slides the window in and out.
 
 import { Theme, Fx, Icon, AppLogo, Btn, IconBtn, Kbd, Switch, Seg, Appear, Tip, Dropdown } from "theme.slint";
 import { Icons } from "icons.slint";
@@ -77,6 +76,7 @@ component Sub inherits Text {
 component Badge inherits Rectangle {
     in property <int> grade; // 3 great, 2 okay, 1 low
     in property <bool> open;
+    in property <float> reveal;
     callback toggled;
     property <color> c: grade >= 3 ? Theme.ok : grade == 2 ? Theme.warn : Theme.bad;
     height: 28px;
@@ -104,8 +104,7 @@ component Badge inherits Rectangle {
             size: 16px;
             y: (parent.height - self.height) / 2;
             color: root.c;
-            transform-rotation: root.open && Fx.rich ? 180deg : 0deg;
-            animate transform-rotation { duration: 280ms; easing: ease-out-back; }
+            transform-rotation: Fx.rich ? 180deg * root.reveal : 0deg;
         }
     }
     ta := TouchArea {
@@ -137,6 +136,7 @@ export component AppWindow inherits Window {
     in property <[PresetItem]> presets;
     in property <int> preset-index;
     in property <string> dash-path;
+    in property <float> ambient-turn;
     in property <string> target-text: "20 MB";
 
     in property <string> file-name;
@@ -186,6 +186,8 @@ export component AppWindow inherits Window {
     in property <string> trim-b-text;
 
     in property <string> busy-left;
+    property <string> busy-status: progress >= 0.99 ? "Finishing…"
+        : busy-left == "" ? "Compressing…" : busy-left;
 
     in property <bool> done-ok;
     in property <string> done-title;
@@ -219,6 +221,7 @@ export component AppWindow inherits Window {
     callback trim-changed();
     callback trim-compress();
     callback trim-play();
+    callback trim-sound-changed();
     callback trim-seek(float);
     callback trim-drag-start();
     callback trim-drag-end(bool);
@@ -231,6 +234,13 @@ export component AppWindow inherits Window {
 
     property <length> inset: Fx.glass ? 12px : 0;
     property <length> full-h: view == View.trim ? 624px : view == View.settings ? 600px : view == View.quick ? (guard ? 168px : 136px) : 472px;
+    out property <bool> card-settled: card.vh == full-h;
+    out property <float> flyout-reveal: card.reveal;
+    callback card-resize-finished();
+    callback motion-tick(bool);
+    changed card-settled => {
+        if (self.card-settled) { self.card-resize-finished(); }
+    }
 
     title: "Kompacter";
     no-frame: true;
@@ -239,7 +249,6 @@ export component AppWindow inherits Window {
     default-font-family: "Segoe UI Variable Text";
     default-font-size: 14px;
     width: 360px + 2 * inset;
-    height: win-h + 2 * inset;
     forward-focus: keys;
 
     property <Mood> mood: dragging ? Mood.hungry
@@ -250,7 +259,19 @@ export component AppWindow inherits Window {
     property <bool> stage-lg: view == View.idle || view == View.done;
     property <bool> stage-md: view == View.reading || view == View.big || view == View.error;
     property <bool> stage-hidden: view == View.big && diff-open;
+    property <float> details-reveal: diff-open ? 1 : 0;
+    animate details-reveal { duration: Fx.rich ? 180ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
+    property <float> summary-opacity: Math.max(0, 1 - details-reveal * 3);
+    property <float> details-opacity: Math.max(0, (details-reveal * 3 - 1) / 2);
     property <length> stage-h: stage-lg ? 312px : 124px;
+
+    property <bool> track-eyes: (stage-lg || stage-md) && !stage-hidden;
+    Timer {
+        // Ambient motion advances less than a degree (or a dash pixel) per tick.
+        interval: 33ms;
+        running: Fx.rich && root.opened && (root.track-eyes || root.dragging);
+        triggered => { root.motion-tick(root.track-eyes); }
+    }
 
     keys := FocusScope {
         key-pressed(event) => {
@@ -266,46 +287,56 @@ export component AppWindow inherits Window {
         }
     }
 
-    // ── The card ──
+    // Reuse one shadow image while the card changes height.
+    if Fx.glass: Image {
+        x: card.x - 12px;
+        y: card.y - 12px;
+        width: card.width + 24px;
+        height: Math.max(44px, card.height) + 24px;
+        source: @image-url("flyout-shadow.png", nine-slice(34));
+        image-fit: fill;
+        transform-scale-x: card.transform-scale-x;
+        visible: card.visible;
+        opacity: Math.min(1, card.height / 56px) * (Theme.is-dark ? 1 : 0.65);
+    }
+
     card := Rectangle {
-        // Open: the card's height springs up from a pill at the bottom; closed: folds down.
-        // `vh` follows the screen size; `fold` (0 open … 1 folded) does open/close.
+        // Animate the card inside a stationary native window. Keep the bottom anchored
+        // and clip the contents as they are revealed from the taskbar.
         property <length> vh: root.full-h;
-        animate vh { duration: 360ms; easing: ease-out-back; }
-        property <float> fold;
-        property <length> h: self.vh - (self.vh - 56px) * self.fold;
-        states [
-            folded when Fx.glass && !root.opened: {
-                fold: 1;
-                opacity: 0;
-                in {
-                    animate fold { duration: 200ms; easing: ease-in; }
-                    animate opacity { duration: 180ms; easing: ease-in; }
-                }
-                out {
-                    animate fold { duration: 420ms; easing: ease-out-back; }
-                    animate opacity { duration: 140ms; }
-                }
-            }
-        ]
+        animate vh { duration: Fx.glass && Fx.rich && root.opened ? 180ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
+        property <float> reveal: !Fx.glass || !Fx.rich || root.opened ? 1 : 0;
+        animate reveal {
+            duration: Fx.rich ? (root.opened ? 180ms : 200ms) : 0ms;
+            easing: root.opened ? cubic-bezier(0.32, 0.72, 0, 1) : ease-in-out;
+        }
         x: root.inset;
-        y: root.inset + root.win-h - self.height;
+        y: root.height - root.inset - self.height;
         width: 360px;
-        height: Math.min(self.h, root.win-h);
+        height: Math.min(self.vh * self.reveal, Math.max(0px, root.height - 2 * root.inset));
+        // A stroked zero-height rectangle still paints a horizontal line.
+        // Fade the final pixels and remove that degenerate surface entirely.
+        visible: self.height >= 1px;
+        opacity: Math.min(1, self.height / 32px);
+        transform-scale-x: 0.94 + 0.06 * self.reveal;
         border-radius: Fx.glass ? 22px : 0;
         background: Fx.glass ? Theme.card : Theme.bg;
         border-width: Fx.glass ? 1px : 0;
         border-color: Theme.hair;
-        drop-shadow-blur: Fx.glass ? 22px : 0;
-        drop-shadow-offset-y: 6px;
-        drop-shadow-color: Theme.shadow;
+    }
+    Rectangle {
+        x: card.x;
+        y: card.y;
+        width: card.width;
+        height: card.height;
+        visible: card.visible;
+        opacity: card.opacity;
+        transform-scale-x: card.transform-scale-x;
+        // Rectangular clipping avoids rendering the whole view into an offscreen texture.
         clip: true;
-
-        // Content keeps its full height and sits on the card's bottom edge, so a shorter
-        // card reveals it from the bottom up instead of squashing it.
         Rectangle {
             x: 0;
-            y: card.height - root.full-h;
+            y: (card.reveal - 1) * card.vh;
             width: 360px;
             height: root.full-h;
 
@@ -457,8 +488,7 @@ export component AppWindow inherits Window {
                 width: 328px;
                 height: root.stage-h;
                 animate height { duration: 300ms; easing: ease-out-back; }
-                opacity: root.stage-hidden ? 0 : 1;
-                animate opacity { duration: Fx.rich ? 200ms : 0ms; easing: ease-out; }
+                opacity: root.view == View.big ? root.summary-opacity : 1;
                 DropZone {
                     x: 10px;
                     y: 6px;
@@ -494,6 +524,8 @@ export component AppWindow inherits Window {
                     mood: root.mood;
                     s: root.stage-lg ? 1 : 0.62;
                     swell: root.dragging;
+                    ambient-active: root.opened && root.track-eyes;
+                    ambient-turn: root.ambient-turn;
                     cx: parent.width / 2;
                     cy: root.view == View.idle ? parent.height / 2 - 40px : parent.height / 2;
                     look-x: root.look-x;
@@ -570,8 +602,7 @@ export component AppWindow inherits Window {
             // so the bar fills once when the view opens and never replays.
             if root.view == View.big: Appear {
                 x: 20px;
-                y: root.diff-open ? 52px : 186px;
-                animate y { duration: Fx.rich ? 380ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
+                y: 186px - 134px * root.details-reveal;
                 width: 320px;
                 height: 400px;
                 // File card.
@@ -647,8 +678,7 @@ export component AppWindow inherits Window {
                             size: 14px;
                             y: 3px;
                             color: more-ta.has-hover ? Theme.label : Theme.label-2;
-                            transform-rotation: root.diff-open ? 180deg : 0deg;
-                            animate transform-rotation { duration: Fx.rich ? 340ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
+                            transform-rotation: 180deg * root.details-reveal;
                         }
                     }
                     more-ta := TouchArea {
@@ -662,18 +692,7 @@ export component AppWindow inherits Window {
                     width: parent.width;
                     height: 220px;
                     interactive: root.diff-open;
-                    opacity: 0;
-                    states [
-                        open when root.diff-open: {
-                            opacity: 1;
-                            in {
-                                animate opacity { duration: Fx.rich ? 240ms : 0ms; delay: Fx.rich ? 120ms : 0ms; easing: ease-out; }
-                            }
-                            out {
-                                animate opacity { duration: Fx.rich ? 90ms : 0ms; easing: ease-in; }
-                            }
-                        }
-                    ]
+                    visible: root.details-opacity > 0;
                     VerticalLayout {
                         spacing: 0;
                         for r in root.diff: HorizontalLayout {
@@ -684,12 +703,13 @@ export component AppWindow inherits Window {
                                 d: r.icon == "dir" ? Icons.folder : Icons.file;
                                 size: 14px;
                                 y: 5px;
+                                color: Theme.label-2.transparentize(1 - root.details-opacity);
                             }
                             Text {
                                 text: r.label;
                                 font-size: 12px;
                                 font-weight: r.depth == 0 && r.icon == "dir" ? 600 : 400;
-                                color: Theme.label;
+                                color: Theme.label.transparentize(1 - root.details-opacity);
                                 overflow: elide;
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
@@ -697,20 +717,20 @@ export component AppWindow inherits Window {
                             Text {
                                 text: r.before;
                                 font-size: 12px;
-                                color: Theme.label-2;
+                                color: Theme.label-2.transparentize(1 - root.details-opacity);
                                 vertical-alignment: center;
                             }
                             Text {
                                 text: "→";
                                 font-size: 12px;
-                                color: r.changed ? Theme.ok : Theme.label-2;
+                                color: (r.changed ? Theme.ok : Theme.label-2).transparentize(1 - root.details-opacity);
                                 vertical-alignment: center;
                             }
                             Text {
                                 text: r.after;
                                 font-size: 12px;
                                 font-weight: 600;
-                                color: r.changed ? Theme.ok : Theme.label-2;
+                                color: (r.changed ? Theme.ok : Theme.label-2).transparentize(1 - root.details-opacity);
                                 vertical-alignment: center;
                             }
                         }
@@ -721,17 +741,7 @@ export component AppWindow inherits Window {
                     y: 80px;
                     height: 28px;
                     // Fades out (stays in place, keeps its fill) while the details show.
-                    states [
-                        hidden when root.diff-open: {
-                            opacity: 0;
-                            in {
-                                animate opacity { duration: Fx.rich ? 90ms : 0ms; easing: ease-in; }
-                            }
-                            out {
-                                animate opacity { duration: Fx.rich ? 240ms : 0ms; delay: Fx.rich ? 120ms : 0ms; easing: ease-out; }
-                            }
-                        }
-                    ]
+                    opacity: root.summary-opacity;
                     property <bool> shown;
                     Timer {
                         interval: 60ms;
@@ -781,17 +791,7 @@ export component AppWindow inherits Window {
                     y: 114px;
                     width: parent.width;
                     height: 24px;
-                    states [
-                        hidden when root.diff-open: {
-                            opacity: 0;
-                            in {
-                                animate opacity { duration: Fx.rich ? 90ms : 0ms; easing: ease-in; }
-                            }
-                            out {
-                                animate opacity { duration: Fx.rich ? 240ms : 0ms; delay: Fx.rich ? 120ms : 0ms; easing: ease-out; }
-                            }
-                        }
-                    ]
+                    opacity: root.summary-opacity;
                     spacing: 6px;
                     Text {
                         text: root.sum-before;
@@ -825,8 +825,7 @@ export component AppWindow inherits Window {
                 }
                 // Too long for one good file: trim it, or split it into parts that each fit.
                 if root.split-count > 1: HorizontalLayout {
-                    y: root.diff-open ? 312px : 152px;
-                    animate y { duration: Fx.rich ? 380ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
+                    y: 152px + 160px * root.details-reveal;
                     height: 44px;
                     spacing: 8px;
                     Btn {
@@ -846,8 +845,7 @@ export component AppWindow inherits Window {
                     }
                 }
                 if root.split-count > 1: HorizontalLayout {
-                    y: root.diff-open ? 362px : 206px;
-                    animate y { duration: Fx.rich ? 380ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
+                    y: 206px + 156px * root.details-reveal;
                     height: 36px;
                     alignment: center;
                     Btn {
@@ -857,8 +855,7 @@ export component AppWindow inherits Window {
                     }
                 }
                 if root.split-count <= 1: HorizontalLayout {
-                    y: root.diff-open ? 312px : 152px;
-                    animate y { duration: Fx.rich ? 380ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
+                    y: 152px + 160px * root.details-reveal;
                     height: 44px;
                     spacing: 8px;
                     if root.can-trim && root.trim-first: Btn {
@@ -888,17 +885,7 @@ export component AppWindow inherits Window {
                 if root.foot-text != "" && root.split-count <= 1: Text {
                     y: 206px;
                     width: parent.width;
-                    states [
-                        hidden when root.diff-open: {
-                            opacity: 0;
-                            in {
-                                animate opacity { duration: Fx.rich ? 90ms : 0ms; easing: ease-in; }
-                            }
-                            out {
-                                animate opacity { duration: Fx.rich ? 240ms : 0ms; delay: Fx.rich ? 120ms : 0ms; easing: ease-out; }
-                            }
-                        }
-                    ]
+                    opacity: root.summary-opacity;
                     text: root.foot-text;
                     font-size: 12px;
                     color: Theme.label-2;
@@ -988,7 +975,7 @@ export component AppWindow inherits Window {
                     width: parent.width - 52px - 8px;
                     height: 20px;
                     text: root.quick-state == 0 ? "Reading…"
-                        : root.quick-state == 2 ? root.busy-left
+                        : root.quick-state == 2 ? root.busy-status
                         : root.quick-state == 3 ? root.done-sub
                         : root.quick-state == 4 ? root.error-text
                         : "Copy a file, then press the shortcut";
@@ -1213,7 +1200,10 @@ export component AppWindow inherits Window {
                             }
                             snd := TouchArea {
                                 mouse-cursor: pointer;
-                                clicked => { root.trim-sound = !root.trim-sound; }
+                                clicked => {
+                                    root.trim-sound = !root.trim-sound;
+                                    root.trim-sound-changed();
+                                }
                             }
                         }
                     }
@@ -1299,6 +1289,10 @@ export component AppWindow inherits Window {
                     // Arrow keys nudge the active handle one frame (Shift: one second).
                     keys-strip := FocusScope {
                         key-pressed(e) => {
+                            if (e.text == Key.Escape) {
+                                root.escape();
+                                return accept;
+                            }
                             if (e.text == Key.LeftArrow) {
                                 root.trim-nudge(-1, e.modifiers.shift);
                                 return accept;
@@ -1311,33 +1305,45 @@ export component AppWindow inherits Window {
                         }
                     }
                     drag := TouchArea {
+                        property <bool> dragging;
+                        property <length> grab-offset;
+                        x: -7px;
                         y: -8px;
+                        width: strip.width + 14px;
                         height: 60px;
                         mouse-cursor: ew-resize;
-                        function move-to(f: float) {
+                        function move-handle() {
+                            let f = Math.clamp((self.x + self.mouse-x - self.grab-offset) / strip.width, 0, 1);
+                            let min-span = Math.min(0.1, root.trim-dur);
                             if (root.trim-active == 0) {
-                                root.trim-a = Math.max(0, Math.min(f * root.trim-dur, root.trim-b - 1));
+                                root.trim-a = Math.max(0, Math.min(f * root.trim-dur, root.trim-b - min-span));
                             } else {
-                                root.trim-b = Math.min(root.trim-dur, Math.max(f * root.trim-dur, root.trim-a + 1));
+                                root.trim-b = Math.min(root.trim-dur, Math.max(f * root.trim-dur, root.trim-a + min-span));
                             }
                             root.trim-changed();
                         }
                         pointer-event(e) => {
-                            if (e.kind == PointerEventKind.down) {
+                            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
                                 keys-strip.focus();
                                 root.trim-drag-start();
                                 // Grab the nearer handle.
-                                root.trim-active = Math.abs(Math.clamp(self.mouse-x / self.width, 0, 1) - strip.fa) <= Math.abs(Math.clamp(self.mouse-x / self.width, 0, 1) - strip.fb) ? 0 : 1;
-                                self.move-to(Math.clamp(self.mouse-x / self.width, 0, 1));
-                            }
-                        }
-                        changed pressed => {
-                            if (!self.pressed) {
+                                let p = self.x + self.mouse-x;
+                                root.trim-active = Math.abs(p - strip.width * strip.fa) <= Math.abs(p - strip.width * strip.fb) ? 0 : 1;
+                                let offset = p - strip.width * (root.trim-active == 0 ? strip.fa : strip.fb);
+                                self.grab-offset = Math.abs(offset) <= 7px ? offset : 0px;
+                                self.dragging = true;
+                                self.move-handle();
+                            } else if (self.dragging && e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+                                self.dragging = false;
+                                self.move-handle();
+                                root.trim-drag-end(false);
+                            } else if (self.dragging && e.kind == PointerEventKind.cancel) {
+                                self.dragging = false;
                                 root.trim-drag-end(false);
                             }
                         }
                         moved => {
-                            self.move-to(Math.clamp(self.mouse-x / self.width, 0, 1));
+                            if (self.dragging) { self.move-handle(); }
                         }
                     }
                     // Playhead: where the video is. The arrow under the strip is its only
@@ -1369,26 +1375,34 @@ export component AppWindow inherits Window {
                         animate transform-scale { duration: 200ms; easing: ease-out-back; }
                     }
                     seek := TouchArea {
+                        property <bool> dragging;
+                        property <length> grab-offset;
                         x: playhead.px - 14px;
                         y: 52px;
                         width: 28px;
                         height: 18px;
                         mouse-cursor: ew-resize;
                         function seek-to() {
-                            root.trim-seek(Math.clamp((self.x + self.mouse-x) / strip.width, 0, 1) * root.trim-dur);
+                            root.trim-seek(Math.clamp((self.x + self.mouse-x - self.grab-offset) / strip.width, 0, 1) * root.trim-dur);
                         }
                         pointer-event(e) => {
-                            if (e.kind == PointerEventKind.down) {
+                            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                                keys-strip.focus();
+                                self.grab-offset = self.mouse-x - self.width / 2;
+                                self.dragging = true;
                                 root.trim-drag-start();
+                            } else if (self.dragging && e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+                                self.dragging = false;
                                 self.seek-to();
-                            }
-                        }
-                        changed pressed => {
-                            if (!self.pressed) {
+                                root.trim-drag-end(true);
+                            } else if (self.dragging && e.kind == PointerEventKind.cancel) {
+                                self.dragging = false;
                                 root.trim-drag-end(true);
                             }
                         }
-                        moved => { self.seek-to(); }
+                        moved => {
+                            if (self.dragging) { self.seek-to(); }
+                        }
                     }
                 }
                 // Start and end, typed to the millisecond (m:ss.mmm).
@@ -1409,7 +1423,10 @@ export component AppWindow inherits Window {
                         color: Theme.label;
                         horizontal-alignment: side == 0 ? left : right;
                         vertical-alignment: center;
-                        accepted => { root.trim-set-time(side, self.text); }
+                        accepted => {
+                            root.trim-set-time(side, self.text);
+                            self.text = parent.src;
+                        }
                     }
                 }
                 Text {
@@ -1437,15 +1454,15 @@ export component AppWindow inherits Window {
                 }
                 readout := Rectangle {
                     property <bool> open;
+                    property <float> reveal: self.open ? 1 : 0;
+                    animate reveal { duration: Fx.rich ? 240ms : 0ms; easing: cubic-bezier(0.32, 0.72, 0, 1); }
                     property <length> extra: details.preferred-height;
                     x: 20px;
                     y: 388px;
                     width: 320px;
-                    height: 76px + (self.open ? self.extra : 0);
-                    animate height { duration: 320ms; easing: Fx.rich ? ease-out-back : ease-out; }
+                    height: 76px + self.extra * self.reveal;
                     border-radius: 12px;
                     background: Theme.group;
-                    clip: true;
                     Text {
                         x: 16px;
                         y: 10px;
@@ -1461,6 +1478,7 @@ export component AppWindow inherits Window {
                         y: 13px;
                         grade: root.trim-grade;
                         open: readout.open;
+                        reveal: readout.reveal;
                         toggled => { readout.open = !readout.open; }
                     }
                     HorizontalLayout {
@@ -1483,34 +1501,37 @@ export component AppWindow inherits Window {
                         }
                     }
                     // Details: resolution, frame rate and bitrate of the result.
-                    details := VerticalLayout {
+                    Rectangle {
+                        x: 16px;
                         y: 76px;
-                        width: parent.width;
-                        padding-left: 16px;
-                        padding-right: 16px;
-                        padding-bottom: 14px;
-                        spacing: 6px;
-                        opacity: readout.open ? 1 : 0;
-                        animate opacity { duration: 200ms; }
-                        Rectangle {
-                            height: 1px;
-                            background: Theme.sep;
-                        }
-                        for d in root.trim-details: HorizontalLayout {
-                            height: 18px;
-                            Text {
-                                text: d.label;
-                                font-size: 12px;
-                                color: Theme.label-2;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
+                        width: parent.width - 32px;
+                        height: readout.extra * readout.reveal;
+                        clip: true;
+                        details := VerticalLayout {
+                            y: 0;
+                            height: self.preferred-height;
+                            padding-bottom: 14px;
+                            spacing: 6px;
+                            Rectangle {
+                                height: 1px;
+                                background: Theme.sep.transparentize(1 - readout.reveal);
                             }
-                            Text {
-                                text: d.value;
-                                font-size: 12px;
-                                font-weight: 600;
-                                color: Theme.label;
-                                vertical-alignment: center;
+                            for d in root.trim-details: HorizontalLayout {
+                                height: 18px;
+                                Text {
+                                    text: d.label;
+                                    font-size: 12px;
+                                    color: Theme.label-2.transparentize(1 - readout.reveal);
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: d.value;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    color: Theme.label.transparentize(1 - readout.reveal);
+                                    vertical-alignment: center;
+                                }
                             }
                         }
                     }
@@ -1546,7 +1567,7 @@ export component AppWindow inherits Window {
                     y: 38px;
                     width: parent.width;
                     height: 18px;
-                    text: root.busy-left;
+                    text: root.busy-status;
                 }
                 HorizontalLayout {
                     y: 74px;

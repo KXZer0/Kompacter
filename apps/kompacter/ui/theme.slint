@@ -4,9 +4,8 @@
 import { Icons } from "icons.slint";
 
 /// Effects level. `rich`: every animation (breathing, eye tracking, bounces, sparks,
-/// marching dashes). Off in Low-memory mode (or when Windows animations are off), which
-/// keeps only open/close and simple fades.
-/// `glass`: the floating, slightly see-through card with its own shadow (GPU drawing).
+/// marching dashes). Off when the renderer lacks these effects or the system disables animations.
+/// `glass`: the floating, slightly see-through card with its own shadow.
 export global Fx {
     in-out property <bool> rich: true;
     in-out property <bool> glass;

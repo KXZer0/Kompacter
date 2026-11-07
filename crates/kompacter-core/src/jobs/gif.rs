@@ -74,9 +74,11 @@ fn encode(
     progress: Progress,
 ) -> Result<u64> {
     // One pass with a palette made for this clip; "diff" stats and rectangle updates keep
-    // still areas cheap.
+    // still areas cheap. Trim before the split so palette generation doesn't consume
+    // and buffer the rest of the source while waiting to see all its frames.
+    let limit = trim.map_or_else(String::new, |t| format!("trim=end={:.6},", t.len()));
     let filter = format!(
-        "[0:v:0]fps={fps},scale={width}:-2:flags=lanczos,split[a][b];\
+        "[0:v:0]{limit}fps={fps},scale={width}:-2:flags=lanczos,split[a][b];\
          [a]palettegen=max_colors=256:stats_mode=diff[p];\
          [b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[g]"
     );
@@ -107,6 +109,9 @@ pub(crate) fn fit(
     }
     let steps = ladder(info);
     let out = with_ext(out_base, "gif");
+    let staging = tempfile::tempdir_in(out.parent().unwrap_or_else(|| Path::new(".")))?;
+    let probe_out = staging.path().join("probe.gif");
+    let candidate_out = staging.path().join("candidate.gif");
 
     // Test encode in the middle, then predict the best step that fits.
     let probe = PROBE.min(steps.len() - 1);
@@ -116,7 +121,7 @@ pub(crate) fn fit(
         trim,
         steps[probe],
         secs,
-        &out,
+        &probe_out,
         &mut scaled(&mut *progress, 0.0, 0.4),
     )?;
     let per_cost = size as f64 / cost(steps[probe].0, steps[probe].1);
@@ -124,14 +129,16 @@ pub(crate) fn fit(
         .iter()
         .position(|&(w, f)| per_cost * cost(w, f) <= target as f64 * 0.92)
         .unwrap_or(steps.len() - 1);
-    if pick == probe && size <= target {
-        progress(1.0);
-        return Ok(out);
-    }
-
     // From the predicted step down, at most four more encodes.
     let mut best = size;
+    let mut fitting = (size <= target).then_some(probe_out.as_path());
     for (attempt, &step) in steps[pick..].iter().take(4).enumerate() {
+        if pick + attempt == probe {
+            if fitting.is_some() {
+                break;
+            }
+            continue;
+        }
         let from = 0.4 + 0.15 * attempt as f32;
         let size = encode(
             ctx,
@@ -139,16 +146,20 @@ pub(crate) fn fit(
             trim,
             step,
             secs,
-            &out,
+            &candidate_out,
             &mut scaled(&mut *progress, from, (from + 0.15).min(1.0)),
         )?;
         best = best.min(size);
         if size <= target {
-            progress(1.0);
-            return Ok(out);
+            fitting = Some(&candidate_out);
+            break;
         }
     }
-    let _ = std::fs::remove_file(&out);
+    if let Some(path) = fitting {
+        std::fs::rename(path, &out)?;
+        progress(1.0);
+        return Ok(out);
+    }
     Err(Error::DoesNotFit {
         what: name_of(&info.path),
         target,

@@ -1,7 +1,7 @@
 //! User settings, saved as JSON next to other app data. Same file and format the first
 //! test builds used, so choices carry over. Unknown or missing fields fall back to defaults.
 
-use std::path::PathBuf;
+use std::{io, path::PathBuf};
 
 use kompacter_core::{ArchiveFormat, AudioFormat, ImageFormat, VideoCodec};
 use serde::{Deserialize, Serialize};
@@ -19,8 +19,6 @@ pub struct Settings {
     pub style: String,
     /// "match" | "light" | "ash" | "dark" | "onyx" (Discord style)
     pub discord_theme: String,
-    /// CPU drawing and simpler animations, for the least memory.
-    pub low_memory: bool,
     pub gpu: bool,
     /// Where results go: "app" | "beside" | "custom" | "replace" (see output.rs).
     pub output: String,
@@ -76,7 +74,6 @@ impl Default for Settings {
             theme: "system".into(),
             style: "kompacter".into(),
             discord_theme: "match".into(),
-            low_memory: false,
             gpu: true,
             output: "app".into(),
             output_dir: String::new(),
@@ -108,14 +105,11 @@ pub fn load() -> Settings {
         .unwrap_or_default()
 }
 
-pub fn save(s: &Settings) {
-    let Some(path) = file() else { return };
-    let Ok(json) = serde_json::to_vec_pretty(s) else {
-        return;
-    };
+pub fn save(s: &Settings) -> io::Result<()> {
+    let path = file().ok_or_else(|| io::Error::other("Settings folder is unavailable"))?;
+    let json = serde_json::to_vec_pretty(s)?;
     // Write then rename, so a crash mid-write never leaves a broken file.
     let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, json).is_ok() {
-        let _ = std::fs::rename(tmp, path);
-    }
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(tmp, path)
 }

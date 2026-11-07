@@ -2,14 +2,17 @@
 //! ffmpeg only runs while a job is active, so the app idles at near-zero CPU.
 
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::error::{Error, Result};
+
+const MAX_STDERR_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Ffmpeg {
@@ -79,7 +82,7 @@ impl Ffmpeg {
     }
 
     /// Run ffmpeg with `args`. `duration` (seconds of output) turns ffmpeg's progress
-    /// output into a 0..1 fraction. Checks `cancel` on every progress tick.
+    /// output into a 0..1 fraction. Cancellation also works while ffmpeg is silent.
     pub fn run(
         &self,
         args: &[OsString],
@@ -87,6 +90,9 @@ impl Ffmpeg {
         progress: Progress,
         cancel: &AtomicBool,
     ) -> Result<()> {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Error::Cancelled);
+        }
         let mut child = command(&self.ffmpeg)
             .args([
                 "-hide_banner",
@@ -104,43 +110,73 @@ impl Ffmpeg {
             .spawn()
             .map_err(|_| Error::FfmpegMissing(self.ffmpeg.display().to_string()))?;
 
-        // Drain stderr on a thread so ffmpeg never blocks on a full pipe.
+        // Drain stderr so a full pipe can't block ffmpeg. Broken inputs can log an
+        // error for every frame, so only retain the first part of the diagnostics.
         let mut stderr = child.stderr.take().expect("stderr piped");
         let err_thread = std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = stderr.read_to_string(&mut s);
-            s
+            let mut prefix = Vec::new();
+            let _ = stderr
+                .by_ref()
+                .take(MAX_STDERR_BYTES)
+                .read_to_end(&mut prefix);
+            let truncated = io::copy(&mut stderr, &mut io::sink()).is_ok_and(|n| n > 0);
+            (prefix, truncated)
         });
 
         let stdout = child.stdout.take().expect("stdout piped");
-        for line in BufReader::new(stdout).lines() {
-            if cancel.load(Ordering::Relaxed) {
+        // Keep control of the child while the caller blocks reading progress.
+        let status = std::thread::scope(|scope| {
+            let monitor = scope.spawn(move || loop {
+                let error = if cancel.load(Ordering::Relaxed) {
+                    Error::Cancelled
+                } else {
+                    match child.try_wait() {
+                        Ok(Some(status)) => return Ok(status),
+                        Ok(None) => {
+                            std::thread::park_timeout(Duration::from_millis(50));
+                            continue;
+                        }
+                        Err(error) => error.into(),
+                    }
+                };
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(Error::Cancelled);
-            }
-            let Ok(line) = line else { break };
-            if let Some(us) = line.strip_prefix("out_time_us=") {
-                if let (Ok(us), true) = (us.trim().parse::<f64>(), duration > 0.0) {
-                    progress((us / 1e6 / duration).clamp(0.0, 1.0) as f32);
-                }
-            } else if line == "progress=end" {
-                progress(1.0);
-            }
-        }
+                return Err(error);
+            });
 
-        let status = child.wait()?;
-        let stderr = err_thread.join().unwrap_or_default();
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                if let Some(us) = line.strip_prefix("out_time_us=") {
+                    if let (Ok(us), true) = (us.trim().parse::<f64>(), duration > 0.0) {
+                        progress((us / 1e6 / duration).clamp(0.0, 1.0) as f32);
+                    }
+                } else if line == "progress=end" {
+                    progress(1.0);
+                }
+            }
+            monitor.thread().unpark();
+            monitor.join().expect("ffmpeg monitor panicked")
+        });
+
+        let (stderr, truncated) = err_thread.join().unwrap_or_default();
+        let status = status?;
         if cancel.load(Ordering::Relaxed) {
             return Err(Error::Cancelled);
         }
         if !status.success() {
-            let msg = stderr.trim();
-            return Err(Error::Ffmpeg(if msg.is_empty() {
+            let stderr = String::from_utf8_lossy(&stderr);
+            let mut msg = if stderr.trim().is_empty() {
                 status.to_string()
             } else {
-                msg.into()
-            }));
+                stderr.trim().to_owned()
+            };
+            if truncated {
+                msg.push_str("\n[FFmpeg log truncated]");
+            }
+            return Err(Error::Ffmpeg(msg));
         }
         Ok(())
     }

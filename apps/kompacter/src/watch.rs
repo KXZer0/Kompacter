@@ -1,11 +1,11 @@
-//! Automatic: notices big files without being asked. One background thread checks the
-//! clipboard twice a second (a single number that changes on every copy) and the clip
-//! folders every few seconds. It only looks; the UI thread decides what to do.
+//! Automatic: notices big files without being asked. The worker sleeps until a
+//! watch is enabled, then only polls the sources the user chose.
 
-use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::{hash_map::Entry, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::sys;
 
@@ -16,7 +16,7 @@ pub enum WatchEvent {
     Clip(PathBuf),
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct Config {
     pub copies: bool,
     pub folders_on: bool,
@@ -24,10 +24,14 @@ pub struct Config {
     pub limit: u64,
 }
 
-#[derive(Clone)]
-pub struct Watch(Arc<Mutex<Config>>);
+pub struct Watch {
+    updates: RefCell<Option<Sender<Config>>>,
+    on_event: fn(WatchEvent),
+}
 
 const VIDEO: [&str; 6] = ["mp4", "mkv", "mov", "webm", "avi", "m4v"];
+const CLIPBOARD_POLL: Duration = Duration::from_millis(500);
+const FOLDER_POLL: Duration = Duration::from_secs(3);
 /// How deep to look under each clip folder (ShadowPlay makes one folder per game).
 const DEPTH: usize = 3;
 
@@ -42,45 +46,149 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<(PathBuf, u64, SystemTime)>) {
         return;
     };
     for e in entries.flatten() {
-        let Ok(meta) = e.metadata() else { continue };
+        let Ok(kind) = e.file_type() else { continue };
         let path = e.path();
-        if meta.is_dir() {
+        if kind.is_dir() {
             if depth > 0 {
                 walk(&path, depth - 1, out);
             }
         } else if path
             .extension()
-            .is_some_and(|x| VIDEO.contains(&x.to_string_lossy().to_lowercase().as_str()))
+            .is_some_and(|ext| VIDEO.iter().any(|kind| ext.eq_ignore_ascii_case(kind)))
             && !ours(&path)
         {
-            if let Ok(m) = meta.modified() {
-                out.push((path, meta.len(), m));
+            if let Ok(meta) = e.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    out.push((path, meta.len(), modified));
+                }
             }
         }
     }
 }
 
-impl Watch {
-    pub fn start(on_event: impl Fn(WatchEvent) + Send + 'static) -> Watch {
-        let cfg = Arc::new(Mutex::new(Config::default()));
-        let shared = cfg.clone();
-        std::thread::spawn(move || {
-            let mut seq = sys::clipboard_seq();
-            // Only clips saved after the folders were turned on count.
-            let mut since: Option<SystemTime> = None;
-            // Size at the last look and how many looks it stayed the same.
-            let mut growing: HashMap<PathBuf, (u64, u32)> = HashMap::new();
-            let mut done: HashSet<PathBuf> = HashSet::new();
-            let mut tick = 0u32;
-            loop {
-                std::thread::sleep(Duration::from_millis(500));
-                tick = tick.wrapping_add(1);
-                let c = shared.lock().map(|c| c.clone()).unwrap_or_default();
+#[derive(Default)]
+struct Clips {
+    generation: u64,
+    files: HashMap<PathBuf, Clip>,
+}
 
-                let now = sys::clipboard_seq();
-                if now != seq {
-                    seq = now;
-                    if c.copies {
+struct Clip {
+    size: u64,
+    modified: SystemTime,
+    stable: u8,
+    seen: u64,
+}
+
+impl Clips {
+    fn scan(
+        &mut self,
+        found: impl IntoIterator<Item = (PathBuf, u64, SystemTime)>,
+        since: SystemTime,
+        limit: u64,
+        on_clip: impl Fn(PathBuf),
+    ) {
+        self.generation = self.generation.wrapping_add(1);
+        let scan = self.generation;
+        for (path, size, modified) in found {
+            if modified < since {
+                continue;
+            }
+            let mut entry = match self.files.entry(path) {
+                Entry::Occupied(entry) => entry,
+                Entry::Vacant(entry) => {
+                    entry.insert(Clip {
+                        size,
+                        modified,
+                        stable: 0,
+                        seen: scan,
+                    });
+                    continue;
+                }
+            };
+            let state = entry.get_mut();
+            // Overlapping watch roots can list a file twice in one scan.
+            if state.seen == scan {
+                continue;
+            }
+            state.seen = scan;
+            if size != state.size || modified != state.modified {
+                state.size = size;
+                state.modified = modified;
+                state.stable = 0;
+            } else if size > 0 && state.stable < 2 {
+                state.stable += 1;
+                if state.stable == 2 && size > limit {
+                    on_clip(entry.key().clone());
+                }
+            }
+        }
+        self.files.retain(|_, state| state.seen == scan);
+    }
+}
+
+impl Watch {
+    pub fn new(on_event: fn(WatchEvent)) -> Self {
+        Self {
+            updates: RefCell::new(None),
+            on_event,
+        }
+    }
+
+    pub fn set(&self, c: Config) {
+        let mut updates = self.updates.borrow_mut();
+        if !c.copies && (!c.folders_on || c.folders.is_empty()) && updates.is_none() {
+            return;
+        }
+        let _ = updates
+            .get_or_insert_with(|| Self::start_worker(self.on_event))
+            .send(c);
+    }
+
+    fn start_worker(on_event: fn(WatchEvent)) -> Sender<Config> {
+        let (config, updates) = mpsc::channel::<Config>();
+        std::thread::spawn(move || {
+            let mut c = Config::default();
+            let mut seq = 0;
+            let mut clips = Clips::default();
+            let mut since = SystemTime::now();
+            let mut copy_at: Option<Instant> = None;
+            let mut folder_at: Option<Instant> = None;
+            loop {
+                let next = [copy_at, folder_at].into_iter().flatten().min();
+                let update = match next {
+                    Some(next) => {
+                        updates.recv_timeout(next.saturating_duration_since(Instant::now()))
+                    }
+                    None => updates.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                };
+                let now = Instant::now();
+                match update {
+                    Ok(new) => {
+                        if new.copies && !c.copies {
+                            seq = sys::clipboard_seq();
+                            copy_at = Some(now + CLIPBOARD_POLL);
+                        } else if !new.copies {
+                            copy_at = None;
+                        }
+                        if new.folders_on && !new.folders.is_empty() {
+                            if folder_at.is_none() {
+                                since = SystemTime::now();
+                                folder_at = Some(now + FOLDER_POLL);
+                            }
+                        } else {
+                            folder_at = None;
+                            clips = Clips::default();
+                        }
+                        c = new;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                    Err(RecvTimeoutError::Timeout) => {}
+                }
+                if copy_at.is_some_and(|at| now >= at) {
+                    copy_at = Some(now + CLIPBOARD_POLL);
+                    let current = sys::clipboard_seq();
+                    if current != seq {
+                        seq = current;
                         let files = sys::clipboard_files();
                         let over = files.iter().any(|p| {
                             !ours(p)
@@ -92,51 +200,19 @@ impl Watch {
                         }
                     }
                 }
-
-                if !c.folders_on || c.folders.is_empty() {
-                    since = None;
-                    growing.clear();
-                    continue;
-                }
-                let start = *since.get_or_insert_with(SystemTime::now);
-                // Every 3 s: a clip counts once its size stayed the same twice (saved).
-                if !tick.is_multiple_of(6) {
-                    continue;
-                }
-                let mut found = Vec::new();
-                for f in &c.folders {
-                    walk(f, DEPTH, &mut found);
-                }
-                let mut alive = HashSet::new();
-                for (path, size, modified) in found {
-                    if modified < start || done.contains(&path) {
-                        continue;
+                if folder_at.is_some_and(|at| now >= at) {
+                    let mut found = Vec::new();
+                    for folder in &c.folders {
+                        walk(folder, DEPTH, &mut found);
                     }
-                    alive.insert(path.clone());
-                    let entry = growing.entry(path.clone()).or_insert((size, 0));
-                    if entry.0 == size && size > 0 {
-                        entry.1 += 1;
-                    } else {
-                        *entry = (size, 0);
-                    }
-                    if entry.1 >= 2 {
-                        growing.remove(&path);
-                        done.insert(path.clone());
-                        if size > c.limit {
-                            on_event(WatchEvent::Clip(path));
-                        }
-                    }
+                    clips.scan(found, since, c.limit, |path| {
+                        on_event(WatchEvent::Clip(path))
+                    });
+                    folder_at = Some(Instant::now() + FOLDER_POLL);
                 }
-                growing.retain(|p, _| alive.contains(p));
             }
         });
-        Watch(cfg)
-    }
-
-    pub fn set(&self, c: Config) {
-        if let Ok(mut g) = self.0.lock() {
-            *g = c;
-        }
+        config
     }
 }
 
@@ -161,6 +237,30 @@ mod tests {
         assert!(ours(Path::new("C:/v/clip.kompacter.mp4")));
         assert!(!ours(Path::new("C:/v/clip.mp4")));
         assert!(!ours(Path::new("C:/v/kompacter.mp4")));
+    }
+
+    #[test]
+    fn a_saved_clip_fires_once_and_replacements_are_seen() {
+        let mut clips = Clips::default();
+        let t = SystemTime::now();
+        let path = PathBuf::from("clip.mp4");
+        let events = RefCell::new(Vec::new());
+        let on_clip = |path| events.borrow_mut().push(path);
+        let original = (path.clone(), 50, t);
+        clips.scan([original.clone(), original.clone()], t, 10, on_clip);
+        clips.scan([original.clone()], t, 10, on_clip);
+        assert!(events.borrow().is_empty());
+        clips.scan([original.clone()], t, 10, on_clip);
+        clips.scan([original], t, 10, on_clip);
+        assert_eq!(events.borrow().len(), 1);
+
+        let replacement = (path.clone(), 50, t + Duration::from_secs(1));
+        for _ in 0..3 {
+            clips.scan([replacement.clone()], t, 10, on_clip);
+        }
+        assert_eq!(*events.borrow(), [path.clone(), path]);
+        clips.scan([], t, 10, on_clip);
+        assert!(clips.files.is_empty());
     }
 
     #[test]

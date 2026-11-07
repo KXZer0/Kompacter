@@ -15,6 +15,7 @@ mod quick;
 mod settings;
 mod sys;
 mod trim;
+mod trim_cache;
 mod watch;
 
 use std::cell::{Cell, RefCell};
@@ -83,6 +84,7 @@ pub struct Current {
     pub path: PathBuf,
     pub info: MediaInfo,
     pub estimate: Estimate,
+    pub folder_rows: Vec<kompacter_core::TreeRow>,
 }
 
 pub struct App {
@@ -105,7 +107,7 @@ pub struct App {
     pub auto_hidden: Cell<Option<Instant>>,
     /// All animations (off in Low-memory mode or when Windows animations are off).
     pub rich: bool,
-    /// Floating see-through card (GPU drawing); otherwise a plain window.
+    /// Floating see-through card; otherwise a plain window.
     pub glass: bool,
     pub motion: motion::Motion,
     pub trim: trim::Trim,
@@ -128,11 +130,17 @@ impl App {
         self.ui.upgrade().expect("window")
     }
 
-    pub fn target(&self) -> Target {
+    pub fn target_bytes(&self) -> u64 {
         let s = self.settings.borrow();
-        let list = targets(s.custom_bytes);
-        let i = list.iter().position(|t| t.id == s.preset).unwrap_or(0);
-        list.into_iter().nth(i).expect("presets")
+        if s.preset == "custom" {
+            s.custom_bytes
+        } else {
+            PRESETS
+                .iter()
+                .find(|p| p.id == s.preset)
+                .unwrap_or(&PRESETS[0])
+                .bytes
+        }
     }
 
     /// Options for `target` with the user's formats, for compressing and for estimates
@@ -149,7 +157,7 @@ impl App {
     }
 
     pub fn save(&self) {
-        settings::save(&self.settings.borrow());
+        let _ = settings::save(&self.settings.borrow());
     }
 
     /// Push settings and presets into the window.
@@ -219,7 +227,6 @@ impl App {
         prefs.set_gpu(s.gpu);
         prefs.set_auto_hide(s.auto_hide);
         prefs.set_start_with_windows(s.start_with_windows);
-        prefs.set_low_memory(s.low_memory);
         prefs.set_video_index(match s.video_codec {
             VideoCodec::H264 => 0,
             VideoCodec::H265 => 1,
@@ -309,20 +316,6 @@ impl App {
             },
         );
     }
-
-    /// Restart Kompacter (the drawing mode can only be chosen at start).
-    fn restart(&self) {
-        if let Ok(exe) = std::env::current_exe() {
-            let pid = std::process::id().to_string();
-            if std::process::Command::new(exe)
-                .args(["--after", &pid])
-                .spawn()
-                .is_ok()
-            {
-                let _ = slint::quit_event_loop();
-            }
-        }
-    }
 }
 
 pub fn kind_name(k: MediaKind) -> &'static str {
@@ -388,46 +381,26 @@ fn with_app(f: impl FnOnce(&Rc<App>) + Send + 'static) {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
-    // After a restart, wait for the old copy to exit first.
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(pid) = args
-        .iter()
-        .position(|a| a == "--after")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|p| p.parse().ok())
-    {
-        sys::wait_for_exit(pid);
-    }
     if !sys::first_instance() {
         return Ok(());
     }
-    let quiet = args.iter().any(|a| a == "--tray");
+    let quiet = std::env::args().any(|a| a == "--tray");
 
     let prefs = settings::load();
-    let low_memory = prefs.low_memory;
-
-    let mut backend = slint::BackendSelector::new().backend_name("winit".into());
-    if low_memory {
-        // CPU drawing: the least memory.
-        backend = backend.renderer_name("software".into());
-    }
-    // Otherwise the GPU first, with CPU drawing as Slint's automatic fallback.
+    let backend = slint::BackendSelector::new().backend_name("winit".into());
+    #[cfg(windows)]
+    let backend = backend.renderer_name("skia-software".into());
+    #[cfg(not(windows))]
+    let backend = backend.renderer_name("femtovg".into());
     backend
-        .with_winit_window_attributes_hook(move |attrs| {
+        .with_winit_window_attributes_hook(|attrs| {
             #[cfg(windows)]
             {
                 use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
-                let attrs = attrs.with_skip_taskbar(true);
-                if low_memory {
-                    attrs
-                        .with_undecorated_shadow(true)
-                        .with_corner_preference(CornerPreference::Round)
-                } else {
-                    // The floating card draws its own corners and shadow.
-                    attrs
-                        .with_undecorated_shadow(false)
-                        .with_corner_preference(CornerPreference::DoNotRound)
-                }
+                attrs
+                    .with_skip_taskbar(true)
+                    .with_undecorated_shadow(false)
+                    .with_corner_preference(CornerPreference::DoNotRound)
             }
             #[cfg(not(windows))]
             attrs
@@ -435,13 +408,17 @@ fn main() -> Result<(), slint::PlatformError> {
         .select()?;
 
     let ui = AppWindow::new()?;
-    // Only GPU drawing supports a rendering hook, so this tells which one we got.
-    let gpu = !low_memory && ui.window().set_rendering_notifier(|_, _| {}).is_ok();
-    let rich = !low_memory && sys::animations_enabled();
-    ui.global::<Fx>().set_glass(gpu);
+    // Skia raster supports the translucent card. Installing a rendering notifier
+    // would disable its partial redraws, even if the callback does nothing.
+    #[cfg(windows)]
+    let glass = true;
+    #[cfg(not(windows))]
+    let glass = ui.window().set_rendering_notifier(|_, _| {}).is_ok();
+    let rich = glass && sys::animations_enabled();
+    ui.global::<Fx>().set_glass(glass);
     ui.global::<Fx>().set_rich(rich);
     // Starts folded, so the first open grows in.
-    ui.set_opened(!gpu);
+    ui.set_opened(false);
 
     let tray = Tray::new()?;
     let app = Rc::new(App {
@@ -458,7 +435,7 @@ fn main() -> Result<(), slint::PlatformError> {
         modal: Cell::new(false),
         auto_hidden: Cell::new(None),
         rich,
-        glass: gpu,
+        glass,
         motion: motion::Motion::default(),
         trim: trim::Trim::default(),
         tray: tray.as_weak(),
@@ -466,7 +443,7 @@ fn main() -> Result<(), slint::PlatformError> {
         quick_real: Cell::new(View::Idle),
         guard: Cell::new(None),
         shortcut_set: RefCell::new(String::from("unset")),
-        watch: watch::Watch::start(|e| with_app(move |a| a.on_watch(e))),
+        watch: watch::Watch::new(|e| with_app(move |a| a.on_watch(e))),
         auto_queue: RefCell::new(Default::default()),
         auto_busy: Cell::new(false),
     });
@@ -477,15 +454,8 @@ fn main() -> Result<(), slint::PlatformError> {
     app.sync_settings();
     ui.set_dash_path(format::dashed_round_rect(308.0, 300.0, 28.0, 6.0, 7.0, 0.0).into());
 
-    // Find GPU encoders in the background (so the first compress doesn't wait), then
-    // tidy old outputs.
-    {
-        let engine = app.engine.clone();
-        std::thread::spawn(move || {
-            engine.hw_encoders();
-            output::clean(None);
-        });
-    }
+    // Tidy old outputs. GPU encoders are checked when a video first needs one.
+    std::thread::spawn(|| output::clean(None));
 
     // ── Tray ──
     {
@@ -496,32 +466,35 @@ fn main() -> Result<(), slint::PlatformError> {
                 sys::open_folder(&d);
             }
         });
-        tray.on_quit(|| {
-            let _ = slint::quit_event_loop();
-        });
+        let a = app.clone();
+        tray.on_quit(move || a.trim_quit());
+    }
+
+    {
+        let a = app.clone();
+        ui.on_motion_tick(move |track_eyes| a.tick_motion(track_eyes));
     }
 
     // ── Window events: focus (auto-hide), files dragged in, theme changes ──
     {
+        let weak = Rc::downgrade(&app);
+        ui.window().on_close_requested(move || {
+            if let Some(app) = weak.upgrade() {
+                app.close();
+            }
+            slint::CloseRequestResponse::KeepWindowShown
+        });
         let a = app.clone();
         ui.window().on_winit_window_event(move |_, event| {
             let ui = a.ui();
             match event {
-                winit::event::WindowEvent::Focused(false) => {
-                    let s = a.settings.borrow();
-                    if s.auto_hide && !a.modal.get() && !ui.get_dragging() && a.view() != View::Busy
-                    {
-                        drop(s);
-                        a.away();
-                    }
-                }
+                winit::event::WindowEvent::Focused(false) => a.away(),
                 winit::event::WindowEvent::HoveredFile(_) => {
                     if a.view() != View::Busy && !ui.get_dragging() {
                         if a.quick.get() || !matches!(a.view(), View::Idle | View::Reading) {
                             a.another();
                         }
                         ui.set_dragging(true);
-                        a.wake();
                     }
                 }
                 winit::event::WindowEvent::HoveredFileCancelled => ui.set_dragging(false),
@@ -621,14 +594,16 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
         let a = app.clone();
-        ui.on_close_settings(move || a.close_settings());
+        ui.on_close_settings(move || {
+            a.close_settings();
+            a.trim_activate();
+        });
+        let a = app.clone();
+        ui.on_card_resize_finished(move || a.sync_window_height());
         let a = app.clone();
         ui.on_open_trim(move || a.open_trim());
         let a = app.clone();
-        ui.on_close_trim(move || {
-            a.trim_stop();
-            a.set_view(View::Big)
-        });
+        ui.on_close_trim(move || a.set_view(View::Big));
         let a = app.clone();
         ui.on_trim_changed(move || a.trim_update());
         let a = app.clone();
@@ -638,6 +613,8 @@ fn main() -> Result<(), slint::PlatformError> {
         });
         let a = app.clone();
         ui.on_trim_play(move || a.trim_play());
+        let a = app.clone();
+        ui.on_trim_sound_changed(move || a.trim_sound_changed());
         let a = app.clone();
         ui.on_trim_seek(move |pos| a.trim_seek(pos as f64));
         let a = app.clone();
@@ -650,7 +627,10 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_trim_nudge(move |dir, big| a.trim_nudge(dir, big));
         let a = app.clone();
         ui.on_escape(move || match a.ui().get_view() {
-            View::Settings => a.close_settings(),
+            View::Settings => {
+                a.close_settings();
+                a.trim_activate();
+            }
             View::Trim => a.set_view(View::Big),
             _ => a.close(),
         });
@@ -731,7 +711,20 @@ fn main() -> Result<(), slint::PlatformError> {
         let a = app.clone();
         prefs.on_set_auto_hide(move |on| {
             a.settings.borrow_mut().auto_hide = on;
-            a.save();
+            if on {
+                a.away();
+            } else {
+                a.cancel_auto_hide();
+            }
+            let saved = settings::save(&a.settings.borrow()).is_ok();
+            a.ui().global::<Prefs>().set_auto_hide_error(
+                if saved {
+                    ""
+                } else {
+                    "Could not save for next launch"
+                }
+                .into(),
+            );
             a.sync_settings();
         });
         let a = app.clone();
@@ -740,19 +733,6 @@ fn main() -> Result<(), slint::PlatformError> {
             a.settings.borrow_mut().start_with_windows = sys::starts_with_windows();
             a.save();
             a.sync_settings();
-        });
-        let a = app.clone();
-        prefs.on_set_low_memory(move |on| {
-            a.settings.borrow_mut().low_memory = on;
-            a.save();
-            a.sync_settings();
-            // Let the switch finish moving, then come back in the new mode.
-            let weak = Rc::downgrade(&a);
-            slint::Timer::single_shot(Duration::from_millis(350), move || {
-                if let Some(a) = weak.upgrade() {
-                    a.restart();
-                }
-            });
         });
         let a = app.clone();
         prefs.on_set_video(move |i| {

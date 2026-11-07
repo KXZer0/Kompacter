@@ -15,16 +15,10 @@ kompacter-core = { path = "../../crates/kompacter-core" }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
-# The UI. GPU drawing (femtovg) for smooth animations, CPU drawing ("software") for
-# Low-memory mode and as the automatic fallback.
 slint = { version = "1.18", default-features = false, features = [
   "std",
   "compat-1-2",
   "backend-winit",
-  "renderer-femtovg",
-  "renderer-software",
-  "software-renderer-path",
-  "software-renderer-systemfonts",
   "system-tray",
   "accessibility",
   "unstable-winit-030",
@@ -33,6 +27,17 @@ slint = { version = "1.18", default-features = false, features = [
 
 # Native "choose file / folder" dialogs.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+
+[target.'cfg(not(windows))'.dependencies]
+slint = { version = "1.18", default-features = false, features = [
+  "renderer-femtovg",
+  "renderer-software",
+  "software-renderer-path",
+  "software-renderer-systemfonts",
+] }
+
+[target.'cfg(windows)'.dependencies]
+slint = { version = "1.18", default-features = false, features = ["renderer-skia"] }
 
 # Same Windows bindings Slint already uses (no extra copy).
 [target.'cfg(windows)'.dependencies.windows-sys]

@@ -1,10 +1,10 @@
 //! Showing and hiding the flyout, its size per screen, and the per-frame touches:
 //! eyes that follow the mouse, the press squeezing smoothly, dashes marching on drag.
 //!
-//! Floating card (GPU drawing): the card grows out of the taskbar and folds back (Slint
-//! animates it; Rust only flips `opened`). Plain window (Low-memory mode, or no GPU): Rust
-//! slides and fades the window itself. The per-frame ticker runs only while the window is
-//! visible and something is moving.
+//! Translucent card: the card grows out of the taskbar and folds back (Slint
+//! animates it; Rust only flips `opened`). For an opaque window, Rust slides the
+//! whole flyout. The ambient ticker runs only while the window is
+//! open and the blob or drag indicator is on screen.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -15,17 +15,26 @@ use slint::ComponentHandle;
 
 use crate::{format, sys, App, AppWindow, View};
 
+const FLYOUT_HEIGHT: f32 = 624.0;
+
 #[derive(Default)]
 pub struct Motion {
-    ticker: slint::Timer,
     slide: slint::Timer,
+    anchor: Cell<Option<(i32, i32, f64)>>,
+    reveal: Cell<f32>,
     /// Watches what has focus after Kompacter lost it (see `away`).
     away: slint::Timer,
+    result_hide: slint::Timer,
+    /// An automatic close in progress, and whether it requires losing focus.
+    auto_closing: Cell<Option<bool>>,
+    settings_return: Cell<Option<View>>,
     /// Bumped on every show/close, so a stale close never hides a reopened window.
     generation: Cell<u32>,
     last: Cell<Option<Instant>>,
     dash: Cell<f64>,
     look: Cell<(f32, f32)>,
+    ambient_turn: Cell<f32>,
+    input_height: Cell<f32>,
 }
 
 /// Content height of the screen showing (the paste guard's quick bar has one more row).
@@ -39,17 +48,42 @@ pub fn view_height(ui: &AppWindow) -> f32 {
     }
 }
 
-/// Bottom-right, above the taskbar. Returns the window's top-left in physical pixels.
-fn place(ui: &AppWindow, glass: bool) -> Option<(i32, i32, f64)> {
-    let (right, bottom, scale) = sys::corner()?;
-    // The floating card has its own 12 px see-through margin (room for its shadow).
+/// Position the flyout above the taskbar, with room for the slide at its bottom edge.
+fn place(ui: &AppWindow, motion: &Motion, glass: bool, resize: bool) {
+    // Rust owns the native size. In particular, a hidden flyout may still have
+    // the dimensions of Settings even though its next view is shorter.
     let (inset, margin) = if glass { (12.0, 0.0) } else { (0.0, 12.0) };
-    let w = (360.0 + 2.0 * inset) * scale;
-    let h = (ui.get_win_h() as f64 + 2.0 * inset) * scale;
-    let x = (right as f64 - w - margin * scale) as i32;
-    let y = (bottom as f64 - h - margin * scale) as i32;
-    ui.window().set_position(slint::PhysicalPosition::new(x, y));
-    Some((x, y, scale))
+    let width = 360.0 + 2.0 * inset;
+    let height = f64::from(ui.get_win_h()) + 2.0 * inset;
+    let Some((right, bottom, scale)) = motion.anchor.get() else {
+        if resize {
+            ui.window()
+                .set_size(slint::LogicalSize::new(width as f32, height as f32));
+        }
+        return;
+    };
+    let w = (width * scale).round() as i32;
+    let h = (height * scale).round() as i32;
+    let x = right - w - (margin * scale).round() as i32;
+    let offset = if glass {
+        0.0
+    } else {
+        f64::from(1.0 - motion.reveal.get()) * 24.0
+    };
+    let y = bottom - h + ((offset - margin) * scale).round() as i32;
+    let position = slint::PhysicalPosition::new(x, y);
+    if resize {
+        if let Some(hwnd) = hwnd(ui) {
+            if sys::resize_flyout(hwnd, x, y, w, h) {
+                return;
+            }
+        }
+        ui.window()
+            .set_size(slint::PhysicalSize::new(w as u32, h as u32));
+    }
+    if ui.window().position() != position {
+        ui.window().set_position(position);
+    }
 }
 
 #[cfg(windows)]
@@ -97,39 +131,67 @@ impl App {
         } else {
             v
         };
+        if was == View::Trim && v != View::Trim {
+            self.trim_halt();
+        }
+        if v == View::Settings && was != View::Settings {
+            self.motion.settings_return.set(Some(was));
+        }
         ui.set_view(v);
+        if was != self.view() {
+            self.motion.result_hide.stop();
+        }
         // Reset the press while it's out of sight, so the next run starts open.
         if was == View::Busy && self.view() != View::Busy {
             ui.set_squeeze(0.0);
         }
+        self.sync_window_height();
+    }
+
+    pub fn sync_window_height(&self) {
+        let ui = self.ui();
         let want = view_height(&ui);
+        if self.glass && cfg!(windows) {
+            // Resizing the HWND after the card shrinks briefly presents its old
+            // surface at the new position. Keep the native surface stationary,
+            // and exclude the transparent space above the card from input.
+            if ui.get_win_h() != FLYOUT_HEIGHT {
+                ui.set_win_h(FLYOUT_HEIGHT);
+                place(&ui, &self.motion, self.glass, true);
+            }
+            if want >= self.motion.input_height.get()
+                || ui.get_card_settled()
+                || !ui.window().is_visible()
+            {
+                self.set_flyout_input_height(want);
+            }
+            return;
+        }
         let have = ui.get_win_h();
-        if want > have || !self.glass {
+        if want != have && (want > have || ui.get_card_settled() || !ui.window().is_visible()) {
             ui.set_win_h(want);
             if ui.window().is_visible() {
-                place(&ui, self.glass);
+                place(&ui, &self.motion, self.glass, true);
             }
-        } else if want < have {
-            // Let the card fold in first, then shrink the window to match.
-            let w = ui.as_weak();
-            let glass = self.glass;
-            slint::Timer::single_shot(Duration::from_millis(400), move || {
-                if let Some(ui) = w.upgrade() {
-                    if view_height(&ui) == want && ui.get_win_h() != want {
-                        ui.set_win_h(want);
-                        place(&ui, glass);
-                    }
-                }
-            });
+        }
+    }
+
+    fn set_flyout_input_height(&self, height: f32) {
+        if let Some(hwnd) = hwnd(&self.ui()) {
+            if sys::clip_flyout_input(hwnd, height + 24.0, self.ui().window().scale_factor()) {
+                self.motion.input_height.set(height);
+            }
         }
     }
 
     pub fn close_settings(&self) {
-        let back = if self.current.borrow().is_some() {
-            View::Big
-        } else {
-            View::Idle
-        };
+        let back = self.motion.settings_return.take().unwrap_or_else(|| {
+            if self.current.borrow().is_some() {
+                View::Big
+            } else {
+                View::Idle
+            }
+        });
         self.set_view(back);
     }
 
@@ -144,109 +206,243 @@ impl App {
         self.motion.generation.set(generation);
         self.apply_theme();
         self.motion.slide.stop();
+        self.motion.away.stop();
+        self.motion.result_hide.stop();
+        self.motion.auto_closing.set(None);
+        self.auto_hidden.set(None);
+        let was_hidden = !ui.window().is_visible();
+        if was_hidden || self.motion.anchor.get().is_none() {
+            self.motion.anchor.set(sys::corner());
+        }
+        self.sync_window_height();
 
-        let pos = place(&ui, self.glass);
+        let animate = sys::animations_enabled();
+        if !self.glass && !animate {
+            self.motion.reveal.set(1.0);
+        }
+        if !self.glass {
+            if let Some(h) = hwnd(&ui) {
+                sys::style_plain_window(h);
+            }
+        }
+        place(&ui, &self.motion, self.glass, was_hidden);
+        if self.glass && cfg!(windows) {
+            self.set_flyout_input_height(view_height(&ui));
+        }
         let _ = ui.show();
-        // Again once the window exists (first show), then focus it.
-        let pos = place(&ui, self.glass).or(pos);
+        self.trim_activate();
+        place(&ui, &self.motion, self.glass, was_hidden);
+        if self.glass && cfg!(windows) {
+            self.set_flyout_input_height(view_height(&ui));
+        }
         if focus {
             ui.window().with_winit_window(|w| w.focus_window());
+            self.away();
         }
 
         if self.glass {
-            // Grow in (next frame, so the folded state is drawn first).
-            let w = ui.as_weak();
-            slint::Timer::single_shot(Duration::from_millis(16), move || {
-                if let Some(ui) = w.upgrade() {
-                    ui.set_opened(true);
-                }
-            });
-        } else if let (Some(h), Some((x, y, scale))) = (hwnd(&ui), pos) {
-            sys::style_plain_window(h);
-            self.slide(h, x, y, scale, true, generation);
+            if self.rich {
+                // Draw the folded card before opening it, unless a close intervened.
+                let weak = Rc::downgrade(self);
+                slint::Timer::single_shot(Duration::from_millis(16), move || {
+                    if let Some(app) = weak.upgrade() {
+                        if app.motion.generation.get() == generation {
+                            app.ui().set_opened(true);
+                        }
+                    }
+                });
+            } else {
+                ui.set_opened(true);
+            }
+        } else {
+            ui.set_opened(true);
+            if let Some(h) = hwnd(&ui) {
+                sys::style_plain_window(h);
+            }
+            if animate && cfg!(windows) {
+                self.slide(true, generation);
+            }
         }
-        self.wake();
     }
 
-    /// Kompacter lost focus (auto-hide on). Don't hide while the user is finding a file to
-    /// drag in (File Explorer, desktop, a file dialog, the taskbar): wait, and hide once
-    /// they've moved on to something else.
+    /// Recheck focus after a short grace period. A drag or picker can temporarily
+    /// prevent dismissal without losing the original focus change.
     pub fn away(self: &Rc<Self>) {
+        if !self.settings.borrow().auto_hide || self.motion.away.running() {
+            return;
+        }
         let weak = Rc::downgrade(self);
+        let ready = Cell::new(false);
         self.motion.away.start(
             slint::TimerMode::Repeated,
             Duration::from_millis(200),
             move || {
                 let Some(app) = weak.upgrade() else { return };
                 let ui = app.ui();
-                let focused = ui
-                    .window()
-                    .with_winit_window(|w| w.has_focus())
-                    .unwrap_or(false);
-                if focused || !ui.window().is_visible() {
+                if !app.settings.borrow().auto_hide || app.has_focus() || !ui.window().is_visible()
+                {
                     app.motion.away.stop();
                     return;
                 }
-                let waiting = app.modal.get()
-                    || ui.get_dragging()
-                    || app.view() == View::Busy
-                    || sys::browsing_files();
-                if !waiting {
+                // Ignore transient focus changes and let pointer gestures finish.
+                let allowed = ui.get_opened() && app.can_auto_hide(true);
+                if ready.replace(allowed) && allowed {
                     app.motion.away.stop();
                     app.auto_hidden.set(Some(Instant::now()));
-                    app.close();
+                    app.close_automatically(true);
                 }
             },
         );
     }
 
+    fn has_focus(&self) -> bool {
+        #[cfg(windows)]
+        return sys::app_is_foreground();
+        #[cfg(not(windows))]
+        self.ui()
+            .window()
+            .with_winit_window(|w| w.has_focus())
+            .unwrap_or(false)
+    }
+
+    fn can_auto_hide(&self, require_unfocused: bool) -> bool {
+        let ui = self.ui();
+        self.settings.borrow().auto_hide
+            && ui.window().is_visible()
+            && (!require_unfocused || !self.has_focus())
+            && !self.modal.get()
+            && !ui.get_dragging()
+            && self.dropped.borrow().is_empty()
+            && self.view() != View::Busy
+            && !sys::left_mouse_down()
+    }
+
+    pub fn cancel_auto_hide(self: &Rc<Self>) {
+        self.motion.away.stop();
+        self.motion.result_hide.stop();
+        if self.motion.auto_closing.take().is_some() {
+            self.show_with(false);
+        }
+    }
+
+    pub fn auto_hide_result(self: &Rc<Self>) {
+        let quick = self.quick.get();
+        if !self.settings.borrow().auto_hide || (!quick && self.has_focus()) {
+            return;
+        }
+        self.motion.away.stop();
+        let weak = Rc::downgrade(self);
+        self.motion.result_hide.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(if quick { 2400 } else { 2500 }),
+            move || {
+                if let Some(app) = weak.upgrade() {
+                    if app.view() != View::Done
+                        || app.quick.get() != quick
+                        || (!quick && app.has_focus())
+                    {
+                        app.motion.result_hide.stop();
+                    } else if app.ui().get_opened() && app.can_auto_hide(!quick) {
+                        app.motion.result_hide.stop();
+                        app.close_automatically(!quick);
+                    }
+                }
+            },
+        );
+    }
+
+    fn close_automatically(self: &Rc<Self>, require_unfocused: bool) {
+        if self.ui().get_opened() && self.can_auto_hide(require_unfocused) {
+            self.motion.auto_closing.set(Some(require_unfocused));
+            self.begin_close();
+        }
+    }
+
     /// Fold or slide away, then hide.
     pub fn close(self: &Rc<Self>) {
+        self.motion.auto_closing.set(None);
+        self.trim_halt();
+        self.begin_close();
+    }
+
+    fn begin_close(self: &Rc<Self>) {
         let ui = self.ui();
         if !ui.window().is_visible() {
             return;
         }
         let generation = self.motion.generation.get() + 1;
         self.motion.generation.set(generation);
-        if self.glass {
-            ui.set_opened(false);
+        ui.set_opened(false);
+        if self.glass && self.rich {
+            // Start evaluating the transition now. An unfocused flyout has no
+            // ambient ticker, so keep its exit frames scheduled until the
+            // animation actually reaches zero instead of hiding on a deadline.
+            let _ = ui.get_flyout_reveal();
+            ui.window().request_redraw();
             let weak = Rc::downgrade(self);
-            slint::Timer::single_shot(Duration::from_millis(230), move || {
-                if let Some(app) = weak.upgrade() {
-                    if app.motion.generation.get() == generation {
-                        app.hide_now();
+            self.motion.slide.start(
+                slint::TimerMode::Repeated,
+                Duration::from_millis(16),
+                move || {
+                    let Some(app) = weak.upgrade() else { return };
+                    let ui = app.ui();
+                    if app.motion.generation.get() != generation || ui.get_opened() {
+                        app.motion.slide.stop();
+                        return;
                     }
-                }
-            });
+                    let reveal = ui.get_flyout_reveal();
+                    ui.window().request_redraw();
+                    if reveal == 0.0 {
+                        app.motion.slide.stop();
+                        let weak = Rc::downgrade(&app);
+                        slint::Timer::single_shot(Duration::from_millis(16), move || {
+                            if let Some(app) = weak.upgrade() {
+                                if app.motion.generation.get() == generation {
+                                    app.finish_close();
+                                }
+                            }
+                        });
+                    }
+                },
+            );
+        } else if !self.glass && sys::animations_enabled() && hwnd(&ui).is_some() {
+            self.slide(false, generation);
         } else {
-            let pos = ui.window().position();
-            match hwnd(&ui) {
-                Some(h) => self.slide(
-                    h,
-                    pos.x,
-                    pos.y,
-                    ui.window().scale_factor() as f64,
-                    false,
-                    generation,
-                ),
-                None => self.hide_now(),
+            self.finish_close();
+        }
+    }
+
+    fn finish_close(self: &Rc<Self>) {
+        if let Some(require_unfocused) = self.motion.auto_closing.take() {
+            if !self.can_auto_hide(require_unfocused) {
+                self.show_with(false);
+                if require_unfocused && !self.has_focus() {
+                    self.away();
+                }
+                return;
             }
         }
+        self.hide_now();
     }
 
     fn hide_now(&self) {
         let ui = self.ui();
+        let _ = ui.hide();
         if ui.get_view() == View::Settings {
             self.close_settings();
         }
+        self.trim_halt();
         self.quick_hidden();
-        self.motion.ticker.stop();
-        let _ = ui.hide();
+        self.motion.last.set(None);
+        self.motion.slide.stop();
+        self.motion.away.stop();
+        self.motion.result_hide.stop();
+        self.motion.reveal.set(0.0);
     }
 
     pub fn toggle(self: &Rc<Self>) {
         let ui = self.ui();
-        let open = ui.window().is_visible() && (!self.glass || ui.get_opened());
+        let open = ui.window().is_visible() && ui.get_opened();
         if open {
             self.close();
         } else if self
@@ -260,109 +456,53 @@ impl App {
         }
     }
 
-    /// Plain window: slide up and fade in (or down and out), then hide when closing.
-    fn slide(
-        self: &Rc<Self>,
-        h: isize,
-        x: i32,
-        y: i32,
-        scale: f64,
-        opening: bool,
-        generation: u32,
-    ) {
+    /// Move the native window without resizing or rerendering its contents. A reversal
+    /// starts at the current position, so repeated tray clicks never jump to an endpoint.
+    fn slide(self: &Rc<Self>, opening: bool, generation: u32) {
         let start = Instant::now();
-        let dur = if opening { 220.0 } else { 150.0 };
-        let dist = (if opening { 18.0 } else { 12.0 }) * scale;
-        let weak = Rc::downgrade(self);
-        let step = move || -> bool {
-            let Some(app) = weak.upgrade() else {
-                return true;
-            };
-            if app.motion.generation.get() != generation {
-                return true;
-            }
-            let t = (start.elapsed().as_secs_f64() * 1000.0 / dur).min(1.0) as f32;
-            let k = if opening { ease_out(t) } else { t * t };
-            let (off, alpha) = if opening {
-                ((1.0 - k) as f64 * dist, k)
-            } else {
-                (k as f64 * dist, 1.0 - k)
-            };
-            sys::set_alpha(h, (alpha * 255.0) as u8);
-            app.ui()
-                .window()
-                .set_position(slint::PhysicalPosition::new(x, y + off as i32));
-            if t >= 1.0 {
-                if !opening {
-                    app.hide_now();
-                    sys::set_alpha(h, 255);
-                    app.ui()
-                        .window()
-                        .set_position(slint::PhysicalPosition::new(x, y));
-                }
-                return true;
-            }
-            false
-        };
-        if step() {
-            return;
-        }
-        let step = std::cell::RefCell::new(step);
+        let from = self.motion.reveal.get();
+        let to = if opening { 1.0 } else { 0.0 };
+        let duration = if opening { 0.180 } else { 0.160 };
         let weak = Rc::downgrade(self);
         self.motion.slide.start(
             slint::TimerMode::Repeated,
-            Duration::from_millis(8),
-            move || {
-                if (step.borrow_mut())() {
-                    if let Some(app) = weak.upgrade() {
-                        app.motion.slide.stop();
-                    }
-                }
-            },
-        );
-    }
-
-    /// Start the per-frame ticker (if something needs it).
-    pub fn wake(self: &Rc<Self>) {
-        if self.motion.ticker.running() {
-            return;
-        }
-        self.motion.last.set(None);
-        let weak = Rc::downgrade(self);
-        self.motion.ticker.start(
-            slint::TimerMode::Repeated,
             Duration::from_millis(16),
             move || {
-                if let Some(app) = weak.upgrade() {
-                    if !app.tick() {
-                        app.motion.ticker.stop();
+                let Some(app) = weak.upgrade() else { return };
+                if app.motion.generation.get() != generation {
+                    return;
+                }
+                let t = (start.elapsed().as_secs_f32() / duration).min(1.0);
+                let reveal = from + (to - from) * ease_out(t);
+                app.motion.reveal.set(reveal);
+                place(&app.ui(), &app.motion, false, false);
+                if t == 1.0 {
+                    app.motion.slide.stop();
+                    if !opening {
+                        app.finish_close();
                     }
                 }
             },
         );
     }
 
-    /// One frame. Returns false when nothing needs frames any more.
-    fn tick(&self) -> bool {
+    /// Update the visible blob's ambient motion and gaze, plus the drag indicator.
+    pub fn tick_motion(&self, track_eyes: bool) {
         let ui = self.ui();
-        if !ui.window().is_visible() {
-            return false;
-        }
         let now = Instant::now();
         let dt = self
             .motion
             .last
             .replace(Some(now))
-            .map_or(0.016, |l| now.duration_since(l).as_secs_f32().min(0.1));
-        let view = ui.get_view();
+            .map_or(0.033, |l| now.duration_since(l).as_secs_f32().min(0.066));
 
-        if self.rich {
-            // Eyes follow the mouse, anywhere on screen.
-            let stage = matches!(
-                view,
-                View::Idle | View::Done | View::Reading | View::Big | View::Error
-            );
-            if let (true, Some((cx, cy))) = (stage, sys::cursor()) {
+        // Eyes follow the mouse, anywhere on screen.
+        if track_eyes {
+            let turn = (self.motion.ambient_turn.get() + dt / 18.0).fract();
+            self.motion.ambient_turn.set(turn);
+            ui.set_ambient_turn(turn);
+            if let Some((cx, cy)) = sys::cursor() {
+                let view = ui.get_view();
                 let scale = ui.window().scale_factor();
                 let pos = ui.window().position();
                 let inset = if self.glass { 12.0 } else { 0.0 };
@@ -384,13 +524,12 @@ impl App {
                     ui.set_look_y(ly);
                 }
             }
-            // Marching dashes while a file hovers over the drop zone.
-            if ui.get_dragging() {
-                let d = self.motion.dash.get() + dt as f64 * 22.0;
-                self.motion.dash.set(d);
-                ui.set_dash_path(format::dashed_round_rect(308.0, 300.0, 28.0, 6.0, 7.0, d).into());
-            }
         }
-        self.rich
+        // Marching dashes while a file hovers over the drop zone.
+        if ui.get_dragging() {
+            let d = self.motion.dash.get() + dt as f64 * 22.0;
+            self.motion.dash.set(d);
+            ui.set_dash_path(format::dashed_round_rect(308.0, 300.0, 28.0, 6.0, 7.0, d).into());
+        }
     }
 }

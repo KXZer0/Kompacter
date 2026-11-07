@@ -4,7 +4,7 @@ Compress any file, any time. With better quality and more for those apps. All lo
 
 Copy a file that's too big for Discord (or email, or any app with an upload limit), and Kompacter shrinks it to fit, puts it back on your clipboard, and you paste. Videos, audio, images, whole folders. Nothing is uploaded anywhere: every byte stays on your PC.
 
-> Status: early development. The compression engine (with GPU support) and CLI work. The Windows app is a native rewrite (no web view): light, about 20 MB of memory.
+> Status: early development. The Windows tray app uses Skia CPU rendering. Media jobs run in FFmpeg, with hardware encoding available on supported GPUs.
 
 ## Download
 

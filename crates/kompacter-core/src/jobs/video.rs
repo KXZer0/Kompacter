@@ -44,20 +44,27 @@ pub(crate) fn fit(
     }
 
     let mut filters = Vec::new();
+    if plan.fps + 0.01 < v.fps {
+        // Discard out-of-range frames before resampling, and resample before scaling
+        // so Lanczos runs only on the frames that are kept.
+        if let Some(trim) = trim {
+            filters.push(format!("trim=end={:.6}", trim.len()));
+        }
+        filters.push(format!("fps={:.3}", plan.fps));
+    }
     if (plan.width, plan.height) != (v.width, v.height) {
         filters.push(format!(
             "scale={}:{}:flags=lanczos",
             plan.width, plan.height
         ));
     }
-    if plan.fps + 0.01 < v.fps {
-        filters.push(format!("fps={:.3}", plan.fps));
-    }
     // Tight budget: grain and sensor noise eat bits without adding anything, so smooth
     // them lightly first (fast, after scaling). Plenty of bits: leave it untouched.
     if plan.quality != crate::Quality::Great {
         filters.push("hqdn3d=1.5:1.5:6:6".into());
     }
+    let cpus = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let x264_limit = if plan.height <= 1080 { 16 } else { 24 };
     let job = Job {
         ctx,
         info,
@@ -65,10 +72,13 @@ pub(crate) fn fit(
         secs,
         target,
         filters: filters.join(","),
+        decode_threads: cpus.min(12).to_string(),
+        filter_threads: cpus.min(8).to_string(),
+        x264_threads: (cpus * 3 / 2).min(x264_limit).to_string(),
         out: with_ext(out_base, "mp4"),
     };
 
-    if let Some(&enc) = ctx.encoders.first() {
+    if let Some(&enc) = (ctx.encoders)().first() {
         match job.run_hw(enc, plan.clone(), progress) {
             Ok(p) => return Ok(p),
             Err(Error::Cancelled) => return Err(Error::Cancelled),
@@ -82,17 +92,20 @@ pub(crate) fn fit(
     }
 }
 
-struct Job<'a> {
-    ctx: &'a Ctx<'a>,
+struct Job<'a, 'ctx> {
+    ctx: &'a Ctx<'ctx>,
     info: &'a MediaInfo,
     trim: Option<Trim>,
     secs: f64,
     target: u64,
     filters: String,
+    decode_threads: String,
+    filter_threads: String,
+    x264_threads: String,
     out: PathBuf,
 }
 
-impl Job<'_> {
+impl Job<'_, '_> {
     /// Single pass on the GPU, with one retry at a lower bitrate if it overshoots.
     fn run_hw(&self, enc: Encoder, mut plan: VideoPlan, progress: Progress) -> Result<PathBuf> {
         plan.video_kbps = (plan.video_kbps as f64 * HW_HEADROOM) as u32;
@@ -134,10 +147,18 @@ impl Job<'_> {
             let pass = |n: &str, plan: &VideoPlan| {
                 let mut a = self.head();
                 a.extend(args([
-                    "-c:v", "libx264", "-preset", preset, "-pix_fmt", "yuv420p", "-b:v",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    preset,
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-threads:v",
+                    &self.x264_threads,
+                    "-b:v",
                 ]));
                 a.push(format!("{}k", plan.video_kbps).into());
-                a.extend(args(["-pass", n, "-passlogfile"]));
+                a.extend(args(["-pass:v", n, "-passlogfile:v"]));
                 a.push(passlog.clone().into());
                 a
             };
@@ -241,8 +262,26 @@ impl Job<'_> {
 
     /// Input, trim and the video stream + filters.
     fn head(&self) -> Vec<OsString> {
-        let mut a = input_args(&self.info.path, self.trim);
+        // Decoder, filter, and encoder workers run simultaneously. Bound the first
+        // two pools independently so large frames don't pile up on many-core PCs.
+        let mut a = args([
+            "-threads:v",
+            &self.decode_threads,
+            "-filter_threads",
+            &self.filter_threads,
+        ]);
+        a.extend(input_args(&self.info.path, self.trim));
         a.extend(args(["-map", "0:v:0"]));
+        if self.trim.is_some() {
+            // The default encoder time base rounds to a whole frame interval. This can
+            // shift video against audio and make -t discard the last selected frame.
+            a.extend(args([
+                "-fps_mode:v",
+                "passthrough",
+                "-enc_time_base:v",
+                "1:90000",
+            ]));
+        }
         if !self.filters.is_empty() {
             a.extend(args(["-vf", self.filters.as_str()]));
         }
@@ -258,6 +297,19 @@ impl Job<'_> {
         if self.ctx.codec == VideoCodec::H265 {
             // The tag Apple devices (and most players) expect for H.265 in MP4.
             a.extend(args(["-tag:v", "hvc1"]));
+        }
+        if let Some(trim) = self.trim {
+            // MP4 uses both presentation and decode timestamps when computing duration.
+            // Cap the final sample in both timelines, including with reordered frames.
+            let frame = 1.0 / plan.fps;
+            let end = trim.len();
+            a.push("-bsf:v".into());
+            a.push(
+                format!(
+                    "setts=pts=PTS:dts=DTS:duration='max(1,min(if(gt(DURATION,0),DURATION,{frame:.6}/TB),{end:.6}/TB-max(PTS,DTS+STARTPTS-STARTDTS)))'"
+                )
+                .into(),
+            );
         }
         a.extend(args(["-movflags", "+faststart"]));
         a.push(self.out.clone().into());

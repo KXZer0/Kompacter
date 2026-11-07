@@ -3,8 +3,9 @@
 //! If it still can't fit in one zip, `fit_parts` packs it into several zips that each fit.
 
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use zip::write::SimpleFileOptions;
 use zip::CompressionMethod;
@@ -24,6 +25,7 @@ type Entry = (String, PathBuf, bool);
 /// Headroom for zip headers and rounding.
 const ZIP_SLACK: f64 = 0.95;
 const PER_ENTRY_OVERHEAD: u64 = 512;
+const COPY_BUFFER: usize = 64 * 1024;
 
 pub(crate) fn fit(
     ctx: &Ctx,
@@ -81,7 +83,7 @@ pub(crate) fn fit(
                 chosen = out;
             }
         }
-        if ctx.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        if ctx.cancel.load(Ordering::Relaxed) {
             return Err(Error::Cancelled);
         }
         progress(slice(i as f32 + 1.0));
@@ -93,11 +95,9 @@ pub(crate) fn fit(
     }
 
     let out = with_ext(out_base, ctx.archive.ext());
-    write_archive(&out, &entries, ctx.archive)?;
+    let size = write_archive(ctx, &out, &entries, target)?;
     progress(1.0);
-    let size = std::fs::metadata(&out)?.len();
     if size > target {
-        let _ = std::fs::remove_file(&out);
         return Err(Error::DoesNotFit {
             what: root,
             target,
@@ -156,7 +156,7 @@ pub(crate) fn fit_parts(
             size = std::fs::metadata(&out)?.len();
             chosen = out;
         }
-        if ctx.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        if ctx.cancel.load(Ordering::Relaxed) {
             return Err(Error::Cancelled);
         }
         progress(slice(i as f32 + 1.0));
@@ -195,12 +195,12 @@ pub(crate) fn fit_parts(
         } else {
             with_ext(&super::split::part_base(out_base, i as u32 + 1, parts), ext)
         };
-        write_archive(&path, items, ctx.archive)?;
-        if std::fs::metadata(&path)?.len() > target {
+        let size = write_archive(ctx, &path, items, target)?;
+        if size > target {
             return Err(Error::DoesNotFit {
                 what: root,
                 target,
-                best: std::fs::metadata(&path)?.len(),
+                best: size,
             });
         }
         progress(0.9 + 0.1 * (i + 1) as f32 / parts as f32);
@@ -210,17 +210,15 @@ pub(crate) fn fit_parts(
 }
 
 /// Non-media files (documents, programs, ...): pack them into an archive and hope it fits.
-pub(crate) fn zip_single(
-    path: &Path,
-    target: u64,
-    out_base: &Path,
-    archive: ArchiveFormat,
-) -> Result<PathBuf> {
-    let out = with_ext(out_base, archive.ext());
-    write_archive(&out, &[(name_of(path), path.to_path_buf(), false)], archive)?;
-    let size = std::fs::metadata(&out)?.len();
+pub(crate) fn zip_single(ctx: &Ctx, path: &Path, target: u64, out_base: &Path) -> Result<PathBuf> {
+    let out = with_ext(out_base, ctx.archive.ext());
+    let size = write_archive(
+        ctx,
+        &out,
+        &[(name_of(path), path.to_path_buf(), false)],
+        target,
+    )?;
     if size > target {
-        let _ = std::fs::remove_file(&out);
         return Err(Error::DoesNotFit {
             what: name_of(path),
             target,
@@ -230,20 +228,58 @@ pub(crate) fn zip_single(
     Ok(out)
 }
 
-fn write_archive(out: &Path, entries: &[Entry], format: ArchiveFormat) -> Result<()> {
-    match format {
-        ArchiveFormat::Zip => write_zip(out, entries),
-        ArchiveFormat::SevenZ => write_7z(out, entries),
+fn write_archive(ctx: &Ctx, out: &Path, entries: &[Entry], target: u64) -> Result<u64> {
+    if ctx.cancel.load(Ordering::Relaxed) {
+        return Err(Error::Cancelled);
+    }
+    // Publish only complete archives that fit.
+    let dir = out.parent().unwrap_or_else(|| Path::new("."));
+    let mut staged = tempfile::NamedTempFile::new_in(dir)?;
+    let result = match ctx.archive {
+        ArchiveFormat::Zip => write_zip(staged.as_file_mut(), entries, ctx.cancel),
+        ArchiveFormat::SevenZ => write_7z(staged.as_file_mut(), entries, ctx.cancel),
+    };
+    if ctx.cancel.load(Ordering::Relaxed) {
+        return Err(Error::Cancelled);
+    }
+    result?;
+    let size = staged.as_file().metadata()?.len();
+    if size <= target {
+        staged.persist(out).map_err(|e| e.error)?;
+    }
+    Ok(size)
+}
+
+struct ArchiveReader<'a> {
+    file: BufReader<File>,
+    cancel: &'a AtomicBool,
+}
+
+impl<'a> ArchiveReader<'a> {
+    fn open(path: &Path, cancel: &'a AtomicBool) -> io::Result<Self> {
+        Ok(Self {
+            file: BufReader::with_capacity(COPY_BUFFER, File::open(path)?),
+            cancel,
+        })
+    }
+}
+
+impl Read for ArchiveReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::other("archive cancelled"));
+        }
+        self.file.read(buffer)
     }
 }
 
 /// 7z: LZMA2 (level 6: much smaller than zip for documents and programs, ~100 MB of RAM
 /// while working); media is stored as-is, since it's already compressed.
-fn write_7z(out: &Path, entries: &[Entry]) -> Result<()> {
+fn write_7z(out: &mut File, entries: &[Entry], cancel: &AtomicBool) -> Result<()> {
     use sevenz_rust2::encoder_options::{EncoderOptions, Lzma2Options};
     use sevenz_rust2::{ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod};
     let err = |e: sevenz_rust2::Error| io::Error::other(e.to_string());
-    let mut w = ArchiveWriter::create(out).map_err(err)?;
+    let mut w = ArchiveWriter::new(BufWriter::with_capacity(COPY_BUFFER, out)).map_err(err)?;
     for (name, file, stored) in entries {
         let method = if *stored {
             EncoderConfiguration::new(EncoderMethod::COPY)
@@ -254,16 +290,16 @@ fn write_7z(out: &Path, entries: &[Entry]) -> Result<()> {
         w.set_content_methods(vec![method]);
         w.push_archive_entry(
             ArchiveEntry::from_path(file, name.clone()),
-            Some(File::open(file)?),
+            Some(ArchiveReader::open(file, cancel)?),
         )
         .map_err(err)?;
     }
-    w.finish()?;
+    w.finish()?.flush()?;
     Ok(())
 }
 
-fn write_zip(out: &Path, entries: &[Entry]) -> Result<()> {
-    let mut zip = zip::ZipWriter::new(File::create(out)?);
+fn write_zip(out: &mut File, entries: &[Entry], cancel: &AtomicBool) -> Result<()> {
+    let mut zip = zip::ZipWriter::new(BufWriter::with_capacity(COPY_BUFFER, out));
     for (name, file, stored) in entries {
         // Media is already compressed: storing it is faster and no bigger.
         let method = if *stored {
@@ -277,7 +313,7 @@ fn write_zip(out: &Path, entries: &[Entry]) -> Result<()> {
             .compression_level((!*stored).then_some(9))
             .large_file(std::fs::metadata(file)?.len() >= u32::MAX as u64);
         zip.start_file(name.as_str(), opts)?;
-        io::copy(&mut File::open(file)?, &mut zip)?;
+        io::copy(&mut ArchiveReader::open(file, cancel)?, &mut zip)?;
     }
     zip.finish()?.flush()?;
     Ok(())
@@ -299,7 +335,12 @@ fn list(ctx: &Ctx, dir: &Path) -> Result<(Vec<RelAbs>, Vec<MediaInfo>)> {
     walk(dir, Path::new(""), &mut files)?;
     let infos = files
         .iter()
-        .map(|(_, abs)| probe(ctx.ff, abs))
+        .map(|(_, abs)| {
+            if ctx.cancel.load(Ordering::Relaxed) {
+                return Err(Error::Cancelled);
+            }
+            probe(ctx.ff, abs)
+        })
         .collect::<Result<Vec<_>>>()?;
     Ok((files, infos))
 }

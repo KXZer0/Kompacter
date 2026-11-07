@@ -1,7 +1,7 @@
 // The Settings screen. Its values and actions live in the `Prefs` global, which Rust fills
 // and listens to (see `sync_settings` in src/main.rs); add a setting here and there.
 
-import { Theme, Icon, AppLogo, Btn, IconBtn, Switch, Seg, Appear, Dropdown } from "theme.slint";
+import { Theme, Icon, AppLogo, Btn, IconBtn, Switch, Seg, Dropdown } from "theme.slint";
 import { Icons } from "icons.slint";
 
 export struct PresetItem {
@@ -19,8 +19,8 @@ export global Prefs {
     in property <string> output-dir;
     in property <bool> gpu;
     in property <bool> auto-hide;
+    in property <string> auto-hide-error;
     in property <bool> start-with-windows;
-    in property <bool> low-memory;
     in property <int> custom-mb;
     in property <int> video-index;
     in property <int> audio-index;
@@ -42,7 +42,6 @@ export global Prefs {
     callback set-gpu(bool);
     callback set-auto-hide(bool);
     callback set-start(bool);
-    callback set-low-memory(bool);
     callback set-custom-mb(int);
     callback set-video(int);
     callback set-audio(int);
@@ -169,10 +168,6 @@ export component SettingsView inherits Rectangle {
     in property <int> preset-index;
     callback select-preset(int);
     callback close-settings();
-    width: 360px;
-    height: 600px;
-    Appear {
-
     width: 360px;
     height: 600px;
     IconBtn {
@@ -491,6 +486,7 @@ export component SettingsView inherits Rectangle {
                 }
                 Cell {
                     label: "Auto-hide";
+                    small: Prefs.auto-hide-error;
                     Switch {
                         checked: Prefs.auto-hide;
                         y: (parent.height - self.height) / 2;
@@ -505,18 +501,8 @@ export component SettingsView inherits Rectangle {
                         toggled(on) => { Prefs.set-start(on); }
                     }
                 }
-                Cell {
-                    label: "Low-memory mode";
-                    small: "Restarts Kompacter";
-                    Switch {
-                        checked: Prefs.low-memory;
-                        y: (parent.height - self.height) / 2;
-                        toggled(on) => { Prefs.set-low-memory(on); }
-                    }
-                }
             }
         }
     }
 
-    }
 }

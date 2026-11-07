@@ -118,21 +118,6 @@ impl App {
         }
     }
 
-    /// The quick bar shows a result for a moment, then folds away by itself.
-    pub fn quick_done(self: &Rc<Self>) {
-        if !self.quick.get() {
-            return;
-        }
-        let weak = Rc::downgrade(self);
-        slint::Timer::single_shot(Duration::from_millis(2400), move || {
-            let Some(app) = weak.upgrade() else { return };
-            // Still showing the result: fold away (it's on the clipboard already).
-            if app.quick.get() && app.quick_real.get() == View::Done {
-                app.close();
-            }
-        });
-    }
-
     /// The bar is closing: back to the normal window for next time.
     pub fn quick_hidden(&self) {
         self.guard.set(None);
@@ -150,7 +135,7 @@ impl App {
         match e {
             InputEvent::Shortcut => {
                 let ui = self.ui();
-                let open = ui.window().is_visible() && (!self.glass || ui.get_opened());
+                let open = ui.window().is_visible() && ui.get_opened();
                 if open {
                     self.close();
                 } else {
@@ -192,7 +177,7 @@ impl App {
         let name = file_name(&path);
         self.set_tray_tip(&format!("Kompacter · shrinking {name}"));
         let prefs = self.settings.borrow().clone();
-        let target = self.target().bytes;
+        let target = self.target_bytes();
         let mut opts = self.options(target);
         opts.out_dir = output::dir(&prefs, &path).ok();
         let engine = self.engine.clone();
@@ -258,7 +243,7 @@ impl App {
         self.quick.set(true);
         self.set_view(View::Done);
         self.show_with(false);
-        self.quick_done();
+        self.auto_hide_result();
     }
 
     pub fn set_tray_tip(&self, text: &str) {
@@ -287,7 +272,7 @@ impl App {
             .collect();
         prefs.set_clip_folders(slint::ModelRc::new(slint::VecModel::from(shown)));
 
-        let limit = self.target().bytes;
+        let limit = self.target_bytes();
         if *self.shortcut_set.borrow() != s.shortcut {
             *self.shortcut_set.borrow_mut() = s.shortcut.clone();
             sys::set_shortcut(shortcut_keys(&s.shortcut));

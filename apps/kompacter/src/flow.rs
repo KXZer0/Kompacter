@@ -4,33 +4,32 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kompacter_core::{MediaKind, Mode, Outcome, Trim};
-use slint::winit_030::WinitWindowAccessor;
-use slint::ComponentHandle;
 
 use crate::format::{bytes, file_name};
-use crate::{format, kind_name, output, run, sys, App, Current, DiffRow, View};
-use slint::{ModelRc, VecModel};
+use crate::{format, kind_name, output, run, sys, App, AppWindow, Current, DiffRow, View};
+use slint::{ComponentHandle, ModelRc, VecModel};
 
 impl App {
     /// A file arrived (drop, paste, choose). Read it, then compress right away if that's
     /// the obvious next step, or show the choices.
     pub fn open(self: &Rc<Self>, path: PathBuf) {
         let ui = self.ui();
-        if matches!(self.view(), View::Busy | View::Reading) {
+        if self.started.get().is_some() || matches!(self.view(), View::Busy | View::Reading) {
             return;
         }
         *self.current.borrow_mut() = None;
         self.batch.borrow_mut().clear();
         ui.set_file_name(file_name(&path).into());
-        ui.set_file_icon(icon(&path));
+        ui.set_file_icon(slint::Image::default());
         ui.set_chomp(ui.get_chomp() + 1);
         self.set_view(View::Reading);
 
         let engine = self.engine.clone();
-        let target = self.target().bytes;
+        let target = self.target_bytes();
         let opts = self.options(target);
         let weak = Rc::downgrade(self);
         let p = path.clone();
@@ -38,13 +37,20 @@ impl App {
             move || {
                 let info = engine.probe(&p).map_err(|e| e.to_string())?;
                 let estimate = engine.estimate(&info, &opts).map_err(|e| e.to_string())?;
-                Ok::<_, String>((info, estimate))
+                let mut folder_rows = if info.kind == MediaKind::Folder {
+                    engine.folder_preview(&p, target).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                folder_rows.truncate(400);
+                folder_rows.shrink_to_fit();
+                Ok::<_, String>((info, estimate, folder_rows, sys::file_icon(&p)))
             },
             move |r| {
                 let Some(app) = weak.upgrade() else { return };
                 match r {
                     Err(e) => app.fail(&e),
-                    Ok((info, estimate)) => {
+                    Ok((info, estimate, folder_rows, icon)) => {
                         let kind = info.kind;
                         // The paste guard always offers its choices first.
                         let direct = !matches!(kind, MediaKind::Folder)
@@ -54,7 +60,9 @@ impl App {
                             path,
                             info,
                             estimate,
+                            folder_rows,
                         });
+                        app.ui().set_file_icon(file_image(icon));
                         if direct {
                             app.compress(None, Mode::Fit, false);
                         } else {
@@ -67,25 +75,27 @@ impl App {
     }
 
     /// One file opens normally; several get the list screen ("Compress all").
-    pub fn open_many(self: &Rc<Self>, mut files: Vec<PathBuf>) {
-        files.retain(|p| p.exists());
+    pub fn open_many(self: &Rc<Self>, files: Vec<PathBuf>) {
+        if self.started.get().is_some() || matches!(self.view(), View::Busy | View::Reading) {
+            return;
+        }
+        let mut files: Vec<_> = files
+            .into_iter()
+            .filter_map(|path| std::fs::metadata(&path).ok().map(|m| (path, m)))
+            .collect();
         match files.len() {
             0 => {}
-            1 => self.open(files.remove(0)),
+            1 => self.open(files.remove(0).0),
             n => {
                 let ui = self.ui();
-                if matches!(self.view(), View::Busy | View::Reading) {
-                    return;
-                }
                 *self.current.borrow_mut() = None;
-                let target = self.target().bytes;
-                let size = |p: &PathBuf| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-                let total: u64 = files.iter().map(size).sum();
+                let target = self.target_bytes();
+                let total: u64 = files.iter().map(|(_, m)| m.len()).sum();
                 ui.set_file_name(format!("{n} files").into());
                 ui.set_file_meta(bytes(total).into());
                 ui.set_file_kind("file".into());
                 ui.set_file_icon(slint::Image::default());
-                let over = files.iter().filter(|p| size(p) > target).count();
+                let over = files.iter().filter(|(_, m)| m.len() > target).count();
                 ui.set_over_ok(over == 0);
                 ui.set_over_text(
                     if over == 0 {
@@ -95,13 +105,14 @@ impl App {
                     }
                     .into(),
                 );
-                let max = files.iter().map(size).max().unwrap_or(0).max(target) as f64 * 1.08;
-                ui.set_meter_fill((files.iter().map(size).max().unwrap_or(0) as f64 / max) as f32);
+                let largest = files.iter().map(|(_, m)| m.len()).max().unwrap_or(0);
+                let max = largest.max(target) as f64 * 1.08;
+                ui.set_meter_fill((largest as f64 / max) as f32);
                 ui.set_meter_limit((target as f64 / max) as f32);
                 let rows: Vec<DiffRow> = files
                     .iter()
-                    .map(|p| {
-                        let b = size(p);
+                    .map(|(p, m)| {
+                        let b = m.len();
                         let after = if b > target {
                             format!("≤ {}", bytes(target))
                         } else {
@@ -109,7 +120,7 @@ impl App {
                         };
                         DiffRow {
                             depth: 0,
-                            icon: if p.is_dir() { "dir" } else { "file" }.into(),
+                            icon: if m.is_dir() { "dir" } else { "file" }.into(),
                             label: file_name(p).into(),
                             before: bytes(b).into(),
                             changed: b > target,
@@ -117,7 +128,7 @@ impl App {
                         }
                     })
                     .collect();
-                let after: u64 = files.iter().map(|p| size(p).min(target)).sum();
+                let after: u64 = files.iter().map(|(_, m)| m.len().min(target)).sum();
                 ui.set_sum_before(bytes(total).into());
                 ui.set_sum_after(format!("≤ {}", bytes(after)).into());
                 ui.set_diff(ModelRc::new(VecModel::from(rows)));
@@ -128,7 +139,7 @@ impl App {
                 ui.set_split_count(0);
                 ui.set_foot_text(slint::SharedString::new());
                 ui.set_chomp(ui.get_chomp() + 1);
-                *self.batch.borrow_mut() = files;
+                *self.batch.borrow_mut() = files.into_iter().map(|(p, _)| p).collect();
                 self.set_view(View::Big);
             }
         }
@@ -138,19 +149,18 @@ impl App {
     /// all together. A file that can't fit is skipped and counted.
     pub fn compress_batch(self: &Rc<Self>) {
         let files = self.batch.borrow().clone();
-        if files.is_empty() {
+        if files.is_empty() || self.started.get().is_some() {
             return;
         }
         let ui = self.ui();
         let prefs = self.settings.borrow().clone();
-        let target = self.target().bytes;
+        let target = self.target_bytes();
         let opts = self.options(target);
         self.cancel.store(false, Ordering::Relaxed);
         self.started.set(Some(Instant::now()));
         ui.set_progress(0.0);
-        ui.set_busy_left("Estimating time…".into());
+        ui.set_busy_left(Default::default());
         self.set_view(View::Busy);
-        self.wake();
         self.start_eta();
 
         let engine = self.engine.clone();
@@ -162,24 +172,11 @@ impl App {
             move || {
                 let mut made = Vec::new();
                 let mut failed = 0;
+                let mut progress = publish_progress(ui_weak);
                 for (i, path) in files.iter().enumerate() {
                     let mut opts = opts.clone();
                     opts.out_dir = output::dir(&prefs, path).ok();
-                    let mut last = -1;
-                    let mut on_progress = |p: f32| {
-                        let total = (i as f32 + p) / n as f32;
-                        let step = (total * 200.0) as i32;
-                        if step != last {
-                            last = step;
-                            let w = ui_weak.clone();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(ui) = w.upgrade() {
-                                    ui.set_progress(total);
-                                    ui.set_squeeze(total);
-                                }
-                            });
-                        }
-                    };
+                    let mut on_progress = |p: f32| progress((i as f32 + p) / n as f32);
                     match engine.compress(path, &opts, &mut on_progress, &cancel) {
                         Ok(out) if out.fits => made.push(out.path),
                         _ if cancel.load(Ordering::Relaxed) => return Err(()),
@@ -198,7 +195,9 @@ impl App {
                 let ui = app.ui();
                 let Ok((made, failed, copied)) = r else {
                     // Cancelled: back to the list.
+                    app.started.set(None);
                     let files = app.batch.borrow().clone();
+                    app.set_view(View::Big);
                     app.open_many(files);
                     return;
                 };
@@ -218,6 +217,7 @@ impl App {
                 let weak = Rc::downgrade(&app);
                 slint::Timer::single_shot(Duration::from_millis(420), move || {
                     let Some(app) = weak.upgrade() else { return };
+                    app.started.set(None);
                     let ui = app.ui();
                     ui.set_done_ok(ok);
                     ui.set_done_split(false);
@@ -230,7 +230,7 @@ impl App {
                         ui.set_hop(ui.get_hop() + 1);
                     }
                     if !app.guard_done(ok && copied) {
-                        app.quick_done();
+                        app.auto_hide_result();
                     }
                 });
             },
@@ -242,7 +242,7 @@ impl App {
         let ui = self.ui();
         let cur = self.current.borrow();
         let Some(c) = cur.as_ref() else { return };
-        let target = self.target().bytes;
+        let target = self.target_bytes();
         let size = c.info.size_bytes;
         let folder = matches!(c.info.kind, MediaKind::Folder);
 
@@ -257,7 +257,6 @@ impl App {
         ui.set_file_name(file_name(&c.path).into());
         ui.set_file_meta(meta.join(" · ").into());
         ui.set_file_kind(kind_name(c.info.kind).into());
-        ui.set_file_icon(icon(&c.path));
 
         let max = size.max(target) as f64 * 1.08;
         ui.set_meter_fill((size as f64 / max) as f32);
@@ -324,18 +323,15 @@ impl App {
             after: after.into(),
         };
         match c.info.kind {
-            MediaKind::Folder => self
-                .engine
-                .folder_preview(&c.path, target)
-                .unwrap_or_default()
-                .into_iter()
-                .take(400)
+            MediaKind::Folder => c
+                .folder_rows
+                .iter()
                 .map(|r| {
                     let icon = if r.is_dir { "dir" } else { "file" };
                     row(
                         r.depth as i32,
                         icon,
-                        r.name,
+                        r.name.clone(),
                         bytes(r.before),
                         bytes(r.after),
                     )
@@ -407,6 +403,9 @@ impl App {
     /// Compress the current file. `range` trims it; `mode` is Fit, KeepQuality (a cut
     /// without re-encoding) or Gif; `split` makes parts that each fit when one can't.
     pub fn compress(self: &Rc<Self>, range: Option<(f64, f64)>, mode: Mode, split: bool) {
+        if self.started.get().is_some() {
+            return;
+        }
         let keep = mode == Mode::KeepQuality;
         let ui = self.ui();
         let cur = self.current.borrow();
@@ -421,7 +420,7 @@ impl App {
         drop(cur);
 
         let prefs = self.settings.borrow().clone();
-        let target = self.target().bytes;
+        let target = self.target_bytes();
         let mut opts = self.options(target);
         opts.mode = mode;
         opts.split = split;
@@ -429,18 +428,13 @@ impl App {
         if let Some((a, b)) = range {
             opts.trim = Trim::new(a, b).ok();
         }
-        opts.out_dir = match output::dir(&prefs, &path) {
-            Ok(d) => Some(d),
-            Err(e) => return self.fail(&e),
-        };
 
         self.cancel.store(false, Ordering::Relaxed);
         self.started.set(Some(Instant::now()));
         ui.set_progress(0.0);
-        ui.set_busy_left("Estimating time…".into());
+        ui.set_busy_left(Default::default());
         if !quick {
             self.set_view(View::Busy);
-            self.wake();
             self.start_eta();
         }
 
@@ -451,21 +445,8 @@ impl App {
         let from_trim = range.is_some();
         run(
             move || {
-                let mut last = -1;
-                let mut on_progress = |p: f32| {
-                    let step = (p * 200.0) as i32; // ~0.5% steps
-                    if step != last {
-                        last = step;
-                        let w = ui_weak.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = w.upgrade() {
-                                ui.set_progress(p);
-                                // Slint glides the press and the % to this.
-                                ui.set_squeeze(p);
-                            }
-                        });
-                    }
-                };
+                opts.out_dir = Some(output::dir(&prefs, &path)?);
+                let mut on_progress = publish_progress(ui_weak);
                 let mut out = engine
                     .compress(&path, &opts, &mut on_progress, &cancel)
                     .map_err(|e| e.to_string())?;
@@ -484,10 +465,12 @@ impl App {
             },
             move |r| {
                 let Some(app) = weak.upgrade() else { return };
+                ETA.with(|e| *e.borrow_mut() = None);
                 match r {
                     Ok((out, copied)) => {
-                        app.ui().set_progress(1.0);
-                        app.ui().set_squeeze(1.0);
+                        let ui = app.ui();
+                        ui.set_progress(1.0);
+                        ui.set_squeeze(1.0);
                         // Let the press finish its squeeze before the result appears.
                         let weak = Rc::downgrade(&app);
                         let delay = if quick { 0 } else { 420 };
@@ -498,8 +481,10 @@ impl App {
                         });
                     }
                     Err(_) if app.cancel.load(Ordering::Relaxed) => {
+                        app.started.set(None);
                         if from_trim {
                             app.set_view(View::Trim);
+                            app.trim_activate();
                         } else if app.current.borrow().as_ref().is_some_and(|c| {
                             !matches!(c.info.kind, MediaKind::Video | MediaKind::Folder)
                         }) {
@@ -528,15 +513,13 @@ impl App {
             move || {
                 let Some(app) = weak.upgrade() else { return };
                 let ui = app.ui();
-                if app.view() != View::Busy {
+                if app.view() != View::Busy || !ui.window().is_visible() {
                     return;
                 }
                 let Some(t) = app.started.get() else { return };
                 let (elapsed, p) = (t.elapsed().as_secs_f64(), ui.get_progress() as f64);
-                let text = if p >= 0.995 {
-                    "Finishing…".to_string()
-                } else if p < 0.03 || elapsed < 1.0 {
-                    "Estimating time…".to_string()
+                let text = if !(0.03..0.99).contains(&p) || elapsed < 1.0 {
+                    String::new()
                 } else {
                     let estimate = elapsed * (1.0 - p) / p;
                     let next = match shown.get() {
@@ -557,7 +540,7 @@ impl App {
     }
 
     fn done(self: &Rc<Self>, out: Outcome, copied: bool, height: Option<u32>, mode: Mode) {
-        ETA.with(|e| *e.borrow_mut() = None);
+        self.started.set(None);
         let ui = self.ui();
         let parts = out.parts.len();
         let title = match (out.fits, copied, parts) {
@@ -589,7 +572,7 @@ impl App {
         } else if ratio >= 1.1 {
             details.push(format!("{ratio:.1}× smaller"));
         }
-        let target = self.target().bytes;
+        let target = self.target_bytes();
         let sub = if !out.fits && can_split {
             format!("{} · too big for one file", bytes(out.output_bytes))
         } else if !out.fits {
@@ -616,50 +599,53 @@ impl App {
         if self.guard_done(out.fits && copied) {
             return;
         }
-        self.quick_done();
-        // If the user already went back to their chat, fold away after a moment.
-        if !ui
-            .window()
-            .with_winit_window(|w| w.has_focus())
-            .unwrap_or(true)
-        {
-            self.auto_hide_later(2500);
-        }
+        self.auto_hide_result();
     }
 
     pub fn fail(&self, e: &str) {
+        self.started.set(None);
         ETA.with(|t| *t.borrow_mut() = None);
         let ui = self.ui();
         ui.set_error_text(e.into());
         self.set_view(View::Error);
     }
+}
 
-    fn auto_hide_later(self: &Rc<Self>, ms: u64) {
-        if !self.settings.borrow().auto_hide {
+fn publish_progress(ui: slint::Weak<AppWindow>) -> impl FnMut(f32) {
+    let latest = Arc::new(Mutex::new(None));
+    let mut last_step = -1;
+    let mut last_sent = None::<Instant>;
+    move |progress| {
+        let step = (progress * 200.0) as i32;
+        if step == last_step
+            || (progress < 1.0
+                && last_sent.is_some_and(|t| t.elapsed() < Duration::from_millis(80)))
+        {
             return;
         }
-        let weak = Rc::downgrade(self);
-        slint::Timer::single_shot(Duration::from_millis(ms), move || {
-            let Some(app) = weak.upgrade() else { return };
-            let ui = app.ui();
-            let focused = ui
-                .window()
-                .with_winit_window(|w| w.has_focus())
-                .unwrap_or(true);
-            if !focused && app.view() != View::Busy && !ui.get_dragging() {
-                app.close();
-            }
-        });
+        last_step = step;
+        last_sent = Some(Instant::now());
+        let notify = latest.lock().unwrap().replace(progress).is_none();
+        if notify {
+            let latest = latest.clone();
+            let ui = ui.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                let progress = latest.lock().unwrap().take();
+                if let (Some(ui), Some(p)) = (ui.upgrade(), progress) {
+                    ui.set_progress(p);
+                    ui.set_squeeze(p);
+                }
+            });
+        }
     }
 }
 
 /// The file's own Windows icon (empty elsewhere: the UI draws a line icon).
-fn icon(path: &std::path::Path) -> slint::Image {
-    sys::file_icon(path)
-        .map(|(w, h, px)| {
-            slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(&px, w, h))
-        })
-        .unwrap_or_default()
+fn file_image(icon: Option<(u32, u32, Vec<u8>)>) -> slint::Image {
+    icon.map(|(w, h, px)| {
+        slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(&px, w, h))
+    })
+    .unwrap_or_default()
 }
 
 thread_local! {

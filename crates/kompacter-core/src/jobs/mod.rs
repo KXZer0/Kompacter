@@ -23,8 +23,8 @@ pub(crate) struct Ctx<'a> {
     pub ff: &'a Ffmpeg,
     pub cancel: &'a AtomicBool,
     pub speed: Speed,
-    /// Working hardware encoders for `codec`, best first. Empty = CPU only.
-    pub encoders: &'a [Encoder],
+    /// Look up hardware encoders only when a video actually needs encoding.
+    pub encoders: &'a dyn Fn() -> &'a [Encoder],
     pub codec: VideoCodec,
     pub audio_format: AudioFormat,
     pub image_format: ImageFormat,
@@ -50,10 +50,10 @@ pub(crate) fn fit_media(
             // If that can't reach the limit, pack it like any other file.
             Some(doc) => match docs::fit(ctx, &info.path, doc, target, out_base, progress) {
                 Err(Error::Cancelled) => Err(Error::Cancelled),
-                Err(_) => folder::zip_single(&info.path, target, out_base, ctx.archive),
+                Err(_) => folder::zip_single(ctx, &info.path, target, out_base),
                 ok => ok,
             },
-            None => folder::zip_single(&info.path, target, out_base, ctx.archive),
+            None => folder::zip_single(ctx, &info.path, target, out_base),
         },
     }
 }
@@ -70,11 +70,11 @@ pub(crate) fn with_ext(base: &Path, ext: &str) -> PathBuf {
 pub(crate) fn input_args(input: &Path, trim: Option<Trim>) -> Vec<OsString> {
     let mut a = Vec::new();
     if let Some(t) = trim {
-        a.extend(["-ss".into(), format!("{:.3}", t.start).into()]);
+        a.extend(["-ss".into(), format!("{:.6}", t.start).into()]);
     }
     a.extend(["-i".into(), input.as_os_str().to_owned()]);
     if let Some(t) = trim {
-        a.extend(["-t".into(), format!("{:.3}", t.len()).into()]);
+        a.extend(["-t".into(), format!("{:.6}", t.len()).into()]);
     }
     a
 }

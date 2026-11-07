@@ -27,7 +27,9 @@ pub use gpu::Encoder;
 pub use jobs::split::MAX_PARTS;
 pub use plan::{Quality, Trim, VideoPlan};
 pub use probe::{MediaInfo, MediaKind};
+pub use thumbs::scrub::TimedFrame;
 pub use thumbs::Frames;
+pub use thumbs::PCM_RATE as PREVIEW_PCM_RATE;
 
 /// What to do with a file.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,11 +169,42 @@ impl Engine {
         self.encoders[i].get_or_init(|| gpu::detect(&self.ff, codec))
     }
 
-    /// `count` small JPEG frames across a video, for the trimmer's filmstrip.
     /// The exact frame at `t` seconds (raw RGB), for the trimmer's preview.
     pub fn frame_at(&self, info: &MediaInfo, t: f64, height: u32) -> Result<thumbs::Frames> {
+        self.frame_at_cancellable(info, t, height, &AtomicBool::new(false))
+    }
+
+    pub fn frame_at_cancellable(
+        &self,
+        info: &MediaInfo,
+        t: f64,
+        height: u32,
+        stop: &AtomicBool,
+    ) -> Result<thumbs::Frames> {
         let size = info.video.as_ref().map_or((0, 0), |v| (v.width, v.height));
-        thumbs::frame_at(&self.ff, &info.path, size, t, height)
+        thumbs::frame_at(&self.ff, &info.path, size, t, height, stop)
+    }
+
+    /// Decode a small window of source frames for repeated nearby scrubs.
+    pub fn decode_scrub_window(
+        &self,
+        info: &MediaInfo,
+        range: std::ops::Range<f64>,
+        height: u32,
+        stop: &AtomicBool,
+        on_frame: &mut dyn FnMut(TimedFrame) -> bool,
+    ) -> Result<()> {
+        let size = info.video.as_ref().map_or((0, 0), |v| (v.width, v.height));
+        thumbs::scrub::decode(
+            &self.ff,
+            &info.path,
+            size,
+            range.start,
+            range.end,
+            height,
+            stop,
+            on_frame,
+        )
     }
 
     /// Play `start..end` silently in real time as small RGB frames (see `thumbs::play`).
@@ -186,15 +219,76 @@ impl Engine {
         stop: &AtomicBool,
         on_frame: &mut dyn FnMut(u32, u32, Vec<u8>) -> bool,
     ) -> Result<()> {
-        let size = info.video.as_ref().map_or((0, 0), |v| (v.width, v.height));
-        thumbs::play(
-            &self.ff, &info.path, size, start, end, height, fps, stop, on_frame,
+        let mut began = None;
+        self.play_preview(
+            info,
+            start,
+            end,
+            height,
+            fps,
+            stop,
+            &mut || {
+                Some(
+                    began
+                        .get_or_insert_with(std::time::Instant::now)
+                        .elapsed()
+                        .as_secs_f64(),
+                )
+            },
+            &mut |_, w, h, rgb| on_frame(w, h, rgb),
         )
+    }
+
+    /// Deliver preview frames against a session clock in seconds relative to `start`.
+    /// A clock returning `None` is still starting. Frames carry absolute media time.
+    #[allow(clippy::too_many_arguments)]
+    pub fn play_preview(
+        &self,
+        info: &MediaInfo,
+        start: f64,
+        end: f64,
+        height: u32,
+        fps: f64,
+        stop: &AtomicBool,
+        elapsed: &mut dyn FnMut() -> Option<f64>,
+        on_frame: &mut dyn FnMut(f64, u32, u32, Vec<u8>) -> bool,
+    ) -> Result<()> {
+        let video = info
+            .video
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("not a video".into()))?;
+        thumbs::play(
+            &self.ff, &info.path, video, start, end, height, fps, stop, elapsed, on_frame,
+        )
+    }
+
+    /// Stream 48 kHz stereo signed 16-bit PCM for a preview selection.
+    pub fn audio_pcm(
+        &self,
+        info: &MediaInfo,
+        start: f64,
+        end: f64,
+        stop: &AtomicBool,
+        on_samples: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<()> {
+        thumbs::audio_pcm(&self.ff, &info.path, start, end, stop, on_samples)
     }
 
     /// The audio of `start..end` as a WAV file, to play along with `play`.
     pub fn audio_wav(&self, info: &MediaInfo, start: f64, end: f64, out: &Path) -> Result<()> {
-        thumbs::wav(&self.ff, &info.path, start, end, out)
+        self.audio_wav_cancellable(info, start, end, out, &AtomicBool::new(false))
+    }
+
+    /// Extract preview audio, stopping early if the playback session ends.
+    pub fn audio_wav_cancellable(
+        &self,
+        info: &MediaInfo,
+        start: f64,
+        end: f64,
+        out: &Path,
+        stop: &AtomicBool,
+    ) -> Result<()> {
+        thumbs::wav(&self.ff, &info.path, start, end, out, stop)
     }
 
     /// What a folder would become: every file and subfolder with its size now and its
@@ -205,8 +299,26 @@ impl Engine {
 
     /// Filmstrip frames for the trimmer (raw RGB).
     pub fn thumbnails(&self, info: &MediaInfo, count: u32, height: u32) -> Result<thumbs::Frames> {
+        self.thumbnails_cancellable(info, count, height, &AtomicBool::new(false))
+    }
+
+    pub fn thumbnails_cancellable(
+        &self,
+        info: &MediaInfo,
+        count: u32,
+        height: u32,
+        stop: &AtomicBool,
+    ) -> Result<thumbs::Frames> {
         let size = info.video.as_ref().map_or((0, 0), |v| (v.width, v.height));
-        thumbs::thumbnails(&self.ff, &info.path, info.duration, size, count, height)
+        thumbs::thumbnails(
+            &self.ff,
+            &info.path,
+            info.duration,
+            size,
+            count,
+            height,
+            stop,
+        )
     }
 
     /// Width and frame rate a GIF of `seconds` of this video would likely get (a guess;
@@ -282,15 +394,18 @@ impl Engine {
         }
 
         let out_base = out_base(path, opts.out_dir.as_deref())?;
+        let encoders = || {
+            if opts.gpu {
+                self.hw_encoders_for(opts.video_codec)
+            } else {
+                &[]
+            }
+        };
         let ctx = jobs::Ctx {
             ff: &self.ff,
             cancel,
             speed: opts.speed,
-            encoders: if opts.gpu {
-                self.hw_encoders_for(opts.video_codec)
-            } else {
-                &[]
-            },
+            encoders: &encoders,
             codec: opts.video_codec,
             audio_format: opts.audio_format,
             image_format: opts.image_format,

@@ -1,6 +1,6 @@
 // The signature stage: dashed drop zone, the blob with a face, the hydraulic press that
 // squeezes it with real progress, and the little burst when a file is done.
-// Everything animates only when something changes, so an idle window costs no CPU.
+// Slow ambient motion runs on the flyout's shared timer while the stage is visible.
 
 import { Theme, Fx } from "theme.slint";
 
@@ -36,6 +36,8 @@ export component Blob inherits Rectangle {
     in property <float> s: 1;
     in property <float> c: 0;
     in property <bool> swell;
+    in property <bool> ambient-active;
+    in property <float> ambient-turn;
     in property <float> look-x;
     in property <float> look-y;
     in property <length> cx;
@@ -49,15 +51,8 @@ export component Blob inherits Rectangle {
 
     property <float> grow: swell ? 1.08 : 1;
     animate grow { duration: 260ms; easing: ease-out-back; }
-    // Breathing: a slow in-out loop, only with full effects and when calm.
-    property <bool> inhale;
-    property <float> breath: inhale && Fx.rich && root.mood != Mood.busy ? 1 : 0;
-    animate breath { duration: 1800ms; easing: ease-in-out; }
-    Timer {
-        interval: 1800ms;
-        running: Fx.rich && root.mood != Mood.busy;
-        triggered => { root.inhale = !root.inhale; }
-    }
+    // Five 3.6-second breaths per 18-second turn.
+    property <float> breath: Fx.rich ? (1 - Math.cos(root.ambient-turn * 1800deg)) / 2 : 0;
     // Squish (click or chomp) and hop (done): quick in, springy out.
     property <bool> squished;
     property <float> squish;
@@ -130,7 +125,7 @@ export component Blob inherits Rectangle {
     // Blink every few seconds (a timer, not a frame loop).
     Timer {
         interval: root.blink ? 110ms : 5400ms;
-        running: Fx.rich && root.mood != Mood.busy && root.mood != Mood.happy;
+        running: Fx.rich && root.ambient-active && root.mood != Mood.happy;
         triggered => { root.blink = !root.blink; }
     }
 
@@ -166,7 +161,7 @@ export component Blob inherits Rectangle {
     ]
     Timer {
         interval: root.wob ? 110ms : 2600ms;
-        running: Fx.rich && root.mood == Mood.worried;
+        running: Fx.rich && root.ambient-active && root.mood == Mood.worried;
         triggered => { root.wob = !root.wob; }
     }
     // Holding squashes the turning body along the screen, not along its own turn: with
@@ -189,7 +184,7 @@ export component Blob inherits Rectangle {
                 ? (Theme.is-dark ? @image-url("blob-discord-dark.png") : @image-url("blob-discord-light.png"))
                 : (Theme.is-dark ? @image-url("blob-dark.png") : @image-url("blob-light.png"));
             image-fit: fill;
-            transform-rotation: (Fx.rich && root.mood != Mood.busy ? Math.mod(animation-tick() / 1ms, 18000) / 18000 * 360deg : 0deg) - root.wobble * 5deg;
+            transform-rotation: (Fx.rich ? root.ambient-turn * 360deg : 0deg) - root.wobble * 5deg;
         }
         Image {
             width: parent.width;

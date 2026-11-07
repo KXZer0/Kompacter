@@ -4,7 +4,94 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
+mod preview_audio;
+
 pub use imp::*;
+
+/// Play a preview against the sound device's sample clock. If audio is
+/// unavailable, start a monotonic clock when video has its first frame.
+pub fn play_preview(
+    engine: &kompacter_core::Engine,
+    info: &kompacter_core::MediaInfo,
+    range: std::ops::Range<f64>,
+    stop: &std::sync::atomic::AtomicBool,
+    sound: &std::sync::atomic::AtomicBool,
+    clock: &std::sync::atomic::AtomicU64,
+    on_frame: &mut dyn FnMut(f64, u32, u32, Vec<u8>) -> bool,
+) -> kompacter_core::Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+    use std::time::{Duration, Instant};
+
+    let ready = AtomicBool::new(false);
+    let audio_stop = AtomicBool::new(false);
+    let audio_running = AtomicBool::new(false);
+    let audio_done = AtomicBool::new(!cfg!(windows) || info.audio.is_none());
+    let fps = info.video.as_ref().map_or(24.0, |video| {
+        let pixels = u64::from(video.width) * u64::from(video.height);
+        let max_fps = if pixels > 1920 * 1080 { 24.0 } else { 30.0 };
+        video.fps.clamp(12.0, max_fps)
+    });
+    let mut last_audio = None;
+    let mut fallback = None;
+    std::thread::scope(|scope| {
+        #[cfg(windows)]
+        if info.audio.is_some() {
+            scope.spawn(|| {
+                preview_audio::play(
+                    engine,
+                    info,
+                    range.clone(),
+                    preview_audio::Control {
+                        ready: &ready,
+                        running: &audio_running,
+                        stop: &audio_stop,
+                        sound,
+                        clock,
+                    },
+                );
+                audio_done.store(true, Relaxed);
+            });
+        }
+        #[cfg(not(windows))]
+        let _ = (scope, sound);
+
+        let result = engine.play_preview(
+            info,
+            range.start,
+            range.end,
+            // The viewport is 320×150 logical px. Keep headroom for DPI scaling
+            // while avoiding a full 360p RGB upload for every playback frame.
+            240,
+            fps,
+            stop,
+            &mut || {
+                let position = clock.load(Relaxed);
+                let (previous, changed) = last_audio.get_or_insert_with(|| {
+                    ready.store(true, Relaxed);
+                    (position, Instant::now())
+                });
+                if *previous != position {
+                    *previous = position;
+                    *changed = Instant::now();
+                }
+                if !audio_done.load(Relaxed) && fallback.is_none() {
+                    if changed.elapsed() < Duration::from_millis(500) {
+                        return audio_running.load(Relaxed).then_some(position as f64 / 1e6);
+                    }
+                    audio_stop.store(true, Relaxed);
+                }
+                let (base, began) = fallback.get_or_insert_with(|| (position, Instant::now()));
+                let position = *base + began.elapsed().as_micros() as u64;
+                clock.store(position, Relaxed);
+                Some(position as f64 / 1e6)
+            },
+            on_frame,
+        );
+        audio_stop.store(true, Relaxed);
+        result
+    })
+}
 
 /// Keyboard events from outside Kompacter (Windows).
 pub enum InputEvent {
@@ -263,23 +350,6 @@ mod imp {
         (unsafe { GetCursorPos(&mut pt) } != 0).then_some((pt.x, pt.y))
     }
 
-    /// Window see-through level (0 hidden … 255 solid), for the slide-in of the plain
-    /// window. Makes the window "layered" the first time.
-    pub fn set_alpha(hwnd: isize, alpha: u8) {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowLongPtrW, GWL_EXSTYLE,
-            LWA_ALPHA, WS_EX_LAYERED,
-        };
-        let h = hwnd as _;
-        unsafe {
-            let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
-            if ex & WS_EX_LAYERED as isize == 0 {
-                SetWindowLongPtrW(h, GWL_EXSTYLE, ex | WS_EX_LAYERED as isize);
-            }
-            SetLayeredWindowAttributes(h, 0, alpha, LWA_ALPHA);
-        }
-    }
-
     /// Windows 11 rounded corners for the plain (not floating) window, and no extra
     /// Windows show/hide animation on top of ours.
     pub fn style_plain_window(hwnd: isize) {
@@ -322,22 +392,26 @@ mod imp {
         on != 0
     }
 
-    /// Wait (up to a few seconds) for another process to exit; used when Kompacter
-    /// restarts itself.
-    pub fn wait_for_exit(pid: u32) {
-        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
-        unsafe {
-            let h = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
-            if !h.is_null() {
-                WaitForSingleObject(h, 5000);
-                CloseHandle(h);
-            }
-        }
-    }
-
     /// The icon Windows shows for this file or folder in Explorer (48 px), as straight RGBA.
     pub fn file_icon(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
-        use windows_sys::core::GUID;
+        use windows_sys::Win32::Foundation::RPC_E_CHANGED_MODE;
+        use windows_sys::Win32::System::Com::{
+            CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+        };
+
+        let hr = unsafe { CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32) };
+        if hr < 0 && hr != RPC_E_CHANGED_MODE {
+            return None;
+        }
+        let result = shell_icon(path);
+        if hr >= 0 {
+            unsafe { CoUninitialize() };
+        }
+        result
+    }
+
+    fn shell_icon(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+        use windows_sys::core::{IUnknown_Vtbl, GUID};
         use windows_sys::Win32::Graphics::Gdi::{
             CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO,
             BITMAPINFOHEADER, DIB_RGB_COLORS,
@@ -368,6 +442,8 @@ mod imp {
                 return None;
             }
             let icon = ImageList_GetIcon(list as _, fi.iIcon, ILD_TRANSPARENT);
+            let vtable = *list.cast::<*const IUnknown_Vtbl>();
+            ((*vtable).Release)(list);
             if icon.is_null() {
                 return None;
             }
@@ -425,51 +501,131 @@ mod imp {
         }
     }
 
-    /// Play a WAV file in the background (trimmer sound). Replaces whatever was playing.
-    pub fn play_wav(path: &Path) {
-        use windows_sys::Win32::Media::Audio::{
-            PlaySoundW, SND_ASYNC, SND_FILENAME, SND_NODEFAULT,
+    /// Resize and re-anchor the flyout in one Windows operation.
+    pub fn resize_flyout(hwnd: isize, x: i32, y: i32, width: i32, height: i32) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetClientRect, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
         };
-        let w = wide(path);
         unsafe {
-            PlaySoundW(
-                w.as_ptr(),
+            let hwnd = hwnd as _;
+            let mut outer: RECT = std::mem::zeroed();
+            let mut client: RECT = std::mem::zeroed();
+            if GetWindowRect(hwnd, &mut outer) == 0 || GetClientRect(hwnd, &mut client) == 0 {
+                return false;
+            }
+            if outer.left == x && outer.top == y && client.right == width && client.bottom == height
+            {
+                return true;
+            }
+            SetWindowPos(
+                hwnd,
                 null_mut(),
-                SND_FILENAME | SND_ASYNC | SND_NODEFAULT,
-            );
+                x,
+                y,
+                width + (outer.right - outer.left) - (client.right - client.left),
+                height + (outer.bottom - outer.top) - (client.bottom - client.top),
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            ) != 0
         }
     }
 
-    /// Stop the trimmer sound.
-    pub fn stop_sound() {
-        use windows_sys::Win32::Media::Audio::PlaySoundW;
+    /// Keep the transparent area above the visible card out of hit testing.
+    pub fn clip_flyout_input(hwnd: isize, height: f32, scale: f32) -> bool {
+        use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, SetWindowRgn};
+        use windows_sys::Win32::UI::Shell::SetWindowSubclass;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
         unsafe {
-            PlaySoundW(null(), null_mut(), 0);
+            // Winit retains native frame styles for window management. With a
+            // window region, DefWindowProc paints a classic frame on focus loss.
+            if SetWindowSubclass(hwnd as _, Some(flyout_frame_proc), 0x4b4f4d50, 0) == 0 {
+                return false;
+            }
+            let mut rect: RECT = std::mem::zeroed();
+            if GetWindowRect(hwnd as _, &mut rect) == 0 {
+                return false;
+            }
+            let width = rect.right - rect.left;
+            let bottom = rect.bottom - rect.top;
+            let top = (bottom - (height * scale).ceil() as i32).max(0);
+            let region = CreateRectRgn(0, top, width, bottom);
+            if region.is_null() {
+                return false;
+            }
+            if SetWindowRgn(hwnd as _, region, 1) == 0 {
+                DeleteObject(region);
+                return false;
+            }
+            // Windows owns the region after a successful SetWindowRgn.
+            true
         }
     }
 
-    /// True when the window in front is one you'd use to find a file to drag in (File
-    /// Explorer, the desktop, a file dialog), or the taskbar. Auto-hide waits then.
+    unsafe extern "system" fn flyout_frame_proc(
+        hwnd: windows_sys::Win32::Foundation::HWND,
+        message: u32,
+        wparam: usize,
+        lparam: isize,
+        id: usize,
+        _data: usize,
+    ) -> isize {
+        use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            WM_NCACTIVATE, WM_NCDESTROY, WM_NCPAINT,
+        };
+        match message {
+            // Forward activation to Winit, but tell DefWindowProc to skip the
+            // native frame repaint. Slint paints the flyout's border itself.
+            WM_NCACTIVATE => unsafe { DefSubclassProc(hwnd, message, wparam, -1) },
+            WM_NCPAINT => 0,
+            WM_NCDESTROY => unsafe {
+                RemoveWindowSubclass(hwnd, Some(flyout_frame_proc), id);
+                DefSubclassProc(hwnd, message, wparam, lparam)
+            },
+            _ => unsafe { DefSubclassProc(hwnd, message, wparam, lparam) },
+        }
+    }
+
+    /// Exclude the shell and file dialogs from fullscreen detection.
     pub fn browsing_files() -> bool {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetAncestor, GetClassNameW, GetForegroundWindow, GA_ROOTOWNER,
+        };
         unsafe {
             let h = GetForegroundWindow();
             if h.is_null() {
-                return false;
+                return true; // Focus is between windows.
             }
-            let mut buf = [0u16; 64];
-            let n = GetClassNameW(h, buf.as_mut_ptr(), buf.len() as i32);
-            let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
-            matches!(
-                class.as_str(),
-                "CabinetWClass"
-                    | "ExploreWClass"
-                    | "#32770"
-                    | "Progman"
-                    | "WorkerW"
-                    | "Shell_TrayWnd"
-            )
+            let owner = GetAncestor(h, GA_ROOTOWNER);
+            [h, owner].into_iter().filter(|w| !w.is_null()).any(|w| {
+                let mut buf = [0u16; 64];
+                let n = GetClassNameW(w, buf.as_mut_ptr(), buf.len() as i32);
+                matches!(
+                    String::from_utf16_lossy(&buf[..n.max(0) as usize]).as_str(),
+                    "CabinetWClass"
+                        | "ExploreWClass"
+                        | "#32770"
+                        | "Progman"
+                        | "WorkerW"
+                        | "Shell_TrayWnd"
+                        | "Shell_SecondaryTrayWnd"
+                )
+            }) || window_executable_matches(h, |name| name.eq_ignore_ascii_case("explorer.exe"))
         }
+    }
+
+    /// A popup or picker owned by this process can take focus from the main window.
+    pub fn app_is_foreground() -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowThreadProcessId,
+        };
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(GetForegroundWindow(), &mut pid) };
+        pid == std::process::id()
+    }
+
+    pub fn left_mouse_down() -> bool {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+        (unsafe { GetAsyncKeyState(i32::from(VK_LBUTTON)) }) < 0
     }
 
     /// Move a file or folder to the Recycle Bin.
@@ -714,19 +870,27 @@ mod imp {
 
     /// The window in front is Discord (the app, or Discord in a browser tab).
     fn is_discord(h: windows_sys::Win32::Foundation::HWND) -> bool {
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-            PROCESS_QUERY_LIMITED_INFORMATION,
-        };
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetWindowTextW, GetWindowThreadProcessId,
-        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowTextW;
         unsafe {
             let mut title = [0u16; 256];
             let n = GetWindowTextW(h, title.as_mut_ptr(), title.len() as i32);
             if String::from_utf16_lossy(&title[..n.max(0) as usize]).contains("Discord") {
                 return true;
             }
+        }
+        window_executable_matches(h, |name| name.to_ascii_lowercase().starts_with("discord"))
+    }
+
+    fn window_executable_matches(
+        h: windows_sys::Win32::Foundation::HWND,
+        matches: impl FnOnce(&str) -> bool,
+    ) -> bool {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+        unsafe {
             let mut pid = 0u32;
             GetWindowThreadProcessId(h, &mut pid);
             let p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
@@ -740,7 +904,7 @@ mod imp {
             ok != 0
                 && Path::new(&String::from_utf16_lossy(&buf[..len as usize]))
                     .file_name()
-                    .is_some_and(|f| f.to_string_lossy().to_lowercase().starts_with("discord"))
+                    .is_some_and(|f| matches(&f.to_string_lossy()))
         }
     }
 
@@ -890,20 +1054,20 @@ mod imp {
     pub fn file_icon(_path: &Path) -> Option<(u32, u32, Vec<u8>)> {
         None
     }
-    pub fn set_alpha(_hwnd: isize, _alpha: u8) {}
     pub fn style_plain_window(_hwnd: isize) {}
     pub fn animations_enabled() -> bool {
         true
     }
-    pub fn wait_for_exit(_pid: u32) {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
     pub fn recycle(_path: &Path) -> Result<(), String> {
         Err("not supported on this system yet".into())
     }
-    pub fn play_wav(_path: &Path) {}
-    pub fn stop_sound() {}
-    pub fn browsing_files() -> bool {
+    pub fn left_mouse_down() -> bool {
+        false
+    }
+    pub fn resize_flyout(_hwnd: isize, _x: i32, _y: i32, _width: i32, _height: i32) -> bool {
+        false
+    }
+    pub fn clip_flyout_input(_hwnd: isize, _height: f32, _scale: f32) -> bool {
         false
     }
     pub fn set_start_with_windows(_on: bool) {}

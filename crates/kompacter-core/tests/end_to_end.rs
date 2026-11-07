@@ -2,17 +2,21 @@
 
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use kompacter_core::size::{KB, MB};
-use kompacter_core::{Engine, MediaKind, Mode, Options, Trim};
+use kompacter_core::{Engine, Error, Ffmpeg, MediaKind, Mode, Options, Trim};
 
 fn have_ffmpeg() -> bool {
-    Command::new("ffmpeg").arg("-version").output().is_ok()
+    Command::new(Ffmpeg::default().ffmpeg)
+        .arg("-version")
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 fn gen(args: &[&str], out: &Path) {
-    let ok = Command::new("ffmpeg")
+    let ok = Command::new(Ffmpeg::default().ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-y"])
         .args(args)
         .arg(out)
@@ -26,6 +30,41 @@ fn run(engine: &Engine, input: &Path, opts: &Options) -> kompacter_core::Outcome
     engine
         .compress(input, opts, &mut |_| {}, &AtomicBool::new(false))
         .unwrap()
+}
+
+#[test]
+fn cancel_ffmpeg_between_progress_reports() {
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let args = [
+        "-stats_period",
+        "10",
+        "-re",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=64x64:rate=10:duration=10",
+        "-f",
+        "null",
+        "-",
+    ]
+    .map(Into::into);
+    let cancel = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let cancel = &cancel;
+        let trigger = scope.spawn(move || {
+            // Give ffmpeg time to start, then cancel well before its next report.
+            std::thread::sleep(Duration::from_secs(1));
+            let requested_at = Instant::now();
+            cancel.store(true, Ordering::Relaxed);
+            requested_at
+        });
+        let result = Ffmpeg::default().run(&args, 10.0, &mut |_| {}, cancel);
+        let finished_at = Instant::now();
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert!(finished_at.duration_since(trigger.join().unwrap()) < Duration::from_secs(3));
+    });
 }
 
 #[test]
@@ -94,6 +133,161 @@ fn video_fits_target_and_trim_works() {
     let cut = run(&engine, &src, &opts);
     let cut_info = engine.probe(&cut.path).unwrap();
     assert!(cut_info.duration < 4.5, "cut is {}s", cut_info.duration);
+}
+
+fn decoded_luma_frames(path: &Path) -> Vec<u8> {
+    let output = Command::new(Ffmpeg::default().ffmpeg)
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args([
+            "-map",
+            "0:v:0",
+            "-vf",
+            "scale=1:1",
+            "-fps_mode",
+            "passthrough",
+            "-pix_fmt",
+            "gray",
+            "-f",
+            "rawvideo",
+            "pipe:1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+#[test]
+fn trim_reencode_preserves_vfr_boundaries_and_audio_cues() {
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("boundaries.mp4");
+    // The luma identifies each source frame. The first audio cue is inside the cut and
+    // the second one is outside. There is only one keyframe, at the start of the file.
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "nullsrc=size=64x64:rate=10:duration=5",
+            "-f",
+            "lavfi",
+            "-i",
+            r"aevalsrc=if(between(t\,2.27\,2.37)+between(t\,3.58\,3.71)\,0.5*sin(2*PI*660*t)\,0):s=48000:d=5",
+            "-vf",
+            "geq=lum='32+4*N':cb=128:cr=128,select='not(mod(n,5))+not(mod(n+1,5))+not(mod(n+3,5))'",
+            "-fps_mode",
+            "vfr",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-g",
+            "100",
+            "-sc_threshold",
+            "0",
+            "-c:a",
+            "aac",
+        ],
+        &src,
+    );
+
+    let engine = Engine::default();
+    let mut opts = Options::new(250 * KB);
+    opts.gpu = false;
+    opts.trim = Some(Trim::new(2.13, 3.52).unwrap());
+    opts.out_dir = Some(dir.path().join("fit"));
+    let encoded = run(&engine, &src, &opts);
+    let src_frames = decoded_luma_frames(&src);
+    let fit_frames = decoded_luma_frames(&encoded.path);
+    let expected = &src_frames[13..22]; // source times 2.200 through 3.500
+    assert_eq!(fit_frames.len(), expected.len(), "{fit_frames:?}");
+    for (actual, expected) in fit_frames.iter().zip(expected) {
+        assert!(
+            actual.abs_diff(*expected) <= 2,
+            "frame luma {actual} != {expected}"
+        );
+    }
+
+    let probe = Command::new(Ffmpeg::default().ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "frame=best_effort_timestamp_time:format=duration",
+            "-of",
+            "json",
+        ])
+        .arg(&encoded.path)
+        .output()
+        .unwrap();
+    assert!(
+        probe.status.success(),
+        "{}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    let timestamps: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+    let frames = timestamps["frames"].as_array().unwrap();
+    let pts = |index: usize| {
+        frames[index]["best_effort_timestamp_time"]
+            .as_str()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+    };
+    assert!((pts(0) - 0.070).abs() < 0.002, "first frame at {}", pts(0));
+    assert!((pts(8) - 1.370).abs() < 0.002, "last frame at {}", pts(8));
+    let duration: f64 = timestamps["format"]["duration"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((duration - 1.390).abs() < 0.002, "container is {duration}s");
+
+    let audio = Command::new(Ffmpeg::default().ffmpeg)
+        .args(["-v", "error", "-i"])
+        .arg(&encoded.path)
+        .args([
+            "-map", "0:a:0", "-ac", "1", "-ar", "48000", "-f", "s16le", "pipe:1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        audio.status.success(),
+        "{}",
+        String::from_utf8_lossy(&audio.stderr)
+    );
+    let samples: Vec<_> = audio
+        .stdout
+        .chunks_exact(2)
+        .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+        .collect();
+    let cue = |sample: &i16| sample.unsigned_abs() > 3000;
+    let onset = samples.iter().position(cue).unwrap() as f64 / 48_000.0;
+    let end = samples.iter().rposition(cue).unwrap() as f64 / 48_000.0;
+    assert!((onset - 0.140).abs() < 0.005, "audio cue starts at {onset}");
+    assert!((end - 0.240).abs() < 0.005, "audio cue ends at {end}");
+    let audio_len = samples.len() as f64 / 48_000.0;
+    assert!(
+        (audio_len - 1.390).abs() <= 1024.0 / 48_000.0,
+        "audio is {audio_len}s"
+    );
+
+    opts.mode = Mode::KeepQuality;
+    opts.out_dir = Some(dir.path().join("copy"));
+    let copied = run(&engine, &src, &opts);
+    let copy_frames = decoded_luma_frames(&copied.path);
+    // Stream copy starts at the preceding keyframe and preserves the original packets.
+    assert_eq!(copy_frames, &src_frames[..22]);
 }
 
 #[test]
