@@ -21,6 +21,8 @@ export global Prefs {
     in property <bool> auto-hide;
     in property <string> auto-hide-error;
     in property <bool> start-with-windows;
+    in property <bool> tray-pinned;
+    in property <string> tray-note;
     in property <int> custom-mb;
     in property <int> video-index;
     in property <int> audio-index;
@@ -42,6 +44,7 @@ export global Prefs {
     callback set-gpu(bool);
     callback set-auto-hide(bool);
     callback set-start(bool);
+    callback set-tray-pinned(bool);
     callback set-custom-mb(int);
     callback set-video(int);
     callback set-audio(int);
@@ -499,6 +502,15 @@ export component SettingsView inherits Rectangle {
                         checked: Prefs.start-with-windows;
                         y: (parent.height - self.height) / 2;
                         toggled(on) => { Prefs.set-start(on); }
+                    }
+                }
+                Cell {
+                    label: "Keep tray icon visible";
+                    small: Prefs.tray-note != "" ? Prefs.tray-note : "Next to the clock, not in the ^ menu";
+                    Switch {
+                        checked: Prefs.tray-pinned;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-tray-pinned(on); }
                     }
                 }
             }

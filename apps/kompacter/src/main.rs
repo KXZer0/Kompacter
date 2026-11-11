@@ -270,6 +270,23 @@ impl App {
         });
     }
 
+    /// The tray tip was answered: never show it again, and say `note` for a moment.
+    fn end_tray_tip(&self, note: &str) {
+        self.settings.borrow_mut().tray_tip_seen = true;
+        self.save();
+        let ui = self.ui();
+        ui.set_tray_tip(false);
+        if !note.is_empty() {
+            ui.set_note(note.into());
+            let w = ui.as_weak();
+            slint::Timer::single_shot(Duration::from_millis(2600), move || {
+                if let Some(ui) = w.upgrade() {
+                    ui.set_note(SharedString::new());
+                }
+            });
+        }
+    }
+
     pub fn another(&self) {
         *self.current.borrow_mut() = None;
         self.batch.borrow_mut().clear();
@@ -449,8 +466,26 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     APP.with(|a| *a.borrow_mut() = Rc::downgrade(&app));
     sys::start_input(|e| with_app(move |a| a.on_input(e)));
+    // A tray app is only useful if it's running, so it starts with Windows unless the
+    // user says otherwise: switched on once here, and theirs to switch off from then on.
+    // (Never from a dev build, which would register its target\debug exe.)
+    if !cfg!(debug_assertions) {
+        let first = !app.settings.borrow().start_default_done;
+        if first || sys::starts_with_windows() {
+            // Also keeps the entry pointing at this exe if the app was moved.
+            sys::set_start_with_windows(true);
+        }
+        if first {
+            app.settings.borrow_mut().start_default_done = true;
+            app.save();
+        }
+    }
     // The Run entry is the truth (it can be turned off in Task Manager).
     app.settings.borrow_mut().start_with_windows = sys::starts_with_windows();
+    // Windows tucks new tray icons into the "^" overflow: offer once to keep it in view.
+    ui.set_tray_tip(
+        cfg!(windows) && !app.settings.borrow().tray_tip_seen && sys::tray_pinned() != Some(true),
+    );
     app.sync_settings();
     ui.set_dash_path(format::dashed_round_rect(308.0, 300.0, 28.0, 6.0, 7.0, 0.0).into());
 
@@ -590,9 +625,40 @@ fn main() -> Result<(), slint::PlatformError> {
         let a = app.clone();
         ui.on_open_settings(move || {
             if a.view() != View::Busy {
+                // Windows owns this switch (its own Settings page changes it too).
+                let ui = a.ui();
+                let prefs = ui.global::<Prefs>();
+                prefs.set_tray_pinned(sys::tray_pinned().unwrap_or(false));
+                prefs.set_tray_note(SharedString::new());
                 a.set_view(View::Settings);
             }
         });
+        let a = app.clone();
+        prefs.on_set_tray_pinned(move |on| {
+            let ui = a.ui();
+            let prefs = ui.global::<Prefs>();
+            if sys::set_tray_pinned(on) {
+                prefs.set_tray_note(SharedString::new());
+            } else {
+                sys::open_taskbar_settings();
+                prefs.set_tray_note("Switch Kompacter on in the list that opened".into());
+            }
+            prefs.set_tray_pinned(sys::tray_pinned().unwrap_or(false));
+        });
+        let a = app.clone();
+        ui.on_tray_tip_pin(move || {
+            let direct = sys::set_tray_pinned(true);
+            if !direct {
+                sys::open_taskbar_settings();
+            }
+            a.end_tray_tip(if direct {
+                "It stays next to the clock"
+            } else {
+                "Switch Kompacter on in that list"
+            });
+        });
+        let a = app.clone();
+        ui.on_tray_tip_dismiss(move || a.end_tray_tip(""));
         let a = app.clone();
         ui.on_close_settings(move || {
             a.close_settings();
@@ -937,6 +1003,7 @@ fn demo(app: &Rc<App>, which: &str) {
             ui.set_view(View::Settings);
         }
         "drag" => ui.set_dragging(true),
+        "tip" => ui.set_tray_tip(true),
         "quick" | "quick-busy" | "quick-done" | "guard" | "quick-empty" => {
             app.quick.set(true);
             ui.set_guard(which == "guard");

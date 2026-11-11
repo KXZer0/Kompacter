@@ -683,6 +683,137 @@ mod imp {
         }
     }
 
+    /// Where Windows 11 remembers, per tray icon, whether it sits next to the clock or in
+    /// the hidden "^" overflow. Settings → Taskbar → "Other system tray icons" edits this.
+    const TRAY_ICONS: &str = r"Control Panel\NotifyIconSettings";
+
+    /// Registry paths of Kompacter's own entries in that list (an old install folder can
+    /// leave a second one). Empty on Windows 10, or before the icon was ever shown.
+    fn tray_entries() -> Vec<Vec<u16>> {
+        use windows_sys::Win32::System::Registry::{
+            RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, HKEY, KEY_READ,
+        };
+        let Some(exe) = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let value = wide("ExecutablePath");
+        unsafe {
+            let mut root: HKEY = null_mut();
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                wide(TRAY_ICONS).as_ptr(),
+                0,
+                KEY_READ,
+                &mut root,
+            ) != 0
+            {
+                return out;
+            }
+            for index in 0.. {
+                let mut id = [0u16; 64];
+                let mut id_len = id.len() as u32;
+                if RegEnumKeyExW(
+                    root,
+                    index,
+                    id.as_mut_ptr(),
+                    &mut id_len,
+                    null(),
+                    null_mut(),
+                    null_mut(),
+                    null_mut(),
+                ) != 0
+                {
+                    break;
+                }
+                let mut path = [0u16; 1024];
+                let mut bytes = (path.len() * 2) as u32;
+                if RegGetValueW(
+                    root,
+                    id.as_ptr(),
+                    value.as_ptr(),
+                    RRF_RT_REG_SZ,
+                    null_mut(),
+                    path.as_mut_ptr() as *mut _,
+                    &mut bytes,
+                ) != 0
+                {
+                    continue;
+                }
+                let chars = (bytes as usize / 2).saturating_sub(1).min(path.len());
+                let path = String::from_utf16_lossy(&path[..chars]);
+                // The folder part can be written as a known-folder id, so match the name.
+                let ours = path
+                    .rsplit('\\')
+                    .next()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&exe));
+                if ours {
+                    let id = String::from_utf16_lossy(&id[..id_len as usize]);
+                    out.push(wide(format!("{TRAY_ICONS}\\{id}")));
+                }
+            }
+            RegCloseKey(root);
+        }
+        out
+    }
+
+    /// Is the tray icon next to the clock (`true`) or tucked into the "^" overflow
+    /// (`false`)? `None` when Windows doesn't say.
+    pub fn tray_pinned() -> Option<bool> {
+        let entries = tray_entries();
+        if entries.is_empty() {
+            return None;
+        }
+        let name = wide("IsPromoted");
+        Some(entries.iter().any(|key| {
+            let mut value: u32 = 0;
+            let mut size = 4u32;
+            unsafe {
+                RegGetValueW(
+                    HKEY_CURRENT_USER,
+                    key.as_ptr(),
+                    name.as_ptr(),
+                    0x0000_0010, // RRF_RT_REG_DWORD
+                    null_mut(),
+                    &mut value as *mut u32 as *mut _,
+                    &mut size,
+                );
+            }
+            value == 1
+        }))
+    }
+
+    /// Move the tray icon next to the clock, or back into the overflow. Windows gives apps
+    /// no official call for this, so it flips the same per-user switch its Settings page
+    /// does. False when that switch isn't there (the caller then opens that page).
+    pub fn set_tray_pinned(on: bool) -> bool {
+        use windows_sys::Win32::System::Registry::REG_DWORD;
+        let entries = tray_entries();
+        let name = wide("IsPromoted");
+        let value = u32::from(on);
+        !entries.is_empty()
+            && entries.iter().all(|key| unsafe {
+                RegSetKeyValueW(
+                    HKEY_CURRENT_USER,
+                    key.as_ptr(),
+                    name.as_ptr(),
+                    REG_DWORD,
+                    &value as *const u32 as *const _,
+                    4,
+                ) == 0
+            })
+    }
+
+    /// Settings → Personalisation → Taskbar, where "Other system tray icons" lives.
+    pub fn open_taskbar_settings() {
+        let _ = std::process::Command::new("explorer")
+            .arg("ms-settings:taskbar")
+            .spawn();
+    }
+
     /// Windows app theme: true when apps are set to dark.
     pub fn system_dark() -> bool {
         let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
@@ -1071,6 +1202,13 @@ mod imp {
         false
     }
     pub fn set_start_with_windows(_on: bool) {}
+    pub fn tray_pinned() -> Option<bool> {
+        None
+    }
+    pub fn set_tray_pinned(_on: bool) -> bool {
+        false
+    }
+    pub fn open_taskbar_settings() {}
     pub fn starts_with_windows() -> bool {
         false
     }

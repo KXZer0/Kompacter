@@ -11,6 +11,34 @@
 | 4. Trimmer + extras | Live trimmer, GPU encoding, GIFs, pre-compress on copy, clip-folder watcher, queue | Trimmer, GPU, GIFs, clip-folder watcher **built** |
 | 5. Release | Signed per-user installer, auto-update, macOS/Linux builds | |
 
+## Living in the tray
+
+Kompacter stays a tray app: no main window, no taskbar button. Windows hides new tray icons
+in the "^" overflow and gives apps no official way to pin themselves, so:
+
+- **Starts with Windows by default.** Switched on once at first run; after that the switch
+  in Settings (or Task Manager) is the user's and is never turned back on.
+- **Keep tray icon visible**: a one-time tip on the idle screen and a switch in Settings.
+  On Windows 11 it flips the same per-user value as Settings → Taskbar → Other system tray
+  icons (`HKCU\Control Panel\NotifyIconSettings\…\IsPromoted`). That value is not a
+  documented API, so where it's missing the app opens that Settings page instead.
+  **Needs a check on a real PC** (does the icon move at once, or only after Explorer
+  re-reads it?).
+- Already there: a second launch from the Start menu opens the flyout, and the global
+  shortcut opens the quick bar, so the tray icon is never the only way in.
+
+## Next up (suggested order)
+
+1. Try the tray switch and default start-up on real Windows 10 and 11.
+2. Explorer right-click **Kompact** (per-user registry entry; needs the app to accept a
+   file path on launch and hand it to the running instance).
+3. Engine quality that changes nothing for the person receiving the file (same codecs and
+   containers): NVENC adaptive quantisation + lookahead once GPU paths are confirmed on
+   hardware; tone-map HDR sources to SDR so colours don't wash out; fold audio to mono
+   under ~64 kbps; skip the video re-encode when only the audio pushes a file over.
+4. Pin the bundled ffmpeg to a fixed release, so two installers built a week apart behave
+   the same.
+
 ## Design direction
 
 Apple-inspired: simple and snappy. Frosted panels, large rounded corners, one accent colour, crisp short springs (~200 ms). No home screen: the drop box is the app. It pops up from the tray (or near the cursor), never as a big window.

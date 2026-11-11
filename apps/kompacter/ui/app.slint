@@ -193,6 +193,8 @@ export component AppWindow inherits Window {
     in property <string> done-title;
     in property <string> done-sub;
     in-out property <string> note;
+    // One-time tip on the idle screen: keep the tray icon out of the "^" overflow.
+    in property <bool> tray-tip;
 
     in property <string> error-text;
 
@@ -231,6 +233,8 @@ export component AppWindow inherits Window {
     callback quick-expand();
     callback quick-trim();
     callback paste-anyway();
+    callback tray-tip-pin();
+    callback tray-tip-dismiss();
 
     property <length> inset: Fx.glass ? 12px : 0;
     property <length> full-h: view == View.trim ? 624px : view == View.settings ? 600px : view == View.quick ? (guard ? 168px : 136px) : 472px;
@@ -264,6 +268,13 @@ export component AppWindow inherits Window {
     property <float> summary-opacity: Math.max(0, 1 - details-reveal * 3);
     property <float> details-opacity: Math.max(0, (details-reveal * 3 - 1) / 2);
     property <length> stage-h: stage-lg ? 312px : 124px;
+    // The blob's size and its lift above the drop hint ease along with the stage, on the
+    // same clock as the stage's height. Bound directly they jumped in one frame while
+    // everything around them was still gliding.
+    property <float> blob-s: stage-lg ? 1 : 0.62;
+    animate blob-s { duration: Fx.rich ? 300ms : 0ms; easing: ease-out-back; }
+    property <length> blob-lift: view == View.idle ? 40px : 0px;
+    animate blob-lift { duration: Fx.rich ? 300ms : 0ms; easing: ease-out; }
 
     property <bool> track-eyes: (stage-lg || stage-md) && !stage-hidden;
     Timer {
@@ -522,12 +533,12 @@ export component AppWindow inherits Window {
                 }
                 Blob {
                     mood: root.mood;
-                    s: root.stage-lg ? 1 : 0.62;
+                    s: root.blob-s;
                     swell: root.dragging;
                     ambient-active: root.opened && root.track-eyes;
                     ambient-turn: root.ambient-turn;
                     cx: parent.width / 2;
-                    cy: root.view == View.idle ? parent.height / 2 - 40px : parent.height / 2;
+                    cy: parent.height / 2 - root.blob-lift;
                     look-x: root.look-x;
                     look-y: root.look-y;
                     hop: root.hop;
@@ -582,6 +593,44 @@ export component AppWindow inherits Window {
                         icon: Icons.clip;
                         tip: "Ctrl+V";
                         clicked => { root.paste(); }
+                    }
+                }
+            }
+
+            if root.view == View.idle && root.tray-tip && !root.dragging: Appear {
+                x: 16px;
+                y: 428px;
+                width: 328px;
+                height: 34px;
+                Rectangle {
+                    border-radius: 12px;
+                    background: Theme.accent-soft;
+                    Text {
+                        x: 12px;
+                        width: 150px;
+                        height: parent.height;
+                        text: "Hidden in the ^ menu?";
+                        font-size: 12px;
+                        color: Theme.label;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Btn {
+                        x: parent.width - self.width - 34px;
+                        y: 3px;
+                        height: 28px;
+                        plain: true;
+                        text: "Keep icon visible";
+                        clicked => { root.tray-tip-pin(); }
+                    }
+                    IconBtn {
+                        x: parent.width - 31px;
+                        y: 3px;
+                        width: 28px;
+                        height: 28px;
+                        icon: Icons.x;
+                        tip: "Not now";
+                        clicked => { root.tray-tip-dismiss(); }
                     }
                 }
             }
