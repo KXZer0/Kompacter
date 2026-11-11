@@ -63,7 +63,7 @@ cargo run -p kompacter
 
 ## License
 
-MIT. Kompacter calls ffmpeg as a separate program; ffmpeg has its own LGPL/GPL license.
+Copyright (C) 2026 LS. Kompacter is free software under the [GNU Affero General Public License, version 3](LICENSE) (AGPL-3.0). Kompacter calls ffmpeg as a separate program; ffmpeg has its own LGPL/GPL license.
 
 The window is drawn with [Slint](https://slint.dev), used under its royalty-free license.
 
