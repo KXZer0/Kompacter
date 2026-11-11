@@ -96,13 +96,22 @@ pub(crate) fn classify(path: &Path, size_bytes: u64, json: &Value) -> Option<Med
     });
     let audio_json = streams.iter().find(|s| s["codec_type"] == "audio");
 
-    let video = video_json.map(|s| VideoStream {
-        width: s["width"].as_u64().unwrap_or(0) as u32,
-        height: s["height"].as_u64().unwrap_or(0) as u32,
-        fps: parse_rate(s["avg_frame_rate"].as_str())
-            .or_else(|| parse_rate(s["r_frame_rate"].as_str()))
-            .unwrap_or(30.0),
-        codec: s["codec_name"].as_str().unwrap_or("").into(),
+    let video = video_json.map(|s| {
+        let (w, h) = (
+            s["width"].as_u64().unwrap_or(0) as u32,
+            s["height"].as_u64().unwrap_or(0) as u32,
+        );
+        // Phones store portrait video sideways plus a rotation flag. ffmpeg turns the
+        // picture upright before our filters run, so plan with the upright size.
+        let (width, height) = if sideways(s) { (h, w) } else { (w, h) };
+        VideoStream {
+            width,
+            height,
+            fps: parse_rate(s["avg_frame_rate"].as_str())
+                .or_else(|| parse_rate(s["r_frame_rate"].as_str()))
+                .unwrap_or(30.0),
+            codec: s["codec_name"].as_str().unwrap_or("").into(),
+        }
     });
     let audio = audio_json.map(|s| AudioStream {
         codec: s["codec_name"].as_str().unwrap_or("").into(),
@@ -142,6 +151,19 @@ pub(crate) fn classify(path: &Path, size_bytes: u64, json: &Value) -> Option<Med
         audio,
         has_alpha,
     })
+}
+
+/// True when the stream's rotation flag is a quarter turn (90° or 270°). Newer files carry
+/// it as display-matrix side data, older ones as a `rotate` tag.
+fn sideways(stream: &Value) -> bool {
+    let from_matrix = stream["side_data_list"]
+        .as_array()
+        .and_then(|l| l.iter().find_map(|d| d["rotation"].as_f64()));
+    let from_tag = stream["tags"]["rotate"]
+        .as_str()
+        .and_then(|r| r.parse::<f64>().ok());
+    let turns = (from_matrix.or(from_tag).unwrap_or(0.0) / 90.0).round() as i64;
+    turns.rem_euclid(2) == 1
 }
 
 fn parse_rate(rate: Option<&str>) -> Option<f64> {
@@ -194,6 +216,29 @@ mod tests {
             classify(Path::new("song.mp3"), 1, &mp3).unwrap().kind,
             MediaKind::Audio
         );
+    }
+
+    #[test]
+    fn portrait_phone_video_is_upright() {
+        let stream = |extra: Value| {
+            let mut s = json!({"codec_type": "video", "codec_name": "h264", "width": 1920,
+                               "height": 1080, "avg_frame_rate": "30/1"});
+            s.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            json!({"format": {"format_name": "mov,mp4", "duration": "10"}, "streams": [s]})
+        };
+        let size = |j: &Value| {
+            let v = classify(Path::new("a.mp4"), 1, j).unwrap().video.unwrap();
+            (v.width, v.height)
+        };
+        let matrix = stream(json!({"side_data_list": [{"rotation": -90}]}));
+        assert_eq!(size(&matrix), (1080, 1920));
+        let tag = stream(json!({"tags": {"rotate": "270"}}));
+        assert_eq!(size(&tag), (1080, 1920));
+        let upside_down = stream(json!({"tags": {"rotate": "180"}}));
+        assert_eq!(size(&upside_down), (1920, 1080));
+        assert_eq!(size(&stream(json!({}))), (1920, 1080));
     }
 
     #[test]

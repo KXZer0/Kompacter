@@ -740,3 +740,65 @@ fn short_clip_becomes_a_gif_that_fits() {
         .unwrap_err();
     assert!(matches!(err, kompacter_core::error::Error::TooLong { .. }));
 }
+
+#[test]
+fn portrait_video_stays_upright() {
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let land = dir.path().join("land.mp4");
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=1280x720:rate=30:duration=4",
+            "-vf",
+            "noise=alls=40:allf=t",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "10",
+            "-preset",
+            "ultrafast",
+        ],
+        &land,
+    );
+    // Same pixels, flagged as "rotate a quarter turn", like a phone held upright.
+    let src = dir.path().join("portrait.mp4");
+    let flagged = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args(["-display_rotation", "90", "-i"])
+        .arg(&land)
+        .args(["-c", "copy"])
+        .arg(&src)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !flagged {
+        return eprintln!("this ffmpeg can't write a rotation flag, skipping");
+    }
+
+    let engine = Engine::default();
+    let v = engine.probe(&src).unwrap().video.unwrap();
+    assert_eq!((v.width, v.height), (720, 1280));
+
+    // Small enough that the plan has to scale down, which is where it used to squash.
+    let mut opts = Options::new(300 * KB);
+    opts.out_dir = Some(dir.path().join("out"));
+    let res = run(&engine, &src, &opts);
+    assert!(res.fits);
+    let out = engine.probe(&res.path).unwrap().video.unwrap();
+    assert!(
+        out.height < 1280,
+        "expected a downscale, got {}p",
+        out.height
+    );
+    let (want, got) = (720.0 / 1280.0, out.width as f64 / out.height as f64);
+    assert!(
+        (want - got).abs() < 0.02,
+        "squashed: {}x{}",
+        out.width,
+        out.height
+    );
+}
