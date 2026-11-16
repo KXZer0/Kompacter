@@ -104,6 +104,65 @@ pub enum InputEvent {
     ShortcutTaken(bool),
 }
 
+/// Where a second launch leaves the files it was started with ("Kompact" in Explorer,
+/// "Open with"), for the running Kompacter to pick up. One path per line.
+fn handoff_file() -> PathBuf {
+    std::env::temp_dir().join("kompacter-open.txt")
+}
+
+/// Leave `files` for the running Kompacter. Appends, because Explorer starts one launch
+/// per selected file and they all arrive within a moment of each other.
+pub fn leave_handoff(files: &[PathBuf]) {
+    use std::io::Write;
+    if files.is_empty() {
+        return;
+    }
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(handoff_file())
+    else {
+        return;
+    };
+    let mut text = String::new();
+    for p in files {
+        text.push_str(&p.to_string_lossy());
+        text.push('\n');
+    }
+    // One write per launch, so lines from two launches never interleave.
+    let _ = f.write_all(text.as_bytes());
+}
+
+/// Take the files other launches left (empty if none).
+pub fn take_handoff() -> Vec<PathBuf> {
+    let file = handoff_file();
+    // Move it aside first, so a launch that writes right now starts a fresh file.
+    let mine = file.with_extension(format!("{}.txt", std::process::id()));
+    if std::fs::rename(&file, &mine).is_err() {
+        return Vec::new();
+    }
+    let text = std::fs::read_to_string(&mine).unwrap_or_default();
+    let _ = std::fs::remove_file(&mine);
+    let mut files: Vec<PathBuf> = Vec::new();
+    for line in text.lines().filter(|l| !l.is_empty()) {
+        let p = PathBuf::from(line);
+        if !files.contains(&p) {
+            files.push(p);
+        }
+    }
+    files
+}
+
+/// The files or folders named on a command line (anything that isn't a `--switch` and
+/// really exists), as full paths.
+pub fn file_args(args: impl Iterator<Item = String>) -> Vec<PathBuf> {
+    args.skip(1)
+        .filter(|a| !a.starts_with("--"))
+        .filter_map(|a| std::path::absolute(&a).ok())
+        .filter(|p| p.exists())
+        .collect()
+}
+
 /// Open a folder in the file manager.
 pub fn open_folder(dir: &Path) {
     #[cfg(windows)]
@@ -683,6 +742,50 @@ mod imp {
         }
     }
 
+    /// "Kompact" in Explorer's right-click menu, for files and for folders. Per user, no
+    /// admin. (Windows 11 lists it under "Show more options".)
+    const MENU_KEYS: [&str; 2] = [
+        r"Software\Classes\*\shell\Kompacter",
+        r"Software\Classes\Directory\shell\Kompacter",
+    ];
+
+    fn set_string(key: &str, name: Option<&str>, value: &str) {
+        let (key, value) = (wide(key), wide(value));
+        let name = name.map(wide);
+        unsafe {
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                name.as_ref().map_or(null(), |n| n.as_ptr()),
+                REG_SZ,
+                value.as_ptr() as *const _,
+                (value.len() * 2) as u32,
+            );
+        }
+    }
+
+    /// Add or remove the right-click entry. Adding again refreshes the exe's path.
+    pub fn set_explorer_menu(on: bool) {
+        use windows_sys::Win32::System::Registry::RegDeleteTreeW;
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+        let exe = exe.display().to_string();
+        for key in MENU_KEYS {
+            if on {
+                set_string(key, None, "Kompact");
+                set_string(key, Some("Icon"), &exe);
+                set_string(
+                    &format!("{key}\\command"),
+                    None,
+                    &format!("\"{exe}\" \"%1\""),
+                );
+            } else {
+                unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, wide(key).as_ptr()) };
+            }
+        }
+    }
+
     /// Where Windows 11 remembers, per tray icon, whether it sits next to the clock or in
     /// the hidden "^" overflow. Settings → Taskbar → "Other system tray icons" edits this.
     const TRAY_ICONS: &str = r"Control Panel\NotifyIconSettings";
@@ -1202,6 +1305,7 @@ mod imp {
         false
     }
     pub fn set_start_with_windows(_on: bool) {}
+    pub fn set_explorer_menu(_on: bool) {}
     pub fn tray_pinned() -> Option<bool> {
         None
     }
@@ -1235,5 +1339,32 @@ mod imp {
     }
     pub fn fullscreen_in_front() -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn files_left_by_several_launches_arrive_once_each() {
+        let _ = take_handoff();
+        let (a, b) = (PathBuf::from("/clips/a.mp4"), PathBuf::from("/clips/b.mp4"));
+        // Explorer: one launch per selected file, and one file selected twice.
+        leave_handoff(std::slice::from_ref(&a));
+        leave_handoff(&[b.clone(), a.clone()]);
+        leave_handoff(&[]);
+        assert_eq!(take_handoff(), vec![a, b]);
+        assert!(take_handoff().is_empty());
+    }
+
+    #[test]
+    fn only_real_paths_count_as_files_to_open() {
+        let dir = std::env::temp_dir();
+        let args = ["Kompacter", "--tray", "no-such-file.mp4"]
+            .into_iter()
+            .map(String::from)
+            .chain(Some(dir.display().to_string()));
+        assert_eq!(file_args(args), vec![dir]);
     }
 }

@@ -22,6 +22,7 @@ export global Prefs {
     in property <string> auto-hide-error;
     in property <bool> start-with-windows;
     in property <bool> tray-pinned;
+    in property <bool> explorer-menu;
     in property <string> tray-note;
     in property <int> custom-mb;
     in property <int> video-index;
@@ -45,6 +46,7 @@ export global Prefs {
     callback set-auto-hide(bool);
     callback set-start(bool);
     callback set-tray-pinned(bool);
+    callback set-explorer-menu(bool);
     callback set-custom-mb(int);
     callback set-video(int);
     callback set-audio(int);
@@ -59,7 +61,7 @@ export global Prefs {
 }
 
 /// A group row in settings: label + optional small text + something on the right.
-component Cell inherits Rectangle {
+export component Cell inherits Rectangle {
     in property <string> label;
     in property <string> small;
     in property <bool> first;
@@ -104,7 +106,7 @@ component Cell inherits Rectangle {
     }
 }
 
-component Group inherits Rectangle {
+export component Group inherits Rectangle {
     border-radius: 12px;
     background: Theme.group;
     clip: true;
@@ -502,6 +504,15 @@ export component SettingsView inherits Rectangle {
                         checked: Prefs.start-with-windows;
                         y: (parent.height - self.height) / 2;
                         toggled(on) => { Prefs.set-start(on); }
+                    }
+                }
+                Cell {
+                    label: "Right-click menu";
+                    small: "“Kompact” on files and folders in Explorer";
+                    Switch {
+                        checked: Prefs.explorer-menu;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-explorer-menu(on); }
                     }
                 }
                 Cell {

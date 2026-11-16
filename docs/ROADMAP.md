@@ -24,14 +24,21 @@ in the "^" overflow and gives apps no official way to pin themselves, so:
   documented API, so where it's missing the app opens that Settings page instead.
   **Needs a check on a real PC** (does the icon move at once, or only after Explorer
   re-reads it?).
+- **First-run screen**, shown once: what Kompacter may do on its own. "When I copy a big
+  file" starts ticked (it only looks at sizes); paste guard and clip folders stay opt-in.
+  People who already use Kompacter see it once too.
+- **Right-click → Kompact** on files and folders in Explorer (per-user registry entry, on
+  by default, switch in Settings, removed on uninstall). Starting Kompacter with files,
+  from that menu, "Open with" or a drop on the shortcut, opens them in the running copy.
 - Already there: a second launch from the Start menu opens the flyout, and the global
   shortcut opens the quick bar, so the tray icon is never the only way in.
 
 ## Next up (suggested order)
 
-1. Try the tray switch and default start-up on real Windows 10 and 11.
-2. Explorer right-click **Kompact** (per-user registry entry; needs the app to accept a
-   file path on launch and hand it to the running instance).
+1. Try on real Windows 10 and 11: the tray switch, default start-up, the first-run
+   screen, and right-click → Kompact (one file, several files, a folder).
+2. Paste guard for more apps than Discord; a Windows notification when a clip was shrunk
+   in the background; "Send to → Kompacter".
 3. Engine quality that changes nothing for the person receiving the file (same codecs and
    containers): NVENC adaptive quantisation + lookahead once GPU paths are confirmed on
    hardware; tone-map HDR sources to SDR so colours don't wash out; fold audio to mono
@@ -48,7 +55,7 @@ Apple-inspired: simple and snappy. Frosted panels, large rounded corners, one ac
 | Trigger | How | Notes |
 |---|---|---|
 | Tray drop zone | Drop files onto the popup | Always available |
-| Right-click **Kompact** | Per-user registry entry (HKCU) | Win 11 shows it under "Show more options" until we ship a signed package |
+| Right-click **Kompact** | Per-user registry entry (HKCU) | **Built**, testing. Win 11 shows it under "Show more options" until we ship a signed package |
 | Global hotkey | Compresses whatever's on the clipboard | |
 | Paste guard | Low-level keyboard hook watches only Ctrl+V while a chat app is in front; if the clipboard file is over that app's limit, hold the paste and ask | Opt-in. Fails open: on any error, the original paste goes through. |
 | Heads-up on copy | Clipboard listener; "too big for Discord, compress now?" | |

@@ -7,11 +7,11 @@
 import { Theme, Fx, Icon, AppLogo, Btn, IconBtn, Kbd, Switch, Seg, Appear, Tip, Dropdown } from "theme.slint";
 import { Icons } from "icons.slint";
 import { Mood, Blob, DropZone, Press, Sparks } from "stage.slint";
-import { Prefs, SettingsView, PresetItem } from "settings.slint";
+import { Prefs, SettingsView, PresetItem, Cell, Group } from "settings.slint";
 
 export { Theme, Fx, Prefs, PresetItem }
 
-export enum View { idle, reading, big, trim, busy, done, error, settings, quick }
+export enum View { idle, reading, big, trim, busy, done, error, settings, quick, welcome }
 
 /// One line of a before → after list (a folder's tree, or a video's stats).
 export struct DiffRow {
@@ -195,6 +195,11 @@ export component AppWindow inherits Window {
     in-out property <string> note;
     // One-time tip on the idle screen: keep the tray icon out of the "^" overflow.
     in property <bool> tray-tip;
+    // First-run screen: what Kompacter may do on its own (read back on "Done").
+    in-out property <bool> welcome-copies: true;
+    in-out property <bool> welcome-guard;
+    in-out property <bool> welcome-clips;
+    in property <bool> welcome-has-clips;
 
     in property <string> error-text;
 
@@ -235,6 +240,7 @@ export component AppWindow inherits Window {
     callback paste-anyway();
     callback tray-tip-pin();
     callback tray-tip-dismiss();
+    callback welcome-done();
 
     property <length> inset: Fx.glass ? 12px : 0;
     property <length> full-h: view == View.trim ? 624px : view == View.settings ? 600px : view == View.quick ? (guard ? 168px : 136px) : 472px;
@@ -632,6 +638,70 @@ export component AppWindow inherits Window {
                         tip: "Not now";
                         clicked => { root.tray-tip-dismiss(); }
                     }
+                }
+            }
+
+            // First run, once: Kompacter sits in the tray, so say how it turns up by itself.
+            if root.view == View.welcome: Appear {
+                x: 20px;
+                y: 62px;
+                width: 320px;
+                height: 398px;
+                Title {
+                    y: 0;
+                    width: parent.width;
+                    text: "Kompacter waits in your tray";
+                }
+                Sub {
+                    y: 30px;
+                    width: parent.width;
+                    text: "It can step in when a file is too big to send:";
+                }
+                Group {
+                    y: 70px;
+                    width: parent.width;
+                    Cell {
+                        label: "When I copy a big file";
+                        small: "A small bar offers to shrink it";
+                        first: true;
+                        Switch {
+                            checked: root.welcome-copies;
+                            y: (parent.height - self.height) / 2;
+                            toggled(on) => { root.welcome-copies = on; }
+                        }
+                    }
+                    Cell {
+                        label: "When I paste into Discord";
+                        small: "Holds a too-big paste and asks first";
+                        Switch {
+                            checked: root.welcome-guard;
+                            y: (parent.height - self.height) / 2;
+                            toggled(on) => { root.welcome-guard = on; }
+                        }
+                    }
+                    if root.welcome-has-clips: Cell {
+                        label: "When I save a game clip";
+                        small: "Shrinks new clips on its own";
+                        Switch {
+                            checked: root.welcome-clips;
+                            y: (parent.height - self.height) / 2;
+                            toggled(on) => { root.welcome-clips = on; }
+                        }
+                    }
+                }
+                Sub {
+                    y: 262px;
+                    width: parent.width;
+                    text: "Or right-click any file and choose Kompact.\nAll of this can be changed in Settings.";
+                }
+                Btn {
+                    x: 0;
+                    y: 346px;
+                    width: parent.width;
+                    large: true;
+                    primary: true;
+                    text: "Done";
+                    clicked => { root.welcome-done(); }
                 }
             }
 
