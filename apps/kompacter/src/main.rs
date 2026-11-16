@@ -227,6 +227,7 @@ impl App {
         prefs.set_gpu(s.gpu);
         prefs.set_auto_hide(s.auto_hide);
         prefs.set_start_with_windows(s.start_with_windows);
+        prefs.set_explorer_menu(s.explorer_menu);
         prefs.set_video_index(match s.video_codec {
             VideoCodec::H264 => 0,
             VideoCodec::H265 => 1,
@@ -268,6 +269,57 @@ impl App {
             _ if system_dark => 2,
             _ => 0,
         });
+    }
+
+    /// Show the first-run screen: three steps, one choice each. "Copied files" starts
+    /// ticked: it's what makes Kompacter turn up by itself when it's needed, and it only
+    /// looks at the size of copied files. The other two keep whatever is already set (off
+    /// on a new install).
+    fn welcome(&self) {
+        let ui = self.ui();
+        let s = self.settings.borrow();
+        ui.set_welcome_copies(true);
+        ui.set_welcome_guard(s.paste_guard);
+        ui.set_welcome_clips(s.watch_folders);
+        ui.set_welcome_step(0);
+        drop(s);
+        self.set_view(View::Welcome);
+    }
+
+    /// "Done" on the first-run screen: save the three choices and never ask again.
+    fn welcome_done(self: &Rc<Self>) {
+        let ui = self.ui();
+        {
+            let mut s = self.settings.borrow_mut();
+            s.welcomed = true;
+            s.watch_copies = ui.get_welcome_copies();
+            s.paste_guard = ui.get_welcome_guard();
+        }
+        self.save();
+        let clips = ui.get_welcome_clips();
+        if clips != self.settings.borrow().watch_folders {
+            // Fills in the clip folders this PC has, saves and syncs.
+            self.set_watch_folders(clips);
+        }
+        self.sync_settings();
+        self.set_view(View::Idle);
+    }
+
+    /// The tray tip was answered: never show it again, and say `note` for a moment.
+    fn end_tray_tip(&self, note: &str) {
+        self.settings.borrow_mut().tray_tip_seen = true;
+        self.save();
+        let ui = self.ui();
+        ui.set_tray_tip(false);
+        if !note.is_empty() {
+            ui.set_note(note.into());
+            let w = ui.as_weak();
+            slint::Timer::single_shot(Duration::from_millis(2600), move || {
+                if let Some(ui) = w.upgrade() {
+                    ui.set_note(SharedString::new());
+                }
+            });
+        }
     }
 
     pub fn another(&self) {
@@ -381,6 +433,10 @@ fn with_app(f: impl FnOnce(&Rc<App>) + Send + 'static) {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // Files this launch was given ("Kompact" in Explorer, "Open with", a file dropped on
+    // the shortcut). They're left where the running Kompacter looks; if that turns out
+    // to be this one, it picks them up itself further down.
+    sys::leave_handoff(&sys::file_args(std::env::args()));
     if !sys::first_instance() {
         return Ok(());
     }
@@ -449,8 +505,30 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     APP.with(|a| *a.borrow_mut() = Rc::downgrade(&app));
     sys::start_input(|e| with_app(move |a| a.on_input(e)));
+    // A tray app is only useful if it's running, so it starts with Windows unless the
+    // user says otherwise: switched on once here, and theirs to switch off from then on.
+    // (Never from a dev build, which would register its target\debug exe.)
+    if !cfg!(debug_assertions) {
+        let first = !app.settings.borrow().start_default_done;
+        if first || sys::starts_with_windows() {
+            // Also keeps the entry pointing at this exe if the app was moved.
+            sys::set_start_with_windows(true);
+        }
+        if first {
+            app.settings.borrow_mut().start_default_done = true;
+            app.save();
+        }
+    }
+    // Keeps the right-click entry pointing at this exe (not from a dev build either).
+    if !cfg!(debug_assertions) && app.settings.borrow().explorer_menu {
+        sys::set_explorer_menu(true);
+    }
     // The Run entry is the truth (it can be turned off in Task Manager).
     app.settings.borrow_mut().start_with_windows = sys::starts_with_windows();
+    // Windows tucks new tray icons into the "^" overflow: offer once to keep it in view.
+    ui.set_tray_tip(
+        cfg!(windows) && !app.settings.borrow().tray_tip_seen && sys::tray_pinned() != Some(true),
+    );
     app.sync_settings();
     ui.set_dash_path(format::dashed_round_rect(308.0, 300.0, 28.0, 6.0, 7.0, 0.0).into());
 
@@ -590,9 +668,40 @@ fn main() -> Result<(), slint::PlatformError> {
         let a = app.clone();
         ui.on_open_settings(move || {
             if a.view() != View::Busy {
+                // Windows owns this switch (its own Settings page changes it too).
+                let ui = a.ui();
+                let prefs = ui.global::<Prefs>();
+                prefs.set_tray_pinned(sys::tray_pinned().unwrap_or(false));
+                prefs.set_tray_note(SharedString::new());
                 a.set_view(View::Settings);
             }
         });
+        let a = app.clone();
+        prefs.on_set_tray_pinned(move |on| {
+            let ui = a.ui();
+            let prefs = ui.global::<Prefs>();
+            if sys::set_tray_pinned(on) {
+                prefs.set_tray_note(SharedString::new());
+            } else {
+                sys::open_taskbar_settings();
+                prefs.set_tray_note("Switch Kompacter on in the list that opened".into());
+            }
+            prefs.set_tray_pinned(sys::tray_pinned().unwrap_or(false));
+        });
+        let a = app.clone();
+        ui.on_tray_tip_pin(move || {
+            let direct = sys::set_tray_pinned(true);
+            if !direct {
+                sys::open_taskbar_settings();
+            }
+            a.end_tray_tip(if direct {
+                "It stays next to the clock"
+            } else {
+                "Switch Kompacter on in that list"
+            });
+        });
+        let a = app.clone();
+        ui.on_tray_tip_dismiss(move || a.end_tray_tip(""));
         let a = app.clone();
         ui.on_close_settings(move || {
             a.close_settings();
@@ -735,6 +844,15 @@ fn main() -> Result<(), slint::PlatformError> {
             a.sync_settings();
         });
         let a = app.clone();
+        prefs.on_set_explorer_menu(move |on| {
+            sys::set_explorer_menu(on);
+            a.settings.borrow_mut().explorer_menu = on;
+            a.save();
+            a.sync_settings();
+        });
+        let a = app.clone();
+        ui.on_welcome_done(move || a.welcome_done());
+        let a = app.clone();
         prefs.on_set_video(move |i| {
             a.settings.borrow_mut().video_codec =
                 [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1][i.clamp(0, 2) as usize];
@@ -779,9 +897,19 @@ fn main() -> Result<(), slint::PlatformError> {
         let weak = Rc::downgrade(&app);
         SHOW.with(|f| {
             *f.borrow_mut() = Box::new(move || {
-                if let Some(a) = weak.upgrade() {
+                // Explorer starts one launch per selected file: give them a moment to
+                // all arrive, then open them together.
+                let weak = weak.clone();
+                slint::Timer::single_shot(Duration::from_millis(150), move || {
+                    let Some(a) = weak.upgrade() else { return };
+                    let files = sys::take_handoff();
+                    if !files.is_empty() && a.view() != View::Busy {
+                        // The full window, whatever was showing (quick bar included).
+                        a.another();
+                        a.open_many(files);
+                    }
                     a.show();
-                }
+                });
             })
         });
         sys::listen_for_show(|| {
@@ -804,6 +932,17 @@ fn main() -> Result<(), slint::PlatformError> {
         let guard = std::env::var("KOMPACTER_GUARD").is_ok().then_some(0);
         app.quick_open(vec![PathBuf::from(p)], guard);
     }
+    // First run: ask once what Kompacter may do on its own (see `welcome_done`).
+    if !app.settings.borrow().welcomed && app.view() == View::Idle && !app.quick.get() {
+        app.welcome();
+    }
+    // Started with files: open them (and the window, even on a quiet start).
+    let given = sys::take_handoff();
+    let quiet = quiet && given.is_empty();
+    if !given.is_empty() && app.view() != View::Busy {
+        app.another();
+        app.open_many(given);
+    }
     if !quiet && !app.quick.get() {
         app.show();
     }
@@ -821,7 +960,7 @@ fn set_custom_dir(app: &Rc<App>, dir: PathBuf) {
     app.sync_settings();
 }
 
-/// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord`
+/// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord|welcome(-2|-3)`
 /// shows a screen with sample data, for screenshots.
 #[cfg(debug_assertions)]
 fn demo(app: &Rc<App>, which: &str) {
@@ -937,6 +1076,15 @@ fn demo(app: &Rc<App>, which: &str) {
             ui.set_view(View::Settings);
         }
         "drag" => ui.set_dragging(true),
+        "tip" => ui.set_tray_tip(true),
+        // `welcome-2` and `welcome-3` open on that step.
+        "welcome" | "welcome-1" | "welcome-2" | "welcome-3" => {
+            app.welcome();
+            let step = which
+                .strip_prefix("welcome-")
+                .and_then(|n| n.parse::<i32>().ok());
+            ui.set_welcome_step(step.map_or(0, |n| n - 1));
+        }
         "quick" | "quick-busy" | "quick-done" | "guard" | "quick-empty" => {
             app.quick.set(true);
             ui.set_guard(which == "guard");

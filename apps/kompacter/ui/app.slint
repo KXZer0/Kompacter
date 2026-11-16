@@ -8,10 +8,11 @@ import { Theme, Fx, Icon, AppLogo, Btn, IconBtn, Kbd, Switch, Seg, Appear, Tip, 
 import { Icons } from "icons.slint";
 import { Mood, Blob, DropZone, Press, Sparks } from "stage.slint";
 import { Prefs, SettingsView, PresetItem } from "settings.slint";
+import { FeatureDemo } from "demo.slint";
 
 export { Theme, Fx, Prefs, PresetItem }
 
-export enum View { idle, reading, big, trim, busy, done, error, settings, quick }
+export enum View { idle, reading, big, trim, busy, done, error, settings, quick, welcome }
 
 /// One line of a before → after list (a folder's tree, or a video's stats).
 export struct DiffRow {
@@ -193,6 +194,15 @@ export component AppWindow inherits Window {
     in property <string> done-title;
     in property <string> done-sub;
     in-out property <string> note;
+    // One-time tip on the idle screen: keep the tray icon out of the "^" overflow.
+    in property <bool> tray-tip;
+    // First-run screen: what Kompacter may do on its own (read back on "Done"), one
+    // choice per step.
+    in-out property <bool> welcome-copies: true;
+    in-out property <bool> welcome-guard;
+    in-out property <bool> welcome-clips;
+    /// Which step is showing: 0 copies, 1 paste guard, 2 game clips.
+    in-out property <int> welcome-step;
 
     in property <string> error-text;
 
@@ -231,6 +241,9 @@ export component AppWindow inherits Window {
     callback quick-expand();
     callback quick-trim();
     callback paste-anyway();
+    callback tray-tip-pin();
+    callback tray-tip-dismiss();
+    callback welcome-done();
 
     property <length> inset: Fx.glass ? 12px : 0;
     property <length> full-h: view == View.trim ? 624px : view == View.settings ? 600px : view == View.quick ? (guard ? 168px : 136px) : 472px;
@@ -264,6 +277,13 @@ export component AppWindow inherits Window {
     property <float> summary-opacity: Math.max(0, 1 - details-reveal * 3);
     property <float> details-opacity: Math.max(0, (details-reveal * 3 - 1) / 2);
     property <length> stage-h: stage-lg ? 312px : 124px;
+    // The blob's size and its lift above the drop hint ease along with the stage, on the
+    // same clock as the stage's height. Bound directly they jumped in one frame while
+    // everything around them was still gliding.
+    property <float> blob-s: stage-lg ? 1 : 0.62;
+    animate blob-s { duration: Fx.rich ? 300ms : 0ms; easing: ease-out-back; }
+    property <length> blob-lift: view == View.idle ? 40px : 0px;
+    animate blob-lift { duration: Fx.rich ? 300ms : 0ms; easing: ease-out; }
 
     property <bool> track-eyes: (stage-lg || stage-md) && !stage-hidden;
     Timer {
@@ -273,10 +293,23 @@ export component AppWindow inherits Window {
         triggered => { root.motion-tick(root.track-eyes); }
     }
 
+    // First run: "Next" goes one step on, "Done" saves.
+    function welcome-next() {
+        if (root.welcome-step < 2) {
+            root.welcome-step += 1;
+        } else {
+            root.welcome-done();
+        }
+    }
+
     keys := FocusScope {
         key-pressed(event) => {
             if (event.text == Key.Escape) {
                 root.escape();
+                return accept;
+            }
+            if (root.view == View.welcome && event.text == Key.Return) {
+                root.welcome-next();
                 return accept;
             }
             if (event.modifiers.control && (event.text == "v" || event.text == "V")) {
@@ -341,7 +374,7 @@ export component AppWindow inherits Window {
             height: root.full-h;
 
             // ── Header ──
-            if root.view != View.settings && root.view != View.trim && root.view != View.quick: Rectangle {
+            if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome: Rectangle {
                 x: 16px;
                 y: 14px;
                 width: pill-row.preferred-width;
@@ -379,7 +412,7 @@ export component AppWindow inherits Window {
                     clicked => { menu.show(); }
                 }
             }
-            if root.view != View.settings && root.view != View.trim && root.view != View.quick: IconBtn {
+            if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome: IconBtn {
                 x: parent.width - 14px - self.width;
                 y: 13px;
                 icon: Icons.gear;
@@ -522,12 +555,12 @@ export component AppWindow inherits Window {
                 }
                 Blob {
                     mood: root.mood;
-                    s: root.stage-lg ? 1 : 0.62;
+                    s: root.blob-s;
                     swell: root.dragging;
                     ambient-active: root.opened && root.track-eyes;
                     ambient-turn: root.ambient-turn;
                     cx: parent.width / 2;
-                    cy: root.view == View.idle ? parent.height / 2 - 40px : parent.height / 2;
+                    cy: parent.height / 2 - root.blob-lift;
                     look-x: root.look-x;
                     look-y: root.look-y;
                     hop: root.hop;
@@ -582,6 +615,155 @@ export component AppWindow inherits Window {
                         icon: Icons.clip;
                         tip: "Ctrl+V";
                         clicked => { root.paste(); }
+                    }
+                }
+            }
+
+            if root.view == View.idle && root.tray-tip && !root.dragging: Appear {
+                x: 16px;
+                y: 428px;
+                width: 328px;
+                height: 34px;
+                Rectangle {
+                    border-radius: 12px;
+                    background: Theme.accent-soft;
+                    // A layout, so the button takes the width of its own text.
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 3px;
+                        spacing: 2px;
+                        Text {
+                            horizontal-stretch: 1;
+                            text: "Hidden in the ^ menu?";
+                            font-size: 12px;
+                            color: Theme.label;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Btn {
+                            y: (parent.height - self.height) / 2;
+                            height: 28px;
+                            plain: true;
+                            text: "Keep icon visible";
+                            clicked => { root.tray-tip-pin(); }
+                        }
+                        IconBtn {
+                            y: (parent.height - self.height) / 2;
+                            width: 28px;
+                            height: 28px;
+                            icon: Icons.x;
+                            tip: "Not now";
+                            clicked => { root.tray-tip-dismiss(); }
+                        }
+                    }
+                }
+            }
+
+            // First run, once: Kompacter sits in the tray, so say how it turns up by itself.
+            // Three short steps, one choice each: a little scene showing it, the choice,
+            // Next, and dots.
+            if root.view == View.welcome: Appear {
+                x: 0;
+                y: 0;
+                width: 360px;
+                height: 472px;
+                // One block per step, all in the same place. The current one is shown;
+                // the others wait off to the side, so a step slides in from the way it
+                // comes and the old one drifts out the other way.
+                for title[i] in ["When I copy a big file", "When I paste into Discord", "When I save a game clip"]: Rectangle {
+                    property <bool> current: i == root.welcome-step;
+                    property <bool> on: i == 0 ? root.welcome-copies : i == 1 ? root.welcome-guard : root.welcome-clips;
+                    x: Fx.rich ? (i - root.welcome-step) * 48px : 0;
+                    animate x { duration: Fx.rich ? 300ms : 0ms; easing: ease-out-back; }
+                    y: 232px;
+                    width: parent.width;
+                    height: 112px;
+                    // What this choice does, shown as a little loop above the title. It
+                    // moves and fades with its step; only the current one plays, and it
+                    // starts from the top each time its step comes round.
+                    FeatureDemo {
+                        x: 40px;
+                        y: -196px;
+                        width: 280px;
+                        height: 170px;
+                        feature: i;
+                        playing: parent.current && root.opened;
+                    }
+                    // The old step is gone quickly and the new one fades in just after,
+                    // so the two lines of text never sit on top of each other.
+                    opacity: self.current ? 1 : 0;
+                    animate opacity {
+                        duration: !Fx.rich ? 0ms : self.current ? 220ms : 100ms;
+                        delay: Fx.rich && self.current ? 90ms : 0ms;
+                        easing: ease-out;
+                    }
+                    Title {
+                        x: 24px;
+                        y: 0;
+                        width: parent.width - 48px;
+                        text: title;
+                    }
+                    Sub {
+                        x: 24px;
+                        y: 30px;
+                        width: parent.width - 48px;
+                        text: i == 0 ? "A small bar pops up and offers to shrink it"
+                            : i == 1 ? "Holds a too-big paste and asks first"
+                            : "Shrinks new clips on its own";
+                    }
+                    Switch {
+                        x: (parent.width - self.width) / 2;
+                        y: 70px;
+                        checked: parent.on;
+                        enabled: parent.current;
+                        toggled(on) => {
+                            if (i == 0) {
+                                root.welcome-copies = on;
+                            } else if (i == 1) {
+                                root.welcome-guard = on;
+                            } else {
+                                root.welcome-clips = on;
+                            }
+                        }
+                    }
+                }
+                // A layout, so the button gets a real width (placed alone it has none).
+                HorizontalLayout {
+                    x: 40px;
+                    y: 368px;
+                    width: 280px;
+                    height: 44px;
+                    Btn {
+                        large: true;
+                        primary: true;
+                        text: root.welcome-step < 2 ? "Next" : "Done";
+                        clicked => { root.welcome-next(); }
+                    }
+                }
+                // Where you are: the current dot stretches into an accent pill.
+                // Each dot is a bigger click target than it looks; clicking jumps there.
+                HorizontalLayout {
+                    y: 424px;
+                    width: parent.width;
+                    height: 24px;
+                    alignment: center;
+                    for i in 3: Rectangle {
+                        property <bool> current: i == root.welcome-step;
+                        width: dot.width + 10px;
+                        dot := Rectangle {
+                            width: parent.current ? 20px : 8px;
+                            animate width { duration: Fx.rich ? 260ms : 0ms; easing: ease-out-back; }
+                            height: 8px;
+                            border-radius: 4px;
+                            background: parent.current ? Theme.accent
+                                : dot-ta.has-hover ? Theme.label-2.transparentize(0.45)
+                                : Theme.label-2.transparentize(0.7);
+                            animate background { duration: Fx.rich ? 200ms : 0ms; }
+                        }
+                        dot-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.welcome-step = i; }
+                        }
                     }
                 }
             }
@@ -1671,6 +1853,7 @@ export component AppWindow inherits Window {
             if root.view == View.settings: SettingsView {
                 presets: root.presets;
                 preset-index: root.preset-index;
+                live: root.opened;
                 select-preset(i) => { root.select-preset(i); }
                 close-settings => { root.close-settings(); }
             }

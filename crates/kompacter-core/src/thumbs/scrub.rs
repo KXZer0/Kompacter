@@ -137,7 +137,14 @@ pub(crate) fn decode(
         }
     })?;
     if index == 0 {
-        return Err(Error::Unsupported("no frame there".into()));
+        // The window starts at or past the video's end: its last frame covers it.
+        let pixels = super::last_frame(ff, path, width, height, stop)?;
+        on_frame(TimedFrame {
+            time: start,
+            width,
+            height,
+            pixels,
+        });
     }
     Ok(())
 }

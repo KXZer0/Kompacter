@@ -104,6 +104,65 @@ pub enum InputEvent {
     ShortcutTaken(bool),
 }
 
+/// Where a second launch leaves the files it was started with ("Kompact" in Explorer,
+/// "Open with"), for the running Kompacter to pick up. One path per line.
+fn handoff_file() -> PathBuf {
+    std::env::temp_dir().join("kompacter-open.txt")
+}
+
+/// Leave `files` for the running Kompacter. Appends, because Explorer starts one launch
+/// per selected file and they all arrive within a moment of each other.
+pub fn leave_handoff(files: &[PathBuf]) {
+    use std::io::Write;
+    if files.is_empty() {
+        return;
+    }
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(handoff_file())
+    else {
+        return;
+    };
+    let mut text = String::new();
+    for p in files {
+        text.push_str(&p.to_string_lossy());
+        text.push('\n');
+    }
+    // One write per launch, so lines from two launches never interleave.
+    let _ = f.write_all(text.as_bytes());
+}
+
+/// Take the files other launches left (empty if none).
+pub fn take_handoff() -> Vec<PathBuf> {
+    let file = handoff_file();
+    // Move it aside first, so a launch that writes right now starts a fresh file.
+    let mine = file.with_extension(format!("{}.txt", std::process::id()));
+    if std::fs::rename(&file, &mine).is_err() {
+        return Vec::new();
+    }
+    let text = std::fs::read_to_string(&mine).unwrap_or_default();
+    let _ = std::fs::remove_file(&mine);
+    let mut files: Vec<PathBuf> = Vec::new();
+    for line in text.lines().filter(|l| !l.is_empty()) {
+        let p = PathBuf::from(line);
+        if !files.contains(&p) {
+            files.push(p);
+        }
+    }
+    files
+}
+
+/// The files or folders named on a command line (anything that isn't a `--switch` and
+/// really exists), as full paths.
+pub fn file_args(args: impl Iterator<Item = String>) -> Vec<PathBuf> {
+    args.skip(1)
+        .filter(|a| !a.starts_with("--"))
+        .filter_map(|a| std::path::absolute(&a).ok())
+        .filter(|p| p.exists())
+        .collect()
+}
+
 /// Open a folder in the file manager.
 pub fn open_folder(dir: &Path) {
     #[cfg(windows)]
@@ -683,6 +742,181 @@ mod imp {
         }
     }
 
+    /// "Kompact" in Explorer's right-click menu, for files and for folders. Per user, no
+    /// admin. (Windows 11 lists it under "Show more options".)
+    const MENU_KEYS: [&str; 2] = [
+        r"Software\Classes\*\shell\Kompacter",
+        r"Software\Classes\Directory\shell\Kompacter",
+    ];
+
+    fn set_string(key: &str, name: Option<&str>, value: &str) {
+        let (key, value) = (wide(key), wide(value));
+        let name = name.map(wide);
+        unsafe {
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                name.as_ref().map_or(null(), |n| n.as_ptr()),
+                REG_SZ,
+                value.as_ptr() as *const _,
+                (value.len() * 2) as u32,
+            );
+        }
+    }
+
+    /// Add or remove the right-click entry. Adding again refreshes the exe's path.
+    pub fn set_explorer_menu(on: bool) {
+        use windows_sys::Win32::System::Registry::RegDeleteTreeW;
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+        let exe = exe.display().to_string();
+        for key in MENU_KEYS {
+            if on {
+                set_string(key, None, "Kompact");
+                set_string(key, Some("Icon"), &exe);
+                set_string(
+                    &format!("{key}\\command"),
+                    None,
+                    &format!("\"{exe}\" \"%1\""),
+                );
+            } else {
+                unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, wide(key).as_ptr()) };
+            }
+        }
+    }
+
+    /// Where Windows 11 remembers, per tray icon, whether it sits next to the clock or in
+    /// the hidden "^" overflow. Settings → Taskbar → "Other system tray icons" edits this.
+    const TRAY_ICONS: &str = r"Control Panel\NotifyIconSettings";
+
+    /// Registry paths of Kompacter's own entries in that list (an old install folder can
+    /// leave a second one). Empty on Windows 10, or before the icon was ever shown.
+    fn tray_entries() -> Vec<Vec<u16>> {
+        use windows_sys::Win32::System::Registry::{
+            RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, HKEY, KEY_READ,
+        };
+        let Some(exe) = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let value = wide("ExecutablePath");
+        unsafe {
+            let mut root: HKEY = null_mut();
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                wide(TRAY_ICONS).as_ptr(),
+                0,
+                KEY_READ,
+                &mut root,
+            ) != 0
+            {
+                return out;
+            }
+            for index in 0.. {
+                let mut id = [0u16; 64];
+                let mut id_len = id.len() as u32;
+                if RegEnumKeyExW(
+                    root,
+                    index,
+                    id.as_mut_ptr(),
+                    &mut id_len,
+                    null(),
+                    null_mut(),
+                    null_mut(),
+                    null_mut(),
+                ) != 0
+                {
+                    break;
+                }
+                let mut path = [0u16; 1024];
+                let mut bytes = (path.len() * 2) as u32;
+                if RegGetValueW(
+                    root,
+                    id.as_ptr(),
+                    value.as_ptr(),
+                    RRF_RT_REG_SZ,
+                    null_mut(),
+                    path.as_mut_ptr() as *mut _,
+                    &mut bytes,
+                ) != 0
+                {
+                    continue;
+                }
+                let chars = (bytes as usize / 2).saturating_sub(1).min(path.len());
+                let path = String::from_utf16_lossy(&path[..chars]);
+                // The folder part can be written as a known-folder id, so match the name.
+                let ours = path
+                    .rsplit('\\')
+                    .next()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&exe));
+                if ours {
+                    let id = String::from_utf16_lossy(&id[..id_len as usize]);
+                    out.push(wide(format!("{TRAY_ICONS}\\{id}")));
+                }
+            }
+            RegCloseKey(root);
+        }
+        out
+    }
+
+    /// Is the tray icon next to the clock (`true`) or tucked into the "^" overflow
+    /// (`false`)? `None` when Windows doesn't say.
+    pub fn tray_pinned() -> Option<bool> {
+        let entries = tray_entries();
+        if entries.is_empty() {
+            return None;
+        }
+        let name = wide("IsPromoted");
+        Some(entries.iter().any(|key| {
+            let mut value: u32 = 0;
+            let mut size = 4u32;
+            unsafe {
+                RegGetValueW(
+                    HKEY_CURRENT_USER,
+                    key.as_ptr(),
+                    name.as_ptr(),
+                    0x0000_0010, // RRF_RT_REG_DWORD
+                    null_mut(),
+                    &mut value as *mut u32 as *mut _,
+                    &mut size,
+                );
+            }
+            value == 1
+        }))
+    }
+
+    /// Move the tray icon next to the clock, or back into the overflow. Windows gives apps
+    /// no official call for this, so it flips the same per-user switch its Settings page
+    /// does. False when that switch isn't there (the caller then opens that page).
+    pub fn set_tray_pinned(on: bool) -> bool {
+        use windows_sys::Win32::System::Registry::REG_DWORD;
+        let entries = tray_entries();
+        let name = wide("IsPromoted");
+        let value = u32::from(on);
+        !entries.is_empty()
+            && entries.iter().all(|key| unsafe {
+                RegSetKeyValueW(
+                    HKEY_CURRENT_USER,
+                    key.as_ptr(),
+                    name.as_ptr(),
+                    REG_DWORD,
+                    &value as *const u32 as *const _,
+                    4,
+                ) == 0
+            })
+    }
+
+    /// Settings → Personalisation → Taskbar, where "Other system tray icons" lives.
+    pub fn open_taskbar_settings() {
+        let _ = std::process::Command::new("explorer")
+            .arg("ms-settings:taskbar")
+            .spawn();
+    }
+
     /// Windows app theme: true when apps are set to dark.
     pub fn system_dark() -> bool {
         let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
@@ -1071,6 +1305,14 @@ mod imp {
         false
     }
     pub fn set_start_with_windows(_on: bool) {}
+    pub fn set_explorer_menu(_on: bool) {}
+    pub fn tray_pinned() -> Option<bool> {
+        None
+    }
+    pub fn set_tray_pinned(_on: bool) -> bool {
+        false
+    }
+    pub fn open_taskbar_settings() {}
     pub fn starts_with_windows() -> bool {
         false
     }
@@ -1097,5 +1339,32 @@ mod imp {
     }
     pub fn fullscreen_in_front() -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn files_left_by_several_launches_arrive_once_each() {
+        let _ = take_handoff();
+        let (a, b) = (PathBuf::from("/clips/a.mp4"), PathBuf::from("/clips/b.mp4"));
+        // Explorer: one launch per selected file, and one file selected twice.
+        leave_handoff(std::slice::from_ref(&a));
+        leave_handoff(&[b.clone(), a.clone()]);
+        leave_handoff(&[]);
+        assert_eq!(take_handoff(), vec![a, b]);
+        assert!(take_handoff().is_empty());
+    }
+
+    #[test]
+    fn only_real_paths_count_as_files_to_open() {
+        let dir = std::env::temp_dir();
+        let args = ["Kompacter", "--tray", "no-such-file.mp4"]
+            .into_iter()
+            .map(String::from)
+            .chain(Some(dir.display().to_string()));
+        assert_eq!(file_args(args), vec![dir]);
     }
 }

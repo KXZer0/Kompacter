@@ -27,6 +27,15 @@ pub struct Settings {
     /// Hide the flyout when it loses focus (not while a file is dragged over it).
     pub auto_hide: bool,
     pub start_with_windows: bool,
+    /// Start with Windows has been switched on once by default. After that the choice is
+    /// the user's (Settings or Task Manager) and is never switched back on.
+    pub start_default_done: bool,
+    /// The first-run screen (what Kompacter may do on its own) has been answered.
+    pub welcomed: bool,
+    /// "Kompact" in Explorer's right-click menu for files and folders.
+    pub explorer_menu: bool,
+    /// The one-time "keep the tray icon visible" tip was answered or dismissed.
+    pub tray_tip_seen: bool,
     /// Output formats ("h264" | "h265" | "av1", "auto" | "mp3" | "opus",
     /// "auto" | "jpeg" | "webp", "zip" | "7z").
     pub video_codec: VideoCodec,
@@ -79,6 +88,10 @@ impl Default for Settings {
             output_dir: String::new(),
             auto_hide: true,
             start_with_windows: false,
+            start_default_done: false,
+            welcomed: false,
+            explorer_menu: true,
+            tray_tip_seen: false,
             video_codec: VideoCodec::default(),
             audio_format: AudioFormat::default(),
             image_format: ImageFormat::default(),

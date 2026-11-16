@@ -1,0 +1,648 @@
+// Tiny looping scenes that show what each automatic feature does: copy a big file and the
+// quick bar offers to shrink it; paste one into Discord and the paste waits for an answer;
+// save a game clip and it shrinks on its own. Everything is drawn here from rectangles,
+// text and the line icons (no video, no images), in a 280×170 design frame that scales to
+// whatever size the scene is given.
+
+import { Theme, Fx, Icon } from "theme.slint";
+import { Icons } from "icons.slint";
+
+/// Timing helpers. `p` is where the loop is, from 0 to 1.
+global Ease {
+    /// 0 before `a`, 1 after `b`, a straight line between.
+    public pure function ramp(p: float, a: float, b: float) -> float {
+        return Math.clamp((p - a) / (b - a), 0, 1);
+    }
+    /// Up between `a` and `b`, back down between `c` and `d`.
+    public pure function span(p: float, a: float, b: float, c: float, d: float) -> float {
+        return Ease.ramp(p, a, b) * (1 - Ease.ramp(p, c, d));
+    }
+    /// Quick start, soft landing.
+    public pure function soft(t: float) -> float {
+        return 1 - (1 - t) * (1 - t) * (1 - t);
+    }
+    /// Gentle at both ends, for the pointer.
+    public pure function smooth(t: float) -> float {
+        return t * t * (3 - 2 * t);
+    }
+    /// Overshoots a little and settles, like the app's ease-out-back springs.
+    public pure function back(t: float) -> float {
+        return 1 + 2.70158 * (t - 1) * (t - 1) * (t - 1) + 1.70158 * (t - 1) * (t - 1);
+    }
+}
+
+/// A small app window: title bar, then whatever is inside.
+component Win inherits Rectangle {
+    in property <length> u;
+    in property <string> title;
+    in property <string> icon;
+    in property <length> title-x: 8 * u;
+    border-radius: 8 * u;
+    background: Theme.bg;
+    border-width: 1px;
+    border-color: Theme.hair;
+    drop-shadow-blur: 8 * u;
+    drop-shadow-offset-y: 2 * u;
+    drop-shadow-color: Theme.shadow.transparentize(0.5);
+    clip: true;
+    if root.icon != "": Icon {
+        x: root.title-x;
+        y: 4 * root.u;
+        d: root.icon;
+        size: 11 * root.u;
+        color: Theme.label-2;
+    }
+    Text {
+        x: root.title-x + (root.icon != "" ? 14 * root.u : 0);
+        y: 0;
+        height: 19 * root.u;
+        text: root.title;
+        font-size: 9 * root.u;
+        font-weight: 600;
+        color: Theme.label-2;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        y: 19 * root.u;
+        height: 1px;
+        background: Theme.sep;
+    }
+    @children
+}
+
+/// A file in a folder window: its icon, a grey line for the name, and its size.
+component Tile inherits Rectangle {
+    in property <length> u;
+    in property <string> icon: Icons.film;
+    in property <string> size;
+    in property <color> size-color: Theme.label;
+    /// Selected (0..1): the blue highlight around it.
+    in property <float> sel;
+    /// Shrinking (0..1): a thin progress bar in the icon; -1 hides it.
+    in property <float> work: -1;
+    width: 46 * u;
+    height: 62 * u;
+    Rectangle {
+        x: -4 * root.u;
+        y: -4 * root.u;
+        width: parent.width + 8 * root.u;
+        height: parent.height + 8 * root.u;
+        border-radius: 9 * root.u;
+        background: Theme.accent-soft;
+        border-width: 1px;
+        border-color: Theme.accent;
+        opacity: root.sel;
+    }
+    Rectangle {
+        y: 0;
+        height: 38 * root.u;
+        border-radius: 7 * root.u;
+        background: Theme.fill;
+        Icon {
+            y: 6 * root.u;
+            d: root.icon;
+            size: 22 * root.u;
+            color: root.size != "" ? Theme.accent-text : Theme.label-2;
+        }
+        if root.work >= 0: Rectangle {
+            x: 7 * root.u;
+            y: 31 * root.u;
+            width: parent.width - 14 * root.u;
+            height: 3 * root.u;
+            border-radius: 1.5 * root.u;
+            background: Theme.fill-2;
+            Rectangle {
+                x: 0;
+                width: parent.width * root.work;
+                border-radius: parent.border-radius;
+                background: Theme.accent;
+            }
+        }
+    }
+    Rectangle {
+        x: 8 * root.u;
+        y: 43 * root.u;
+        width: parent.width - 16 * root.u;
+        height: 3.5 * root.u;
+        border-radius: 1.75 * root.u;
+        background: Theme.fill-2;
+    }
+    if root.size != "": Text {
+        y: 49 * root.u;
+        height: 13 * root.u;
+        text: root.size;
+        font-size: 10 * root.u;
+        font-weight: 650;
+        color: root.size-color;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.size == "": Rectangle {
+        x: 13 * root.u;
+        y: 51 * root.u;
+        width: parent.width - 26 * root.u;
+        height: 3.5 * root.u;
+        border-radius: 1.75 * root.u;
+        background: Theme.fill;
+    }
+}
+
+/// A key press, like Ctrl+C.
+component Cap inherits Rectangle {
+    in property <length> u;
+    in property <string> text;
+    width: label.preferred-width + 14 * u;
+    height: 20 * u;
+    border-radius: 6 * u;
+    background: Theme.pop;
+    border-width: 1px;
+    border-color: Theme.pop-border;
+    drop-shadow-blur: 5 * u;
+    drop-shadow-offset-y: 2 * u;
+    drop-shadow-color: Theme.shadow.transparentize(0.4);
+    label := Text {
+        text: root.text;
+        font-size: 10.5 * root.u;
+        font-weight: 650;
+        color: Theme.label;
+        vertical-alignment: center;
+    }
+}
+
+/// The mouse pointer; its tip is at (x, y). Shrinks a touch while clicking.
+component Pointer inherits Path {
+    in property <length> u;
+    in property <float> press;
+    width: 13 * u * (1 - 0.15 * press);
+    height: 19 * u * (1 - 0.15 * press);
+    viewbox-x: -1;
+    viewbox-y: -1;
+    viewbox-width: 13;
+    viewbox-height: 19;
+    commands: "M0 0L0 15L3.8 11.6L6.6 17.6L9.2 16.4L6.5 10.6L11.4 10.6Z";
+    fill: white;
+    stroke: #1d1d1f;
+    stroke-width: 1px;
+}
+
+/// A file attached in the chat box: icon and size, red when too big, green once shrunk.
+component Chip inherits Rectangle {
+    in property <length> u;
+    in property <bool> ok;
+    in property <string> text;
+    property <color> c: ok ? Theme.ok : Theme.bad;
+    width: row.preferred-width;
+    height: 18 * u;
+    border-radius: 6 * u;
+    background: c.transparentize(0.86);
+    border-width: 1px;
+    border-color: c.transparentize(0.5);
+    row := HorizontalLayout {
+        padding-left: 5 * root.u;
+        padding-right: 6 * root.u;
+        spacing: 3 * root.u;
+        Icon {
+            y: (parent.height - self.height) / 2;
+            d: root.ok ? Icons.check : Icons.film;
+            size: 11 * root.u;
+            color: root.c;
+        }
+        Text {
+            text: root.text;
+            font-size: 9.5 * root.u;
+            font-weight: 650;
+            color: root.c;
+            vertical-alignment: center;
+        }
+    }
+}
+
+/// The quick bar in miniature, as it turns up in the corner of the screen.
+/// kind: 0 offers to shrink a copied file, 1 the paste guard, 2 a clip that is done.
+component MiniBar inherits Rectangle {
+    in property <length> u;
+    in property <int> kind;
+    /// The main button is being clicked (0..1), or glows to draw the eye.
+    in property <float> press;
+    in property <float> glow;
+    width: 148 * u;
+    height: 62 * u;
+    border-radius: 11 * u;
+    background: Theme.pop;
+    border-width: 1px;
+    border-color: Theme.pop-border;
+    drop-shadow-blur: 12 * u;
+    drop-shadow-offset-y: 3 * u;
+    drop-shadow-color: Theme.shadow;
+    Rectangle {
+        x: 8 * root.u;
+        y: 7 * root.u;
+        width: 22 * root.u;
+        height: 22 * root.u;
+        border-radius: 6 * root.u;
+        background: root.kind == 2 ? Theme.ok.transparentize(0.85) : Theme.accent-soft;
+        Icon {
+            d: root.kind == 2 ? Icons.check : Icons.film;
+            size: 16 * root.u;
+            color: root.kind == 2 ? Theme.ok : Theme.accent-text;
+        }
+    }
+    Text {
+        x: 36 * root.u;
+        y: 7 * root.u;
+        height: 11 * root.u;
+        text: root.kind == 2 ? "Clip copied" : "clip.mp4";
+        font-size: 9.5 * root.u;
+        font-weight: 650;
+        color: root.kind == 2 ? Theme.ok : Theme.label;
+        vertical-alignment: center;
+    }
+    // Close, like the real bar's corner.
+    Icon {
+        x: parent.width - 16 * root.u;
+        y: 6 * root.u;
+        d: Icons.x;
+        size: 10 * root.u;
+        opacity: 0.6;
+    }
+    HorizontalLayout {
+        x: 36 * root.u;
+        y: 18 * root.u;
+        height: 11 * root.u;
+        alignment: start;
+        spacing: 3 * root.u;
+        Text {
+            text: root.kind == 2 ? "9.8 MB · 13× smaller" : "128 MB";
+            font-size: 8.5 * root.u;
+            color: Theme.label-2;
+            vertical-alignment: center;
+        }
+        if root.kind != 2: Text {
+            text: "→";
+            font-size: 8.5 * root.u;
+            color: Theme.ok;
+            vertical-alignment: center;
+        }
+        if root.kind != 2: Text {
+            text: "9.8 MB";
+            font-size: 8.5 * root.u;
+            font-weight: 650;
+            color: Theme.ok;
+            vertical-alignment: center;
+        }
+    }
+    // Done: "Show in folder" (just its icon here) and "Done".
+    if root.kind == 2: Rectangle {
+        x: 8 * root.u;
+        y: 36 * root.u;
+        width: 40 * root.u;
+        height: 18 * root.u;
+        border-radius: 9 * root.u;
+        background: Theme.fill;
+        Icon {
+            d: Icons.open;
+            size: 11 * root.u;
+            color: Theme.label;
+        }
+    }
+    Rectangle {
+        x: root.kind == 2 ? 52 * root.u : 8 * root.u;
+        y: 36 * root.u;
+        width: parent.width - self.x - 8 * root.u;
+        height: 18 * root.u;
+        border-radius: 9 * root.u;
+        background: root.press > 0.5 ? Theme.accent-hover : Theme.accent;
+        drop-shadow-blur: 6 * root.u * root.glow;
+        drop-shadow-color: Theme.accent.transparentize(1 - 0.6 * root.glow);
+        HorizontalLayout {
+            alignment: center;
+            spacing: 3 * root.u;
+            if root.kind != 2: Icon {
+                y: (parent.height - self.height) / 2;
+                d: Icons.squeeze;
+                size: 10 * root.u;
+                color: Theme.on-accent;
+            }
+            Text {
+                text: root.kind == 0 ? "Compress" : root.kind == 1 ? "Compress & paste" : "Done";
+                font-size: 8.5 * root.u;
+                font-weight: 650;
+                color: Theme.on-accent;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// The three scenes share one layout: a window on the left, the key press to its right, and
+// the quick bar sliding up from the bottom-right corner (from y 174, below the frame, to 98).
+
+/// A: the user copies a big file; the quick bar turns up and offers to shrink it.
+component CopyScene inherits Rectangle {
+    in property <length> u;
+    in property <float> p;
+    // ── Choreography ──
+    // Everything that moved clears just before the loop starts again.
+    property <float> leave: 1 - Ease.ramp(p, 0.93, 0.99);
+    property <float> pointer: Ease.ramp(p, 0, 0.04) * (1 - Ease.ramp(p, 0.48, 0.54));
+    property <float> walk: Ease.smooth(Ease.ramp(p, 0.04, 0.24));
+    property <float> click: Ease.span(p, 0.25, 0.27, 0.29, 0.33);
+    property <float> sel: Ease.ramp(p, 0.26, 0.29) * leave;
+    property <float> cap: Ease.ramp(p, 0.34, 0.42);
+    // A copy of the file heads for the corner, where Kompacter is.
+    property <float> fly: Ease.soft(Ease.ramp(p, 0.44, 0.58));
+    property <float> bar: Ease.back(Ease.ramp(p, 0.54, 0.66));
+    property <float> glow: Ease.span(p, 0.72, 0.77, 0.8, 0.88);
+
+    Win {
+        x: 14 * root.u;
+        y: 14 * root.u;
+        width: 166 * root.u;
+        height: 112 * root.u;
+        u: root.u;
+        title: "Videos";
+        icon: Icons.folder;
+        Tile {
+            x: 14 * root.u;
+            y: 32 * root.u;
+            u: root.u;
+            size: "128 MB";
+            sel: root.sel;
+        }
+        Tile {
+            x: 66 * root.u;
+            y: 32 * root.u;
+            u: root.u;
+            icon: Icons.image;
+        }
+        Tile {
+            x: 118 * root.u;
+            y: 32 * root.u;
+            u: root.u;
+            icon: Icons.music;
+        }
+    }
+    Cap {
+        x: 192 * root.u;
+        y: 40 * root.u;
+        u: root.u;
+        text: "Ctrl+C";
+        opacity: root.cap * root.leave;
+        transform-scale: 0.7 + 0.3 * Ease.back(root.cap);
+    }
+    Rectangle {
+        x: (28 + 102 * root.fly) * root.u;
+        y: (46 + 60 * root.fly) * root.u;
+        width: 38 * root.u * (1 - 0.5 * root.fly);
+        height: 32 * root.u * (1 - 0.5 * root.fly);
+        border-radius: 7 * root.u;
+        background: Theme.accent-soft;
+        border-width: 1px;
+        border-color: Theme.accent;
+        opacity: 0.9 * Ease.span(root.p, 0.44, 0.46, 0.52, 0.58);
+        Icon {
+            d: Icons.film;
+            size: 16 * root.u * (1 - 0.4 * root.fly);
+            color: Theme.accent-text;
+        }
+    }
+    MiniBar {
+        x: 122 * root.u;
+        y: (174 - 76 * root.bar) * root.u;
+        u: root.u;
+        kind: 0;
+        glow: root.glow;
+        opacity: root.leave;
+    }
+    Pointer {
+        x: (150 - 104 * root.walk) * root.u;
+        y: (156 - 82 * root.walk) * root.u;
+        u: root.u;
+        press: root.click;
+        opacity: root.pointer;
+    }
+}
+
+/// B: the user presses Ctrl+V in Discord with a file that's too big. The paste is held
+/// back, the bar asks, "Compress & paste" puts the small file in the chat box instead.
+component PasteScene inherits Rectangle {
+    in property <length> u;
+    in property <float> p;
+    // ── Choreography ──
+    property <float> leave: 1 - Ease.ramp(p, 0.93, 0.99);
+    property <float> cap: Ease.ramp(p, 0.06, 0.14) * (1 - Ease.ramp(p, 0.66, 0.72));
+    property <float> cap-pop: Ease.back(Ease.ramp(p, 0.06, 0.14));
+    // The big file starts to land in the chat box, shakes, and is held back.
+    property <float> chip: Ease.ramp(p, 0.16, 0.22);
+    property <float> shake: Ease.span(p, 0.23, 0.25, 0.33, 0.35);
+    property <float> held: Ease.soft(Ease.ramp(p, 0.38, 0.46));
+    property <float> bar: Ease.back(Ease.ramp(p, 0.44, 0.54)) * (1 - Ease.soft(Ease.ramp(p, 0.73, 0.81)));
+    property <float> pointer: Ease.ramp(p, 0.54, 0.58) * (1 - Ease.ramp(p, 0.8, 0.84));
+    property <float> walk: Ease.smooth(Ease.ramp(p, 0.55, 0.66));
+    property <float> click: Ease.span(p, 0.67, 0.69, 0.71, 0.74);
+    property <float> sent: Ease.ramp(p, 0.8, 0.86) * leave;
+
+    Win {
+        x: 14 * root.u;
+        y: 14 * root.u;
+        width: 172 * root.u;
+        height: 122 * root.u;
+        u: root.u;
+        title: "# general";
+        title-x: 32 * root.u;
+        // Server list down the side.
+        Rectangle {
+            x: 0;
+            width: 24 * root.u;
+            background: Theme.fill;
+            for i in 3: Rectangle {
+                x: 6 * root.u;
+                y: (7 + 18 * i) * root.u;
+                width: 12 * root.u;
+                height: 12 * root.u;
+                border-radius: (i == 0 ? 4 : 6) * root.u;
+                background: i == 0 ? Theme.accent : Theme.fill-2;
+            }
+        }
+        // Two earlier messages: an avatar, a name and a line of text.
+        for i in 2: Rectangle {
+            x: 32 * root.u;
+            y: (27 + 24 * i) * root.u;
+            width: 132 * root.u;
+            height: 16 * root.u;
+            Rectangle {
+                x: 0;
+                width: 12 * root.u;
+                height: 12 * root.u;
+                border-radius: 6 * root.u;
+                background: i == 0 ? Theme.ok.transparentize(0.5) : Theme.warn.transparentize(0.5);
+            }
+            Rectangle {
+                x: 17 * root.u;
+                y: 1 * root.u;
+                width: (i == 0 ? 34 : 26) * root.u;
+                height: 4 * root.u;
+                border-radius: 2 * root.u;
+                background: Theme.fill-2;
+            }
+            Rectangle {
+                x: 17 * root.u;
+                y: 9 * root.u;
+                width: (i == 0 ? 96 : 74) * root.u;
+                height: 4 * root.u;
+                border-radius: 2 * root.u;
+                background: Theme.fill;
+            }
+        }
+        // The chat box.
+        Rectangle {
+            x: 32 * root.u;
+            y: 98 * root.u;
+            width: 132 * root.u;
+            height: 17 * root.u;
+            border-radius: 6 * root.u;
+            background: Theme.fill;
+            Rectangle {
+                x: 5 * root.u;
+                y: 4 * root.u;
+                width: 9 * root.u;
+                height: 9 * root.u;
+                border-radius: 4.5 * root.u;
+                background: Theme.fill-2;
+            }
+        }
+        // The too-big paste, then the small one that goes in instead.
+        Chip {
+            x: (32 + 50 * root.held + 2.5 * root.shake * Math.sin(root.p * 7200deg)) * root.u;
+            y: (77 + 4 * (1 - root.chip) + 14 * root.held) * root.u;
+            u: root.u;
+            text: "128 MB";
+            opacity: root.chip * (1 - root.held);
+        }
+        Chip {
+            x: 32 * root.u;
+            y: (77 + 4 * (1 - root.sent)) * root.u;
+            u: root.u;
+            ok: true;
+            text: "9.8 MB";
+            opacity: root.sent;
+            transform-scale: 0.8 + 0.2 * Ease.back(root.sent);
+        }
+    }
+    Cap {
+        x: 198 * root.u;
+        y: 56 * root.u;
+        u: root.u;
+        text: "Ctrl+V";
+        opacity: root.cap;
+        transform-scale: 0.7 + 0.3 * root.cap-pop;
+    }
+    MiniBar {
+        x: 122 * root.u;
+        y: (174 - 76 * root.bar) * root.u;
+        u: root.u;
+        kind: 1;
+        press: root.click;
+    }
+    Pointer {
+        x: (252 - 54 * root.walk) * root.u;
+        y: (172 - 31 * root.walk) * root.u;
+        u: root.u;
+        press: root.click;
+        opacity: root.pointer;
+    }
+}
+
+/// C: a new clip lands in a clip folder, shrinks on its own, and the bar says it's copied.
+component ClipScene inherits Rectangle {
+    in property <length> u;
+    in property <float> p;
+    // ── Choreography ──
+    property <float> leave: 1 - Ease.ramp(p, 0.93, 0.99);
+    property <float> drop: Ease.ramp(p, 0.06, 0.18);
+    property <float> work: Ease.ramp(p, 0.24, 0.5);
+    property <float> working: Ease.span(p, 0.21, 0.24, 0.52, 0.56);
+    property <float> shrunk: Ease.ramp(p, 0.48, 0.54);
+    property <float> bar: Ease.back(Ease.ramp(p, 0.56, 0.66));
+
+    Win {
+        x: 14 * root.u;
+        y: 14 * root.u;
+        width: 166 * root.u;
+        height: 112 * root.u;
+        u: root.u;
+        title: "Clips";
+        icon: Icons.folder;
+        Tile {
+            x: 66 * root.u;
+            y: 32 * root.u;
+            u: root.u;
+            opacity: 0.6;
+        }
+        // The new clip: drops in, shrinks, and its size turns green.
+        Tile {
+            x: 14 * root.u;
+            y: (32 - 16 * (1 - Ease.back(root.drop))) * root.u;
+            u: root.u;
+            size: root.shrunk < 0.5 ? "128 MB" : "9.8 MB";
+            size-color: root.shrunk < 0.5 ? Theme.label : Theme.ok;
+            work: root.working > 0 ? root.work : -1;
+            opacity: Math.min(1, root.drop * 2) * root.leave;
+        }
+    }
+    MiniBar {
+        x: 122 * root.u;
+        y: (174 - 76 * root.bar) * root.u;
+        u: root.u;
+        kind: 2;
+        opacity: root.leave;
+    }
+}
+
+/// One feature's scene, looping while `playing`. feature: 0 copy, 1 paste guard, 2 clips.
+/// Without animations it shows one still frame with the quick bar up.
+export component FeatureDemo inherits Rectangle {
+    in property <int> feature;
+    in property <bool> playing;
+    // Loop lengths, each with a short rest at the end, and the still frame for each.
+    property <duration> period: feature == 1 ? 5200ms : feature == 2 ? 4600ms : 4400ms;
+    property <float> still: feature == 1 ? 0.535 : 0.85;
+    // When this loop started. animation-tick() only advances, and only asks for frames,
+    // while something on screen reads it, so nothing ticks while this isn't playing or
+    // isn't drawn.
+    property <duration> t0;
+    init => { self.t0 = animation-tick(); }
+    changed playing => {
+        if (self.playing) {
+            self.t0 = animation-tick();
+        }
+    }
+    property <float> phase: !Fx.rich ? still
+        : !playing ? 0
+        : Math.mod((animation-tick() - t0) / 1ms, period / 1ms) / (period / 1ms);
+    // One design pixel: the frame is drawn at 280×170 and scaled to fit.
+    property <length> u: Math.min(self.width / 280, self.height / 170);
+
+    Rectangle {
+        x: (parent.width - 280 * root.u) / 2;
+        y: (parent.height - 170 * root.u) / 2;
+        width: 280 * root.u;
+        height: 170 * root.u;
+        border-radius: 14 * root.u;
+        clip: true;
+        // A desktop in the app's colours.
+        background: @linear-gradient(160deg, Theme.accent-soft 0%, Theme.fill 100%);
+        if root.feature == 0: CopyScene {
+            u: root.u;
+            p: root.phase;
+        }
+        if root.feature == 1: PasteScene {
+            u: root.u;
+            p: root.phase;
+        }
+        if root.feature == 2: ClipScene {
+            u: root.u;
+            p: root.phase;
+        }
+    }
+}

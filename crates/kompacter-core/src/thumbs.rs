@@ -82,13 +82,44 @@ pub fn frame_at(
     })?;
 
     if frame.is_empty() {
-        return Err(Error::Unsupported("no frame there".into()));
+        frame = last_frame(ff, path, width, height, stop)?;
     }
     Ok(Frames {
         width,
         height,
         rgb: vec![frame],
     })
+}
+
+/// The video's final frame, for a seek at or past its end. Some ffmpeg builds return
+/// nothing there (the seek lands after the last video packet, for example when the sound
+/// runs longer than the picture), where others hold the last frame. Decoding the tail
+/// and keeping what came last gives the same picture on every build. The tail is widened
+/// until it reaches back to a keyframe.
+pub(crate) fn last_frame(
+    ff: &Ffmpeg,
+    path: &Path,
+    width: u32,
+    height: u32,
+    stop: &AtomicBool,
+) -> Result<Vec<u8>> {
+    let scale = scale_filter(width, height);
+    for back in ["-2", "-15", "-120"] {
+        let mut frame = Vec::new();
+        let mut cmd = preview_command(ff, "4");
+        cmd.args(["-sseof", back, "-i"]).arg(path);
+        video_output(&mut cmd, &scale);
+        cmd.arg("pipe:1");
+        read_frames(ff, &mut cmd, width, height, stop, |pixels| {
+            frame.clear();
+            frame.extend_from_slice(pixels);
+            true
+        })?;
+        if !frame.is_empty() {
+            return Ok(frame);
+        }
+    }
+    Err(Error::Unsupported("no frame there".into()))
 }
 
 /// Play against the supplied clock. FFmpeg samples source presentation timestamps

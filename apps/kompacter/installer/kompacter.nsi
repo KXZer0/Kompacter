@@ -55,6 +55,9 @@ Section "Uninstall"
   nsExec::Exec 'taskkill /IM Kompacter.exe /F'
   Delete "$SMPROGRAMS\Kompacter.lnk"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Kompacter"
+  ; The right-click "Kompact" entries the app adds for files and folders.
+  DeleteRegKey HKCU "Software\Classes\*\shell\Kompacter"
+  DeleteRegKey HKCU "Software\Classes\Directory\shell\Kompacter"
   DeleteRegKey HKCU "${UNINST}"
   DeleteRegKey HKCU "Software\Kompacter"
   ; Only Kompacter's own files: the folder may be one the user chose (never wipe it).
