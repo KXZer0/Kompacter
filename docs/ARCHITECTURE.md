@@ -27,7 +27,8 @@
   (`tools/art.py` makes `ui/*.png`).
 - UI files: `ui/app.slint` (window, screens), `ui/settings.slint` (Settings screen and the
   `Prefs` global it reads and calls), `ui/stage.slint` (blob, press), `ui/theme.slint`
-  (colors, buttons, dropdown, switch).
+  (colors, buttons, dropdown, switch), `ui/demo.slint` (the small looping scenes that show
+  the three automatic features, in the first-run steps and Settings' hover previews).
 - `src/flow.rs` (file → compress → clipboard), `src/trim.rs` (trimmer, live estimates,
   playhead, GIF), `src/motion.rs` (open/close, eyes, press, marching dashes),
   `src/quick.rs` (the quick bar, paste guard, clips that shrink on their own),

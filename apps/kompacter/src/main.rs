@@ -271,17 +271,17 @@ impl App {
         });
     }
 
-    /// Show the first-run screen. "Copied files" starts ticked: it's what makes Kompacter
-    /// turn up by itself when it's needed, and it only looks at the size of copied files.
-    /// The other two keep whatever is already set (off on a new install).
+    /// Show the first-run screen: three steps, one choice each. "Copied files" starts
+    /// ticked: it's what makes Kompacter turn up by itself when it's needed, and it only
+    /// looks at the size of copied files. The other two keep whatever is already set (off
+    /// on a new install).
     fn welcome(&self) {
         let ui = self.ui();
         let s = self.settings.borrow();
         ui.set_welcome_copies(true);
         ui.set_welcome_guard(s.paste_guard);
         ui.set_welcome_clips(s.watch_folders);
-        // Only offered when this PC has clip folders, so "Done" never opens a picker.
-        ui.set_welcome_has_clips(s.watch_folders || !watch::suggested_folders().is_empty());
+        ui.set_welcome_step(0);
         drop(s);
         self.set_view(View::Welcome);
     }
@@ -960,7 +960,7 @@ fn set_custom_dir(app: &Rc<App>, dir: PathBuf) {
     app.sync_settings();
 }
 
-/// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord`
+/// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord|welcome(-2|-3)`
 /// shows a screen with sample data, for screenshots.
 #[cfg(debug_assertions)]
 fn demo(app: &Rc<App>, which: &str) {
@@ -1077,10 +1077,13 @@ fn demo(app: &Rc<App>, which: &str) {
         }
         "drag" => ui.set_dragging(true),
         "tip" => ui.set_tray_tip(true),
-        "welcome" => {
-            ui.set_welcome_has_clips(true);
-            ui.set_welcome_copies(true);
-            ui.set_view(View::Welcome);
+        // `welcome-2` and `welcome-3` open on that step.
+        "welcome" | "welcome-1" | "welcome-2" | "welcome-3" => {
+            app.welcome();
+            let step = which
+                .strip_prefix("welcome-")
+                .and_then(|n| n.parse::<i32>().ok());
+            ui.set_welcome_step(step.map_or(0, |n| n - 1));
         }
         "quick" | "quick-busy" | "quick-done" | "guard" | "quick-empty" => {
             app.quick.set(true);

@@ -227,6 +227,10 @@ export component IconBtn inherits Rectangle {
 /// On/off switch with a springy knob.
 export component Switch inherits Rectangle {
     in property <bool> checked;
+    /// Off: ignores clicks (e.g. while faded out under another one).
+    in property <bool> enabled: true;
+    /// The pointer is on it (a row's hover preview stays up while it is).
+    out property <bool> hovered: touch.has-hover;
     callback toggled(bool);
     width: 44px;
     height: 26px;
@@ -245,7 +249,8 @@ export component Switch inherits Rectangle {
         drop-shadow-color: #00000033;
         animate x { duration: 260ms; easing: ease-out-back; }
     }
-    TouchArea {
+    touch := TouchArea {
+        enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => { root.toggled(!root.checked); }
     }

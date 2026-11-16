@@ -1,8 +1,9 @@
 // The Settings screen. Its values and actions live in the `Prefs` global, which Rust fills
 // and listens to (see `sync_settings` in src/main.rs); add a setting here and there.
 
-import { Theme, Icon, AppLogo, Btn, IconBtn, Switch, Seg, Dropdown } from "theme.slint";
+import { Theme, Fx, Icon, AppLogo, Btn, IconBtn, Switch, Seg, Dropdown } from "theme.slint";
 import { Icons } from "icons.slint";
+import { FeatureDemo } from "demo.slint";
 
 export struct PresetItem {
     name: string,
@@ -66,6 +67,8 @@ export component Cell inherits Rectangle {
     in property <string> small;
     in property <bool> first;
     in property <bool> clickable;
+    /// The pointer is on the row (not on what sits on top of it, like its switch).
+    out property <bool> hovered: ta.has-hover;
     callback clicked;
     min-height: root.small != "" ? 56px : 44px;
     background: ta.has-hover && root.clickable ? Theme.fill : transparent;
@@ -77,10 +80,14 @@ export component Cell inherits Rectangle {
         height: 1px;
         background: Theme.sep;
     }
+    // Always on, so rows that only hold a switch still know they're hovered.
     ta := TouchArea {
-        enabled: root.clickable;
         mouse-cursor: root.clickable ? pointer : default;
-        clicked => { root.clicked(); }
+        clicked => {
+            if (root.clickable) {
+                root.clicked();
+            }
+        }
     }
     HorizontalLayout {
         padding-left: 12px;
@@ -173,8 +180,39 @@ export component SettingsView inherits Rectangle {
     in property <int> preset-index;
     callback select-preset(int);
     callback close-settings();
+    /// The window is open (the hover preview only plays then).
+    in property <bool> live: true;
     width: 360px;
     height: 600px;
+
+    // Hover previews for the three automatic rows: rest the pointer on one for a moment
+    // and a card shows what it does, like a tooltip. 0 copy, 1 paste guard, 2 clips.
+    property <int> hover-row: copy-cell.hovered || copy-switch.hovered ? 0
+        : paste-cell.hovered || paste-switch.hovered ? 1
+        : clip-cell.hovered || clip-switch.hovered ? 2 : -1;
+    property <bool> preview-on;
+    // Which row the card is for; kept while it fades out.
+    property <int> preview-row;
+    // How long the pointer has rested, in 110 ms steps; the card shows after five. A new
+    // row, or a scroll, hides it and starts the count again. (Counting, because a Timer
+    // that is restarted by hand keeps going after its `running` turns false.)
+    property <int> preview-wait;
+    function preview-reset() {
+        root.preview-on = false;
+        root.preview-wait = 0;
+    }
+    changed hover-row => { root.preview-reset(); }
+    Timer {
+        interval: 110ms;
+        running: root.hover-row >= 0 && !root.preview-on && root.live;
+        triggered => {
+            root.preview-wait += 1;
+            if (root.preview-wait >= 5) {
+                root.preview-row = root.hover-row;
+                root.preview-on = true;
+            }
+        }
+    }
     IconBtn {
         x: 8px;
         y: 14px;
@@ -196,6 +234,7 @@ export component SettingsView inherits Rectangle {
         y: 54px;
         width: 360px;
         height: 546px;
+        changed viewport-y => { root.preview-reset(); }
         VerticalLayout {
             padding-left: 20px;
             padding-right: 20px;
@@ -428,28 +467,28 @@ export component SettingsView inherits Rectangle {
                         picked(i) => { Prefs.set-shortcut(i); }
                     }
                 }
-                Cell {
-                    label: "Paste guard";
-                    small: "Catch big files pasted in Discord";
-                    Switch {
-                        checked: Prefs.paste-guard;
-                        y: (parent.height - self.height) / 2;
-                        toggled(on) => { Prefs.set-paste-guard(on); }
-                    }
-                }
-                Cell {
-                    label: "Copied files";
-                    small: "Offer to compress big files you copy";
-                    Switch {
+                copy-cell := Cell {
+                    label: "When I copy a big file";
+                    small: "A small bar offers to shrink it";
+                    copy-switch := Switch {
                         checked: Prefs.watch-copies;
                         y: (parent.height - self.height) / 2;
                         toggled(on) => { Prefs.set-watch-copies(on); }
                     }
                 }
-                Cell {
-                    label: "Clip folders";
-                    small: "Shrink new clips on their own";
-                    Switch {
+                paste-cell := Cell {
+                    label: "When I paste into Discord";
+                    small: "Holds a too-big paste and asks first";
+                    paste-switch := Switch {
+                        checked: Prefs.paste-guard;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-paste-guard(on); }
+                    }
+                }
+                clip-cell := Cell {
+                    label: "When I save a game clip";
+                    small: "Shrinks new clips on their own";
+                    clip-switch := Switch {
                         checked: Prefs.watch-folders;
                         y: (parent.height - self.height) / 2;
                         toggled(on) => { Prefs.set-watch-folders(on); }
@@ -528,4 +567,48 @@ export component SettingsView inherits Rectangle {
         }
     }
 
+    // The preview card. It sits up here, over the list, so the list's clipping can't cut
+    // it off, and it has nothing to click, so the row's switch still works. Below the row
+    // when it fits, above it otherwise.
+    property <length> row-y: (root.preview-row == 0 ? copy-cell.absolute-position.y
+        : root.preview-row == 1 ? paste-cell.absolute-position.y
+        : clip-cell.absolute-position.y) - root.absolute-position.y;
+    property <bool> preview-above: root.row-y + copy-cell.height + 6px + preview.height > root.height - 8px;
+    preview := Rectangle {
+        x: 48px;
+        y: root.preview-above ? root.row-y - 6px - self.height : root.row-y + copy-cell.height + 6px;
+        width: 264px;
+        height: preview-col.preferred-height;
+        border-radius: 12px;
+        background: Theme.pop;
+        border-width: 1px;
+        border-color: Theme.pop-border;
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 5px;
+        drop-shadow-color: Theme.shadow;
+        opacity: root.preview-on ? 1 : 0;
+        animate opacity { duration: Fx.rich ? 150ms : 0ms; easing: ease-out; }
+        transform-origin: { x: self.width / 2, y: root.preview-above ? self.height : 0 };
+        transform-scale: root.preview-on || !Fx.rich ? 1 : 0.96;
+        animate transform-scale { duration: Fx.rich ? 150ms : 0ms; easing: ease-out; }
+        visible: self.opacity > 0;
+        preview-col := VerticalLayout {
+            padding: 12px;
+            spacing: 10px;
+            FeatureDemo {
+                width: 240px;
+                height: 140px;
+                feature: root.preview-row;
+                playing: root.preview-on && root.live;
+            }
+            Text {
+                text: root.preview-row == 0 ? "Copy a file that's too big to send, and a small bar offers to shrink it."
+                    : root.preview-row == 1 ? "Paste a too-big file into Discord, and Kompacter holds it back and asks to shrink it first."
+                    : "New game clips are shrunk on their own and copied, ready to paste.";
+                font-size: 12px;
+                color: Theme.label;
+                wrap: word-wrap;
+            }
+        }
+    }
 }
