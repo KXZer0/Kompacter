@@ -12,7 +12,7 @@ import { FeatureDemo } from "demo.slint";
 
 export { Theme, Fx, Prefs, PresetItem }
 
-export enum View { idle, reading, big, trim, busy, done, error, settings, quick, welcome }
+export enum View { idle, reading, big, trim, busy, done, error, settings, quick, welcome, news }
 
 /// One line of a before → after list (a folder's tree, or a video's stats).
 export struct DiffRow {
@@ -203,6 +203,11 @@ export component AppWindow inherits Window {
     in-out property <bool> welcome-clips;
     /// Which step is showing: 0 copies, 1 paste guard, 2 game clips.
     in-out property <int> welcome-step;
+    /// After an update: the version and its few lines of "What's new".
+    in property <string> news-version;
+    in property <[string]> news-items;
+    /// A newer version is downloaded and checked; installs on restart ("" = none).
+    in property <string> update-version;
 
     in property <string> error-text;
 
@@ -244,6 +249,8 @@ export component AppWindow inherits Window {
     callback tray-tip-pin();
     callback tray-tip-dismiss();
     callback welcome-done();
+    callback news-done();
+    callback restart-to-update();
 
     property <length> inset: Fx.glass ? 12px : 0;
     property <length> full-h: view == View.trim ? 624px : view == View.settings ? 600px : view == View.quick ? (guard ? 168px : 136px) : 472px;
@@ -306,6 +313,10 @@ export component AppWindow inherits Window {
         key-pressed(event) => {
             if (event.text == Key.Escape) {
                 root.escape();
+                return accept;
+            }
+            if (root.view == View.news && event.text == Key.Return) {
+                root.news-done();
                 return accept;
             }
             if (root.view == View.welcome && event.text == Key.Return) {
@@ -374,7 +385,7 @@ export component AppWindow inherits Window {
             height: root.full-h;
 
             // ── Header ──
-            if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome: Rectangle {
+            if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome && root.view != View.news: Rectangle {
                 x: 16px;
                 y: 14px;
                 width: pill-row.preferred-width;
@@ -412,7 +423,7 @@ export component AppWindow inherits Window {
                     clicked => { menu.show(); }
                 }
             }
-            if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome: IconBtn {
+            if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome && root.view != View.news: IconBtn {
                 x: parent.width - 14px - self.width;
                 y: 13px;
                 icon: Icons.gear;
@@ -619,6 +630,22 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // A newer version is ready: one quiet line under the buttons.
+            if root.view == View.idle && root.update-version != "" && !root.tray-tip && !root.dragging: Appear {
+                x: 20px;
+                y: 432px;
+                width: 320px;
+                height: 32px;
+                HorizontalLayout {
+                    alignment: center;
+                    Btn {
+                        plain: true;
+                        text: "Update to " + root.update-version + " ready · Restart";
+                        clicked => { root.restart-to-update(); }
+                    }
+                }
+            }
+
             if root.view == View.idle && root.tray-tip && !root.dragging: Appear {
                 x: 16px;
                 y: 428px;
@@ -764,6 +791,72 @@ export component AppWindow inherits Window {
                             mouse-cursor: pointer;
                             clicked => { root.welcome-step = i; }
                         }
+                    }
+                }
+            }
+
+            // After an update, once: the happy blob and a few lines on what changed.
+            if root.view == View.news: Appear {
+                x: 0;
+                y: 0;
+                width: 360px;
+                height: 472px;
+                Rectangle {
+                    y: 28px;
+                    width: parent.width;
+                    height: 140px;
+                    Blob {
+                        mood: Mood.happy;
+                        s: 0.8;
+                        touchable: false;
+                        cx: parent.width / 2;
+                        cy: parent.height / 2;
+                    }
+                }
+                Title {
+                    x: 24px;
+                    y: 170px;
+                    width: parent.width - 48px;
+                    text: "What's new in " + root.news-version;
+                }
+                VerticalLayout {
+                    x: 40px;
+                    y: 212px;
+                    width: parent.width - 80px;
+                    height: 160px;
+                    spacing: 8px;
+                    alignment: start;
+                    for line in root.news-items: HorizontalLayout {
+                        spacing: 10px;
+                        Rectangle {
+                            width: 6px;
+                            height: 18px;
+                            Rectangle {
+                                y: 6px;
+                                width: 6px;
+                                height: 6px;
+                                border-radius: 3px;
+                                background: Theme.accent;
+                            }
+                        }
+                        Text {
+                            text: line;
+                            font-size: 13px;
+                            color: Theme.label;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    x: 40px;
+                    y: 396px;
+                    width: 280px;
+                    height: 44px;
+                    Btn {
+                        large: true;
+                        primary: true;
+                        text: "Got it";
+                        clicked => { root.news-done(); }
                     }
                 }
             }

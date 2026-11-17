@@ -51,6 +51,12 @@ Section "Install"
   WriteRegDWORD HKCU "${UNINST}" "NoRepair" 1
 SectionEnd
 
+; A silent install is an update from inside Kompacter: open the new version afterwards.
+Function .onInstSuccess
+  IfSilent 0 +2
+    Exec '"$INSTDIR\Kompacter.exe"'
+FunctionEnd
+
 Section "Uninstall"
   nsExec::Exec 'taskkill /IM Kompacter.exe /F'
   Delete "$SMPROGRAMS\Kompacter.lnk"

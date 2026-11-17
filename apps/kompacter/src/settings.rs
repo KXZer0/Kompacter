@@ -52,6 +52,10 @@ pub struct Settings {
     /// Shrink new clips that land in `clip_folders` on their own.
     pub watch_folders: bool,
     pub clip_folders: Vec<String>,
+    /// Check GitHub for a new version once a day and install it on the next restart.
+    pub auto_update: bool,
+    /// The last version whose "What's new" was shown (or that was installed fresh).
+    pub seen_version: String,
 }
 
 /// The shortcut choices, in the order Settings shows them.
@@ -98,6 +102,8 @@ impl Default for Settings {
             archive_format: ArchiveFormat::default(),
             shortcut: "ctrl+alt+k".into(),
             paste_guard: false,
+            auto_update: true,
+            seen_version: String::new(),
             watch_copies: false,
             watch_folders: false,
             clip_folders: Vec::new(),

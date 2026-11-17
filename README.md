@@ -48,6 +48,7 @@ Grab the Windows installer from [Releases](https://github.com/KXZer0/Kompacter/r
 - Short clips as **GIFs** that fit.
 - Lives in the tray. Open it by dropping a file, right-clicking **Kompact** in Explorer, a hotkey (Ctrl+Alt+K opens a small quick bar for what you copied), or the optional paste guard that notices a too-big paste into Discord.
 - Optional: shrink new clips in your clip folders (Medal, Game Bar, ShadowPlay, OBS) on their own.
+- Updates itself: a new version downloads in the background, is checked against its published checksum, and installs on the next restart (with a short "What's new"). Can be switched off.
 - No admin rights needed. No account. No network access except update checks.
 
 ## Repository layout

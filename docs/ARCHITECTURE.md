@@ -40,6 +40,13 @@
   Discord, and if a copied file is over the limit it holds that paste back and opens the
   quick bar. After Compress & paste, Kompacter brings Discord back and presses Ctrl+V,
   only if Discord really is in front.
+- Updates: `src/update.rs` checks GitHub's release list once a day (release builds on
+  Windows only; the release workflow stamps `KOMPACTER_VERSION`), downloads the newest
+  published installer with curl.exe, checks it against the `.sha256` the release publishes,
+  and runs it silently (`/S`) when Kompacter quits or the user presses Restart; the
+  installer reopens the app. Settings → General → "Install updates" turns it off.
+- What's new: `src/news.rs` holds a few lines per version, shown once on the first start
+  of a new version (`seen_version` in settings). A version with no entry shows nothing.
 - Platform code lives in `src/sys.rs` (Windows now; macOS/Linux get their own part later).
 - ffmpeg runs as a hidden child process at below-normal priority, so games stay smooth.
 - Dev builds: `KOMPACTER_DEMO=big|details|trim|trim-gif|busy|done|error|settings|auto|drag|discord|quick|quick-busy|quick-done|quick-empty|guard`

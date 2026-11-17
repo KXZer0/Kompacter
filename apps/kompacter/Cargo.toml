@@ -14,6 +14,8 @@ path = "src/main.rs"
 kompacter-core = { path = "../../crates/kompacter-core" }
 serde.workspace = true
 serde_json.workspace = true
+# Checking downloaded updates (SHA-256).
+sha2 = "0.11"
 tempfile.workspace = true
 slint = { version = "1.19", default-features = false, features = [
   "std",
