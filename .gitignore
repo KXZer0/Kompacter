@@ -4,3 +4,4 @@
 /out
 /apps/kompacter/installer/dist
 /apps/kompacter/installer/*.exe
+__pycache__/

@@ -5,6 +5,7 @@ pub(crate) mod docs;
 pub(crate) mod folder;
 pub(crate) mod gif;
 pub(crate) mod image;
+pub(crate) mod model;
 pub(crate) mod split;
 pub(crate) mod video;
 
@@ -53,7 +54,15 @@ pub(crate) fn fit_media(
                 Err(_) => folder::zip_single(ctx, &info.path, target, out_base),
                 ok => ok,
             },
-            None => folder::zip_single(ctx, &info.path, target, out_base),
+            None => match model::kind(&info.path) {
+                // glTF models: shrink the textures, keep it a model; else pack it.
+                Some(m) => match model::fit(ctx, &info.path, m, target, out_base, progress) {
+                    Err(Error::Cancelled) => Err(Error::Cancelled),
+                    Err(_) => folder::zip_single(ctx, &info.path, target, out_base),
+                    ok => ok,
+                },
+                None => folder::zip_single(ctx, &info.path, target, out_base),
+            },
         },
     }
 }

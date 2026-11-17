@@ -45,7 +45,13 @@
 - Dev builds: `KOMPACTER_DEMO=big|details|trim|trim-gif|busy|done|error|settings|auto|drag|discord|quick|quick-busy|quick-done|quick-empty|guard`
   shows a screen with sample data. `KOMPACTER_OPEN=<file>` opens a file at start;
   `KOMPACTER_QUICK=<file>` opens it in the quick bar (add `KOMPACTER_GUARD=1` for the
-  paste guard's bar).
+  paste guard's bar). `KOMPACTER_DROP=<file>@<seconds>` acts out a drop at that time, and
+  `KOMPACTER_DEMO_COPY=1` makes the Linux build report the copy as done (Linux has no file
+  clipboard yet); both are for recording the README demos.
+- README media: `tools/media/banner.py` draws the banner from the app's art;
+  `tools/media/record.py` drives the debug build on a virtual display (Xvfb) with real
+  clicks and saves each frame with its alpha; `tools/media/compose.py` puts the frames on a
+  made-up desktop with a cursor and writes `docs/media/*.gif`.
 
 ## kompacter-core
 
@@ -60,8 +66,9 @@
 | `jobs::video` | MP4 (H.264, H.265 or AV1 + AAC), scaled/fps-capped per plan. GPU single pass when available, else two-pass x264, or x265 / SVT-AV1; falls back to CPU if the GPU encode fails; one retry if it overshoots. |
 | `jobs::audio` | MP3 (≥ 64 kbps) or Opus (below), retry on overshoot. |
 | `jobs::image` | JPEG, or WebP when transparent; steps quality then size down until it fits. Caps at 4096 px. |
-| `jobs::folder` | Shares the size budget across media files by original size, shrinks them, zips (media stored, others deflated). If it can't fit in one zip, packs it into several zips that each fit. |
+| `jobs::folder` | Shares the size budget across media files (and documents, models) by original size, shrinks them, zips (media stored, others deflated). If it can't fit in one zip, packs it into several zips that each fit. |
 | `jobs::split` | Too long for one good file: cuts video/audio into equal parts that each fit (up to 10). |
+| `jobs::model` | 3D models (glTF binary `.glb`, `.gltf` with embedded data): shrinks the textures (opaque → JPEG, transparent → smaller PNG), rebuilds the binary buffer, meshes untouched. Other model formats (OBJ, STL, FBX) are packed into an archive. |
 | `jobs::docs` | PDFs and Office files (docx, pptx, xlsx, OpenDocument): shrinks the photos inside and keeps a normal document; falls back to an archive. |
 | `jobs::cut` | Keep-quality trim: stream copy, no re-encode (snaps to keyframes). |
 | `jobs::gif` | Short clips (up to 30 s) as GIFs: one test encode predicts the width and frame rate that fit, then at most a few more encodes walk down until it does. |

@@ -926,6 +926,32 @@ fn main() -> Result<(), slint::PlatformError> {
     if let Ok(p) = std::env::var("KOMPACTER_OPEN") {
         app.open(PathBuf::from(p));
     }
+    // Dev builds only: `KOMPACTER_DROP=<file>@<seconds>` acts out a drop at that time
+    // (drag-over state, then the file opens), for recording the README demos.
+    #[cfg(debug_assertions)]
+    if let Some((p, at)) = std::env::var("KOMPACTER_DROP")
+        .ok()
+        .and_then(|v| {
+            v.rsplit_once('@')
+                .map(|(p, t)| (p.to_string(), t.to_string()))
+        })
+        .and_then(|(p, t)| Some((PathBuf::from(p), t.parse::<f64>().ok()?)))
+    {
+        let hover = Duration::from_secs_f64((at - 0.7).max(0.0));
+        let weak = Rc::downgrade(&app);
+        slint::Timer::single_shot(hover, move || {
+            if let Some(a) = weak.upgrade() {
+                a.ui().set_dragging(true);
+            }
+        });
+        let weak = Rc::downgrade(&app);
+        slint::Timer::single_shot(Duration::from_secs_f64(at.max(0.0)), move || {
+            if let Some(a) = weak.upgrade() {
+                a.ui().set_dragging(false);
+                a.open_many(vec![p]);
+            }
+        });
+    }
     // Dev builds only: the quick bar (or the paste guard's) for this file.
     #[cfg(debug_assertions)]
     if let Ok(p) = std::env::var("KOMPACTER_QUICK") {

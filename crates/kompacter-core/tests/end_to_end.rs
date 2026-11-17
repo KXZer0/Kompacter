@@ -656,6 +656,97 @@ fn office_pictures_are_shrunk_and_it_stays_a_document() {
 }
 
 #[test]
+fn glb_textures_are_shrunk_and_it_stays_a_model() {
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let tex = dir.path().join("tex.png");
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=2048x2048:rate=1:duration=1",
+            "-vf",
+            "noise=alls=40:allf=t",
+            "-frames:v",
+            "1",
+        ],
+        &tex,
+    );
+    let png = std::fs::read(&tex).unwrap();
+    // One triangle (3 float positions) then the texture, in one binary chunk.
+    let positions: Vec<u8> = [0f32, 0., 0., 1., 0., 0., 0., 1., 0.]
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let mut bin = positions.clone();
+    let tex_off = bin.len();
+    bin.extend(&png);
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+    let json = serde_json::json!({
+        "asset": {"version": "2.0"},
+        "buffers": [{"byteLength": bin.len()}],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": positions.len()},
+            {"buffer": 0, "byteOffset": tex_off, "byteLength": png.len()}
+        ],
+        "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                       "min": [0, 0, 0], "max": [1, 1, 0]}],
+        "images": [{"bufferView": 1, "mimeType": "image/png"}],
+        "textures": [{"source": 0}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}]
+    });
+    let mut text = serde_json::to_vec(&json).unwrap();
+    while !text.len().is_multiple_of(4) {
+        text.push(b' ');
+    }
+    let mut glb = Vec::new();
+    glb.extend(b"glTF");
+    glb.extend(2u32.to_le_bytes());
+    glb.extend(((12 + 8 + text.len() + 8 + bin.len()) as u32).to_le_bytes());
+    glb.extend((text.len() as u32).to_le_bytes());
+    glb.extend(b"JSON");
+    glb.extend(&text);
+    glb.extend((bin.len() as u32).to_le_bytes());
+    glb.extend(b"BIN\0");
+    glb.extend(&bin);
+    let src = dir.path().join("chair.glb");
+    std::fs::write(&src, &glb).unwrap();
+
+    let size = glb.len() as u64;
+    let res = run(&Engine::default(), &src, &Options::new(size / 4));
+    assert!(res.fits, "{} of {size}", res.output_bytes);
+    assert_eq!(res.path.extension().unwrap(), "glb");
+
+    // Still a valid GLB: header length, JSON, views inside the binary chunk, mesh intact.
+    let out = std::fs::read(&res.path).unwrap();
+    let u32_at = |at: usize| u32::from_le_bytes(out[at..at + 4].try_into().unwrap()) as usize;
+    assert_eq!(&out[0..4], b"glTF");
+    assert_eq!(u32_at(8), out.len());
+    let json_len = u32_at(12);
+    let json: serde_json::Value = serde_json::from_slice(&out[20..20 + json_len]).unwrap();
+    let bin_at = 20 + json_len;
+    assert_eq!(&out[bin_at + 4..bin_at + 8], b"BIN\0");
+    let bin = &out[bin_at + 8..bin_at + 8 + u32_at(bin_at)];
+    assert_eq!(
+        json["buffers"][0]["byteLength"].as_u64().unwrap() as usize,
+        bin.len()
+    );
+    assert_eq!(json["images"][0]["mimeType"], "image/jpeg");
+    let view = |i: usize| {
+        let v = &json["bufferViews"][i];
+        let off = v["byteOffset"].as_u64().unwrap_or(0) as usize;
+        &bin[off..off + v["byteLength"].as_u64().unwrap() as usize]
+    };
+    assert_eq!(view(0), &positions[..]);
+    assert_eq!(&view(1)[..2], &[0xFF, 0xD8]); // a JPEG
+}
+
+#[test]
 fn folder_preview_shows_the_tree_with_sizes() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("Memes");
