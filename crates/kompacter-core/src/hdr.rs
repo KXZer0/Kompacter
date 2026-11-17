@@ -9,10 +9,11 @@ use std::process::Stdio;
 use crate::ffmpeg::{args, command, Ffmpeg};
 
 /// To linear light, squeeze the highlights with the Hable curve, back to BT.709 at 8-bit
-/// 4:2:0. The input's curve, primaries and matrix come from the decoded frames; a file
+/// 4:2:0, and say so on the frames (newer ffmpeg tags the output from them). The input's curve, primaries and matrix come from the decoded frames; a file
 /// that tags only some of them makes zscale refuse, and the jobs then encode as before.
 pub(crate) const TONEMAP: &str = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,\
-     tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
+     tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,\
+     setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv";
 
 /// Output flags that tag the result as plain SDR BT.709, so players don't treat it as HDR.
 pub(crate) fn sdr_tags() -> Vec<OsString> {
@@ -69,7 +70,11 @@ mod tests {
     #[test]
     fn chain_ends_in_8bit_bt709() {
         assert!(TONEMAP.starts_with("zscale=t=linear"));
-        assert!(TONEMAP.ends_with("zscale=t=bt709:m=bt709:r=tv,format=yuv420p"));
+        assert!(TONEMAP.contains("zscale=t=bt709:m=bt709:r=tv,format=yuv420p,"));
+        // The frames say BT.709 too, which newer ffmpeg uses to tag the output.
+        assert!(TONEMAP.ends_with(
+            "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
+        ));
         assert!(
             !TONEMAP.contains(' '),
             "a filter chain has no spaces: {TONEMAP}"

@@ -894,6 +894,16 @@ fn portrait_video_stays_upright() {
     );
 }
 
+/// `setparams` for `-vf` matching `-color_*` options: newer ffmpeg takes the encoder's
+/// colour tags from the frames, so the options alone don't tag the file.
+fn frame_tags(tags: &[&str]) -> String {
+    let pairs: Vec<String> = tags
+        .chunks(2)
+        .map(|kv| format!("{}={}", kv[0].trim_start_matches('-'), kv[1]))
+        .collect();
+    format!("setparams={}", pairs.join(":"))
+}
+
 fn ffmpeg_has(encoder: &str) -> bool {
     Command::new(Ffmpeg::default().ffmpeg)
         .args(["-hide_banner", "-encoders"])
@@ -1189,13 +1199,17 @@ fn hdr_video_is_tone_mapped_and_tagged_sdr() {
     // 10-bit H.265 with HDR colour tags, like a phone or console clip.
     let clip = |name: &str, tags: &[&str]| {
         let path = dir.path().join(name);
+        let vf = format!(
+            "noise=alls=30:allf=t,format=yuv420p10le,{}",
+            frame_tags(tags)
+        );
         let mut a = vec![
             "-f",
             "lavfi",
             "-i",
             "testsrc2=size=960x540:rate=30:duration=2",
             "-vf",
-            "noise=alls=30:allf=t,format=yuv420p10le",
+            &vf,
             "-c:v",
             "libx265",
             "-x265-params",
@@ -1388,13 +1402,14 @@ fn hdr_previews_are_tone_mapped_like_the_result() {
     let dir = tempfile::tempdir().unwrap();
     let clip = |name: &str, tags: &[&str]| {
         let path = dir.path().join(name);
+        let vf = format!("format=yuv420p10le,{}", frame_tags(tags));
         let mut a = vec![
             "-f",
             "lavfi",
             "-i",
             "testsrc2=size=640x360:rate=30:duration=2",
             "-vf",
-            "format=yuv420p10le",
+            &vf,
             "-c:v",
             "libx265",
             "-x265-params",
