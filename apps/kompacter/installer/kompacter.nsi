@@ -80,4 +80,14 @@ Section "Uninstall"
   RMDir /r "$INSTDIR\Kompacted"
   ; Removed only if it's now empty.
   RMDir "$INSTDIR"
+  ; Settings, and results in the folders used when the install folder isn't writable
+  ; (only Kompacter's own *.kompacter.* files in Videos, which is the user's folder).
+  RMDir /r "$APPDATA\app.kompacter.desktop"
+  RMDir /r "$LOCALAPPDATA\Kompacter\Kompacted"
+  RMDir "$LOCALAPPDATA\Kompacter"
+  Delete "$VIDEOS\Kompacter\*.kompacter.*"
+  RMDir "$VIDEOS\Kompacter"
+  ; Temporary files: a downloaded update and the file that hands files to a running copy.
+  RMDir /r "$TEMP\Kompacter-update"
+  Delete "$TEMP\kompacter-open.txt"
 SectionEnd

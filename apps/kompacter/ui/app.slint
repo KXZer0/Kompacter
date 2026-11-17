@@ -630,18 +630,76 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // A newer version is ready: one quiet line under the buttons.
+            // A newer version is ready: an accent pill under the buttons. The icon's ring
+            // pulses on the blob's ambient clock (no extra timer).
             if root.view == View.idle && root.update-version != "" && !root.tray-tip && !root.dragging: Appear {
                 x: 20px;
-                y: 432px;
+                y: 433px;
                 width: 320px;
-                height: 32px;
+                height: 34px;
                 HorizontalLayout {
                     alignment: center;
-                    Btn {
-                        plain: true;
-                        text: "Update to " + root.update-version + " ready · Restart";
-                        clicked => { root.restart-to-update(); }
+                    upd := Rectangle {
+                        property <float> pulse: Fx.rich ? Math.mod(root.ambient-turn * 12, 1) : 0;
+                        width: upd-row.preferred-width;
+                        height: 32px;
+                        border-radius: 16px;
+                        background: upd-ta.has-hover ? Theme.accent-soft.darker(0.08) : Theme.accent-soft;
+                        animate background { duration: 120ms; }
+                        border-width: 1px;
+                        border-color: Theme.accent-text.transparentize(0.6);
+                        transform-scale: upd-ta.pressed ? 0.96 : 1;
+                        animate transform-scale { duration: 220ms; easing: ease-out-back; }
+                        upd-row := HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 14px;
+                            spacing: 8px;
+                            alignment: center;
+                            Rectangle {
+                                width: 22px;
+                                height: 22px;
+                                y: (parent.height - self.height) / 2;
+                                // Pulse ring: grows and fades out, then starts again.
+                                if Fx.rich: Rectangle {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    border-radius: self.width / 2;
+                                    border-width: 2px;
+                                    border-color: Theme.accent;
+                                    transform-scale: 1 + 0.6 * upd.pulse;
+                                    opacity: 0.55 * (1 - upd.pulse);
+                                }
+                                Rectangle {
+                                    border-radius: self.width / 2;
+                                    background: Theme.accent;
+                                    Icon {
+                                        d: Icons.update;
+                                        size: 15px;
+                                        color: Theme.on-accent;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                            }
+                            Text {
+                                text: "Update " + root.update-version + " ready";
+                                font-size: 13px;
+                                font-weight: 650;
+                                color: Theme.label;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Restart";
+                                font-size: 13px;
+                                font-weight: 700;
+                                color: Theme.accent-text;
+                                vertical-alignment: center;
+                            }
+                        }
+                        upd-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.restart-to-update(); }
+                        }
                     }
                 }
             }
