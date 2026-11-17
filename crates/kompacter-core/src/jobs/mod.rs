@@ -1,5 +1,6 @@
 //! One module per kind of input. Each job writes `<out_base>.<ext>` and returns that path.
 
+pub(crate) mod archive;
 pub(crate) mod audio;
 pub(crate) mod docs;
 pub(crate) mod folder;
@@ -20,6 +21,7 @@ use crate::plan::Trim;
 use crate::probe::{MediaInfo, MediaKind};
 use crate::{ArchiveFormat, AudioFormat, ImageFormat, Speed, VideoCodec};
 
+#[derive(Clone, Copy)]
 pub(crate) struct Ctx<'a> {
     pub ff: &'a Ffmpeg,
     pub cancel: &'a AtomicBool,
@@ -42,6 +44,15 @@ pub(crate) fn fit_media(
     progress: Progress,
 ) -> Result<PathBuf> {
     match info.kind {
+        // Animated GIFs stay GIFs (smaller, fewer colors, lower frame rate); only when no
+        // GIF can fit does it become a video.
+        MediaKind::Video if is_gif(info) => {
+            match gif::fit(ctx, info, trim, target, out_base, &mut *progress) {
+                Err(Error::Cancelled) => Err(Error::Cancelled),
+                Err(_) => video::fit(ctx, info, trim, target, out_base, progress),
+                ok => ok,
+            }
+        }
         MediaKind::Video => video::fit(ctx, info, trim, target, out_base, progress),
         MediaKind::Audio => audio::fit(ctx, info, trim, target, out_base, progress),
         MediaKind::Image => image::fit(ctx, info, target, out_base, progress),
@@ -54,6 +65,14 @@ pub(crate) fn fit_media(
                 Err(_) => folder::zip_single(ctx, &info.path, target, out_base),
                 ok => ok,
             },
+            None if archive::kind(&info.path).is_some() => {
+                // Zip / 7z: shrink the media inside, pack it again.
+                match archive::fit(ctx, &info.path, target, out_base, progress) {
+                    Err(Error::Cancelled) => Err(Error::Cancelled),
+                    Err(_) => folder::zip_single(ctx, &info.path, target, out_base),
+                    ok => ok,
+                }
+            }
             None => match model::kind(&info.path) {
                 // glTF models: shrink the textures, keep it a model; else pack it.
                 Some(m) => match model::fit(ctx, &info.path, m, target, out_base, progress) {
@@ -65,6 +84,11 @@ pub(crate) fn fit_media(
             },
         },
     }
+}
+
+/// An animated GIF (ffprobe reports it as a video).
+pub(crate) fn is_gif(info: &MediaInfo) -> bool {
+    info.video.as_ref().is_some_and(|v| v.codec == "gif")
 }
 
 /// `base` + "." + `ext`, without eating dots already in the name.

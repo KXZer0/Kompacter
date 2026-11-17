@@ -66,12 +66,15 @@
 | `jobs::video` | MP4 (H.264, H.265 or AV1 + AAC), scaled/fps-capped per plan. GPU single pass when available, else two-pass x264, or x265 / SVT-AV1; falls back to CPU if the GPU encode fails; one retry if it overshoots. |
 | `jobs::audio` | MP3 (≥ 64 kbps) or Opus (below), retry on overshoot. |
 | `jobs::image` | JPEG, or WebP when transparent; steps quality then size down until it fits. Caps at 4096 px. |
+| Archives everywhere | When a zip doesn't fit but there's text or documents in it, a 7z (LZMA2) is tried before giving up. |
 | `jobs::folder` | Shares the size budget across media files (and documents, models) by original size, shrinks them, zips (media stored, others deflated). If it can't fit in one zip, packs it into several zips that each fit. |
 | `jobs::split` | Too long for one good file: cuts video/audio into equal parts that each fit (up to 10). |
+| `jobs::archive` | Zip and 7z files: opens them (zip-slip safe, 32 GB unpack cap), shrinks what's inside like a folder, packs it again with the same layout and format. RAR and password-protected archives are packed as-is. |
 | `jobs::model` | 3D models (glTF binary `.glb`, `.gltf` with embedded data): shrinks the textures (opaque → JPEG, transparent → smaller PNG), rebuilds the binary buffer, meshes untouched. Other model formats (OBJ, STL, FBX) are packed into an archive. |
-| `jobs::docs` | PDFs and Office files (docx, pptx, xlsx, OpenDocument): shrinks the photos inside and keeps a normal document; falls back to an archive. |
+| `jobs::docs` | PDFs, Office files (docx, pptx, xlsx, OpenDocument), EPUB and CBZ: shrinks the JPEGs inside, resizes PNGs (256 colors past the first step), keeps names and formats so it stays a normal document; falls back to an archive. |
 | `jobs::cut` | Keep-quality trim: stream copy, no re-encode (snaps to keyframes). |
-| `jobs::gif` | Short clips (up to 30 s) as GIFs: one test encode predicts the width and frame rate that fit, then at most a few more encodes walk down until it does. |
+| `jobs::image` (phone formats) | HEIC/HEIF/AVIF are decoded to a lossless PNG first (ffmpeg ≥ 7.1 assembles HEIC tiles; the installer bundles a current build), then go the JPEG way. |
+| `jobs::gif` | Animated GIFs that are too big stay GIFs (MP4 only if no GIF fits). Short clips (up to 30 s) as GIFs: one test encode predicts the width and frame rate that fit, then at most a few more encodes walk down until it does. |
 
 Public API: `Engine::probe`, `Engine::estimate` (live numbers), `Engine::compress` (does the work).
 

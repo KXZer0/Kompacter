@@ -41,7 +41,10 @@ Grab the Windows installer from [Releases](https://github.com/KXZer0/Kompacter/r
 - Fits files under a target size: Discord 20 / 50 / 500 MB, email 25 MB, or custom.
 - **Trim + compress** with live size and quality estimates while you drag the handles.
 - Folders: shrinks every video, picture, document and model inside, then zips (several zips that each fit, if one can't).
-- Documents (PDF, Word, PowerPoint, Excel) and 3D models (glTF/GLB) stay documents and models: only the pictures and textures inside are shrunk.
+- Documents (PDF, Word, PowerPoint, Excel, EPUB, CBZ) and 3D models (glTF/GLB) stay documents and models: only the pictures and textures inside are shrunk.
+- Zip and 7z files: opened, the media inside shrunk, packed again the same way.
+- Animated GIFs stay GIFs. iPhone HEIC and AVIF photos become JPEGs that fit.
+- Logs, CSVs and other text: a 7z when a zip isn't small enough.
 - Short clips as **GIFs** that fit.
 - Lives in the tray. Open it by dropping a file, right-clicking **Kompact** in Explorer, a hotkey (Ctrl+Alt+K opens a small quick bar for what you copied), or the optional paste guard that notices a too-big paste into Discord.
 - Optional: shrink new clips in your clip folders (Medal, Game Bar, ShadowPlay, OBS) on their own.

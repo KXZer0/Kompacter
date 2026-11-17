@@ -15,7 +15,7 @@ kompacter-core = { path = "../../crates/kompacter-core" }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
-slint = { version = "1.18", default-features = false, features = [
+slint = { version = "1.19", default-features = false, features = [
   "std",
   "compat-1-2",
   "backend-winit",
@@ -26,10 +26,10 @@ slint = { version = "1.18", default-features = false, features = [
 ] }
 
 # Native "choose file / folder" dialogs.
-rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 
 [target.'cfg(not(windows))'.dependencies]
-slint = { version = "1.18", default-features = false, features = [
+slint = { version = "1.19", default-features = false, features = [
   "renderer-femtovg",
   "renderer-software",
   "software-renderer-path",
@@ -37,7 +37,7 @@ slint = { version = "1.18", default-features = false, features = [
 ] }
 
 [target.'cfg(windows)'.dependencies]
-slint = { version = "1.18", default-features = false, features = ["renderer-skia"] }
+slint = { version = "1.19", default-features = false, features = ["renderer-skia"] }
 
 # Same Windows bindings Slint already uses (no extra copy).
 [target.'cfg(windows)'.dependencies.windows-sys]
@@ -63,5 +63,5 @@ features = [
 ]
 
 [build-dependencies]
-slint-build = "1.18"
+slint-build = "1.19"
 embed-resource = "3"

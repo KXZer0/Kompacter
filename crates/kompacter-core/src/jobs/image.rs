@@ -3,13 +3,15 @@
 //! when the user picked WebP), stepping quality and size down until the result fits. Huge photos are capped at 4096 px on the long side first.
 //! Phone photos are often stored sideways with an EXIF "orientation" tag; ffmpeg doesn't
 //! apply it to stills, so we read it ourselves and turn the picture upright.
+//! iPhone HEIC/HEIF and AVIF photos are decoded to a lossless PNG first (ffmpeg puts a
+//! HEIC's tiles together and turns it upright there), then go the JPEG way like any photo.
 
 use std::path::{Path, PathBuf};
 
 use super::{file_size, name_of, with_ext, Ctx};
 use crate::error::{Error, Result};
 use crate::ffmpeg::{args, Progress};
-use crate::probe::MediaInfo;
+use crate::probe::{is_heif_like, probe, MediaInfo};
 use crate::ImageFormat;
 
 const MAX_SIDE: f64 = 4096.0;
@@ -22,6 +24,35 @@ const WEBP_Q: [u32; 4] = [85, 70, 55, 40];
 pub(crate) fn fit(
     ctx: &Ctx,
     info: &MediaInfo,
+    target: u64,
+    out_base: &Path,
+    progress: Progress,
+) -> Result<PathBuf> {
+    if !is_heif_like(&info.path) {
+        return fit_still(ctx, info, true, target, out_base, progress);
+    }
+    let tmp = tempfile::tempdir()?;
+    let png = tmp.path().join("photo.png");
+    let mut a = args(["-i".into(), info.path.clone().into_os_string()]);
+    a.extend(args(["-frames:v", "1", "-c:v", "png"]));
+    a.push(png.clone().into());
+    ctx.ff.run(&a, 0.0, &mut |_| {}, ctx.cancel)?;
+    let decoded = probe(ctx.ff, &png)?;
+    // Already a lossy photo: a lossless copy would only be bigger.
+    match fit_still(ctx, &decoded, false, target, out_base, progress) {
+        Err(Error::DoesNotFit { target, best, .. }) => Err(Error::DoesNotFit {
+            what: name_of(&info.path),
+            target,
+            best,
+        }),
+        other => other,
+    }
+}
+
+fn fit_still(
+    ctx: &Ctx,
+    info: &MediaInfo,
+    try_lossless: bool,
     target: u64,
     out_base: &Path,
     progress: Progress,
@@ -44,7 +75,7 @@ pub(crate) fn fit(
     let out = with_ext(out_base, if webp { "webp" } else { "jpg" });
 
     // Lossless first (Auto), unless it's already a JPEG: identical pixels, often enough.
-    if ctx.image_format == ImageFormat::Auto && v.codec != "mjpeg" {
+    if try_lossless && ctx.image_format == ImageFormat::Auto && v.codec != "mjpeg" {
         let lossless = with_ext(out_base, "webp");
         let (tw, th) = even(w * base_scale, h * base_scale);
         let mut a = still_args(info, turn, tw, th);

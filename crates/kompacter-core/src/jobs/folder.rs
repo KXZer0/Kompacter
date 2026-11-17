@@ -34,8 +34,30 @@ pub(crate) fn fit(
     out_base: &Path,
     progress: Progress,
 ) -> Result<PathBuf> {
-    let root = name_of(dir);
-    let (files, infos) = list(ctx, dir)?;
+    fit_dir(
+        ctx,
+        dir,
+        Some(&name_of(dir)),
+        false,
+        target,
+        out_base,
+        progress,
+    )
+}
+
+/// `fit` for any folder: `root` is the folder name inside the archive (`None`: files at
+/// the top, as they were in an archive that was opened); `hidden` keeps dot files.
+pub(crate) fn fit_dir(
+    ctx: &Ctx,
+    dir: &Path,
+    root: Option<&str>,
+    hidden: bool,
+    target: u64,
+    out_base: &Path,
+    progress: Progress,
+) -> Result<PathBuf> {
+    let what = root.map_or_else(|| name_of(out_base), str::to_string);
+    let (files, infos) = list(ctx, dir, hidden)?;
 
     let total: u64 = infos.iter().map(|i| i.size_bytes).sum();
     let usable = (target as f64 * ZIP_SLACK) as u64;
@@ -53,7 +75,7 @@ pub(crate) fn fit(
     let needs_shrink = total + PER_ENTRY_OVERHEAD * infos.len() as u64 > usable;
     if needs_shrink && fixed >= usable {
         return Err(Error::DoesNotFit {
-            what: root,
+            what: what.clone(),
             target,
             best: fixed,
         });
@@ -98,8 +120,8 @@ pub(crate) fn fit(
             left_total = left_total.saturating_sub(info.size_bytes);
         }
         progress(slice(step as f32 + 1.0));
-        let name = Path::new(&root)
-            .join(&zip_name)
+        let name = root
+            .map_or_else(|| zip_name.clone(), |r| Path::new(r).join(&zip_name))
             .to_string_lossy()
             .replace('\\', "/");
         made[i] = Some((name, chosen, is_media(info.kind)));
@@ -107,12 +129,11 @@ pub(crate) fn fit(
     // The archive keeps the folder's own order.
     let entries: Vec<Entry> = made.into_iter().flatten().collect();
 
-    let out = with_ext(out_base, ctx.archive.ext());
-    let size = write_archive(ctx, &out, &entries, target)?;
+    let (out, size) = pack(ctx, out_base, &entries, target)?;
     progress(1.0);
     if size > target {
         return Err(Error::DoesNotFit {
-            what: root,
+            what: what.clone(),
             target,
             best: size,
         });
@@ -132,7 +153,7 @@ pub(crate) fn fit_parts(
     progress: Progress,
 ) -> Result<Vec<PathBuf>> {
     let root = name_of(dir);
-    let (files, infos) = list(ctx, dir)?;
+    let (files, infos) = list(ctx, dir, false)?;
     let usable = (target as f64 * ZIP_SLACK) as u64;
 
     let staging = tempfile::tempdir()?;
@@ -208,7 +229,7 @@ pub(crate) fn fit_parts(
         } else {
             with_ext(&super::split::part_base(out_base, i as u32 + 1, parts), ext)
         };
-        let size = write_archive(ctx, &path, items, target)?;
+        let size = write_archive(ctx, ctx.archive, &path, items, target)?;
         if size > target {
             return Err(Error::DoesNotFit {
                 what: root,
@@ -224,10 +245,9 @@ pub(crate) fn fit_parts(
 
 /// Non-media files (documents, programs, ...): pack them into an archive and hope it fits.
 pub(crate) fn zip_single(ctx: &Ctx, path: &Path, target: u64, out_base: &Path) -> Result<PathBuf> {
-    let out = with_ext(out_base, ctx.archive.ext());
-    let size = write_archive(
+    let (out, size) = pack(
         ctx,
-        &out,
+        out_base,
         &[(name_of(path), path.to_path_buf(), false)],
         target,
     )?;
@@ -241,14 +261,37 @@ pub(crate) fn zip_single(ctx: &Ctx, path: &Path, target: u64, out_base: &Path) -
     Ok(out)
 }
 
-fn write_archive(ctx: &Ctx, out: &Path, entries: &[Entry], target: u64) -> Result<u64> {
+/// Pack `entries` in the chosen format. If a zip doesn't fit and there's something to
+/// squeeze (documents, text: not already-compressed media), try 7z, which is often 2-3x
+/// smaller on text. Returns the archive and its size (the smallest tried, if none fit).
+fn pack(ctx: &Ctx, out_base: &Path, entries: &[Entry], target: u64) -> Result<(PathBuf, u64)> {
+    let out = with_ext(out_base, ctx.archive.ext());
+    let size = write_archive(ctx, ctx.archive, &out, entries, target)?;
+    if size > target && ctx.archive == ArchiveFormat::Zip && entries.iter().any(|e| !e.2) {
+        let alt = with_ext(out_base, ArchiveFormat::SevenZ.ext());
+        let alt_size = write_archive(ctx, ArchiveFormat::SevenZ, &alt, entries, target)?;
+        if alt_size <= target {
+            return Ok((alt, alt_size));
+        }
+        return Ok((out, size.min(alt_size)));
+    }
+    Ok((out, size))
+}
+
+fn write_archive(
+    ctx: &Ctx,
+    format: ArchiveFormat,
+    out: &Path,
+    entries: &[Entry],
+    target: u64,
+) -> Result<u64> {
     if ctx.cancel.load(Ordering::Relaxed) {
         return Err(Error::Cancelled);
     }
     // Publish only complete archives that fit.
     let dir = out.parent().unwrap_or_else(|| Path::new("."));
     let mut staged = tempfile::NamedTempFile::new_in(dir)?;
-    let result = match ctx.archive {
+    let result = match format {
         ArchiveFormat::Zip => write_zip(staged.as_file_mut(), entries, ctx.cancel),
         ArchiveFormat::SevenZ => write_7z(staged.as_file_mut(), entries, ctx.cancel),
     };
@@ -359,9 +402,9 @@ fn shrinkable_file(p: &Path) -> bool {
 }
 
 /// Every file in the folder (relative and absolute path) with its probe.
-fn list(ctx: &Ctx, dir: &Path) -> Result<(Vec<RelAbs>, Vec<MediaInfo>)> {
+fn list(ctx: &Ctx, dir: &Path, hidden: bool) -> Result<(Vec<RelAbs>, Vec<MediaInfo>)> {
     let mut files = Vec::new();
-    walk(dir, Path::new(""), &mut files)?;
+    walk(dir, Path::new(""), hidden, &mut files)?;
     let infos = files
         .iter()
         .map(|(_, abs)| {
@@ -374,18 +417,19 @@ fn list(ctx: &Ctx, dir: &Path) -> Result<(Vec<RelAbs>, Vec<MediaInfo>)> {
     Ok((files, infos))
 }
 
-/// Recursively list files as (relative path, absolute path), skipping hidden files.
-fn walk(dir: &Path, rel: &Path, out: &mut Vec<RelAbs>) -> Result<()> {
+/// Recursively list files as (relative path, absolute path), skipping hidden files
+/// unless `hidden`.
+fn walk(dir: &Path, rel: &Path, hidden: bool, out: &mut Vec<RelAbs>) -> Result<()> {
     let mut items: Vec<_> = std::fs::read_dir(dir)?.collect::<io::Result<_>>()?;
     items.sort_by_key(|e| e.file_name());
     for e in items {
         let name = e.file_name();
-        if name.to_string_lossy().starts_with('.') {
+        if !hidden && name.to_string_lossy().starts_with('.') {
             continue;
         }
         let (abs, rel) = (e.path(), rel.join(&name));
         if e.file_type()?.is_dir() {
-            walk(&abs, &rel, out)?;
+            walk(&abs, &rel, hidden, out)?;
         } else {
             out.push((rel, abs));
         }
@@ -405,9 +449,8 @@ fn guess_kind(p: &Path) -> MediaKind {
         "mp3" | "wav" | "flac" | "m4a" | "aac" | "ogg" | "opus" | "wma" | "aiff" => {
             MediaKind::Audio
         }
-        "jpg" | "jpeg" | "png" | "webp" | "bmp" | "gif" | "tif" | "tiff" | "heic" => {
-            MediaKind::Image
-        }
+        "jpg" | "jpeg" | "png" | "webp" | "bmp" | "gif" | "tif" | "tiff" | "heic" | "heif"
+        | "hif" | "avif" => MediaKind::Image,
         _ => MediaKind::Other,
     }
 }
@@ -416,7 +459,7 @@ fn guess_kind(p: &Path) -> MediaKind {
 /// (each shrinkable file gets its share of the limit; everything else stays the same).
 pub(crate) fn preview(dir: &Path, target: u64) -> Result<Vec<crate::TreeRow>> {
     let mut files = Vec::new();
-    walk(dir, Path::new(""), &mut files)?;
+    walk(dir, Path::new(""), false, &mut files)?;
     let sized: Vec<(PathBuf, u64, bool)> = files
         .into_iter()
         .map(|(rel, abs)| {
