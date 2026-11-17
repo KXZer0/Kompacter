@@ -34,8 +34,30 @@ pub(crate) fn fit(
     out_base: &Path,
     progress: Progress,
 ) -> Result<PathBuf> {
-    let root = name_of(dir);
-    let (files, infos) = list(ctx, dir)?;
+    fit_dir(
+        ctx,
+        dir,
+        Some(&name_of(dir)),
+        false,
+        target,
+        out_base,
+        progress,
+    )
+}
+
+/// `fit` for any folder: `root` is the folder name inside the archive (`None`: files at
+/// the top, as they were in an archive that was opened); `hidden` keeps dot files.
+pub(crate) fn fit_dir(
+    ctx: &Ctx,
+    dir: &Path,
+    root: Option<&str>,
+    hidden: bool,
+    target: u64,
+    out_base: &Path,
+    progress: Progress,
+) -> Result<PathBuf> {
+    let what = root.map_or_else(|| name_of(out_base), str::to_string);
+    let (files, infos) = list(ctx, dir, hidden)?;
 
     let total: u64 = infos.iter().map(|i| i.size_bytes).sum();
     let usable = (target as f64 * ZIP_SLACK) as u64;
@@ -53,7 +75,7 @@ pub(crate) fn fit(
     let needs_shrink = total + PER_ENTRY_OVERHEAD * infos.len() as u64 > usable;
     if needs_shrink && fixed >= usable {
         return Err(Error::DoesNotFit {
-            what: root,
+            what: what.clone(),
             target,
             best: fixed,
         });
@@ -61,20 +83,26 @@ pub(crate) fn fit(
     let budget = usable.saturating_sub(fixed);
 
     let staging = tempfile::tempdir()?;
-    let mut entries: Vec<(String, PathBuf, bool)> = Vec::new(); // (name in zip, file, stored)
+    // Pictures and documents first, videos last: whatever a file doesn't use of its share
+    // goes to the files still to come, so the videos (which gain the most) get the rest.
+    let mut order: Vec<usize> = (0..files.len()).collect();
+    order.sort_by_key(|&i| (shrink_order(infos[i].kind), infos[i].size_bytes));
+    let (mut left_budget, mut left_total) = (budget, media_total);
+    let mut made: Vec<Option<Entry>> = vec![None; files.len()];
     let n = infos.len().max(1) as f32;
-    for (i, ((rel, abs), info)) in files.iter().zip(&infos).enumerate() {
+    for (step, &i) in order.iter().enumerate() {
+        let ((rel, abs), info) = (&files[i], &infos[i]);
         let slice = |k: f32| 0.95 * k / n;
-        let share = if media_total == 0 {
+        let share = if left_total == 0 {
             0
         } else {
-            (info.size_bytes as f64 * budget as f64 / media_total as f64) as u64
+            (info.size_bytes as f64 * left_budget as f64 / left_total as f64) as u64
         };
         let mut chosen = abs.clone();
         let mut zip_name = rel.clone();
         if needs_shrink && shrinkable(info) && info.size_bytes > share {
             let out_base = staging.path().join(format!("{i}"));
-            let mut p = scaled(&mut *progress, slice(i as f32), slice(i as f32 + 1.0));
+            let mut p = scaled(&mut *progress, slice(step as f32), slice(step as f32 + 1.0));
             // If one file can't be shrunk, keep the original; the final size check decides.
             if let Ok(out) = fit_media(ctx, info, None, share, &out_base, &mut p) {
                 if let Some(ext) = out.extension() {
@@ -86,20 +114,26 @@ pub(crate) fn fit(
         if ctx.cancel.load(Ordering::Relaxed) {
             return Err(Error::Cancelled);
         }
-        progress(slice(i as f32 + 1.0));
-        let name = Path::new(&root)
-            .join(&zip_name)
+        if shrinkable(info) {
+            let used = std::fs::metadata(&chosen).map_or(info.size_bytes, |m| m.len());
+            left_budget = left_budget.saturating_sub(used);
+            left_total = left_total.saturating_sub(info.size_bytes);
+        }
+        progress(slice(step as f32 + 1.0));
+        let name = root
+            .map_or_else(|| zip_name.clone(), |r| Path::new(r).join(&zip_name))
             .to_string_lossy()
             .replace('\\', "/");
-        entries.push((name, chosen, is_media(info.kind)));
+        made[i] = Some((name, chosen, is_media(info.kind)));
     }
+    // The archive keeps the folder's own order.
+    let entries: Vec<Entry> = made.into_iter().flatten().collect();
 
-    let out = with_ext(out_base, ctx.archive.ext());
-    let size = write_archive(ctx, &out, &entries, target)?;
+    let (out, size) = pack(ctx, out_base, &entries, target)?;
     progress(1.0);
     if size > target {
         return Err(Error::DoesNotFit {
-            what: root,
+            what: what.clone(),
             target,
             best: size,
         });
@@ -119,7 +153,7 @@ pub(crate) fn fit_parts(
     progress: Progress,
 ) -> Result<Vec<PathBuf>> {
     let root = name_of(dir);
-    let (files, infos) = list(ctx, dir)?;
+    let (files, infos) = list(ctx, dir, false)?;
     let usable = (target as f64 * ZIP_SLACK) as u64;
 
     let staging = tempfile::tempdir()?;
@@ -195,7 +229,7 @@ pub(crate) fn fit_parts(
         } else {
             with_ext(&super::split::part_base(out_base, i as u32 + 1, parts), ext)
         };
-        let size = write_archive(ctx, &path, items, target)?;
+        let size = write_archive(ctx, ctx.archive, &path, items, target)?;
         if size > target {
             return Err(Error::DoesNotFit {
                 what: root,
@@ -211,10 +245,9 @@ pub(crate) fn fit_parts(
 
 /// Non-media files (documents, programs, ...): pack them into an archive and hope it fits.
 pub(crate) fn zip_single(ctx: &Ctx, path: &Path, target: u64, out_base: &Path) -> Result<PathBuf> {
-    let out = with_ext(out_base, ctx.archive.ext());
-    let size = write_archive(
+    let (out, size) = pack(
         ctx,
-        &out,
+        out_base,
         &[(name_of(path), path.to_path_buf(), false)],
         target,
     )?;
@@ -228,14 +261,37 @@ pub(crate) fn zip_single(ctx: &Ctx, path: &Path, target: u64, out_base: &Path) -
     Ok(out)
 }
 
-fn write_archive(ctx: &Ctx, out: &Path, entries: &[Entry], target: u64) -> Result<u64> {
+/// Pack `entries` in the chosen format. If a zip doesn't fit and there's something to
+/// squeeze (documents, text: not already-compressed media), try 7z, which is often 2-3x
+/// smaller on text. Returns the archive and its size (the smallest tried, if none fit).
+fn pack(ctx: &Ctx, out_base: &Path, entries: &[Entry], target: u64) -> Result<(PathBuf, u64)> {
+    let out = with_ext(out_base, ctx.archive.ext());
+    let size = write_archive(ctx, ctx.archive, &out, entries, target)?;
+    if size > target && ctx.archive == ArchiveFormat::Zip && entries.iter().any(|e| !e.2) {
+        let alt = with_ext(out_base, ArchiveFormat::SevenZ.ext());
+        let alt_size = write_archive(ctx, ArchiveFormat::SevenZ, &alt, entries, target)?;
+        if alt_size <= target {
+            return Ok((alt, alt_size));
+        }
+        return Ok((out, size.min(alt_size)));
+    }
+    Ok((out, size))
+}
+
+fn write_archive(
+    ctx: &Ctx,
+    format: ArchiveFormat,
+    out: &Path,
+    entries: &[Entry],
+    target: u64,
+) -> Result<u64> {
     if ctx.cancel.load(Ordering::Relaxed) {
         return Err(Error::Cancelled);
     }
     // Publish only complete archives that fit.
     let dir = out.parent().unwrap_or_else(|| Path::new("."));
     let mut staged = tempfile::NamedTempFile::new_in(dir)?;
-    let result = match ctx.archive {
+    let result = match format {
         ArchiveFormat::Zip => write_zip(staged.as_file_mut(), entries, ctx.cancel),
         ArchiveFormat::SevenZ => write_7z(staged.as_file_mut(), entries, ctx.cancel),
     };
@@ -319,20 +375,36 @@ fn write_zip(out: &mut File, entries: &[Entry], cancel: &AtomicBool) -> Result<(
     Ok(())
 }
 
+/// Which files a folder shrinks first (see `fit`): the ones that usually come in under
+/// their share, so the leftover goes to video.
+fn shrink_order(k: MediaKind) -> u8 {
+    match k {
+        MediaKind::Image => 0,
+        MediaKind::Other | MediaKind::Folder => 1,
+        MediaKind::Audio => 2,
+        MediaKind::Video => 3,
+    }
+}
+
 /// Already-compressed media: stored in archives as-is.
 fn is_media(k: MediaKind) -> bool {
     matches!(k, MediaKind::Video | MediaKind::Audio | MediaKind::Image)
 }
 
-/// Media and documents (PDF, Office) can be shrunk; everything else is packed as-is.
+/// Media, documents (PDF, Office) and glTF models can be shrunk; everything else is
+/// packed as-is.
 fn shrinkable(i: &MediaInfo) -> bool {
-    is_media(i.kind) || super::docs::kind(&i.path).is_some()
+    is_media(i.kind) || shrinkable_file(&i.path)
+}
+
+fn shrinkable_file(p: &Path) -> bool {
+    super::docs::kind(p).is_some() || super::model::kind(p).is_some()
 }
 
 /// Every file in the folder (relative and absolute path) with its probe.
-fn list(ctx: &Ctx, dir: &Path) -> Result<(Vec<RelAbs>, Vec<MediaInfo>)> {
+fn list(ctx: &Ctx, dir: &Path, hidden: bool) -> Result<(Vec<RelAbs>, Vec<MediaInfo>)> {
     let mut files = Vec::new();
-    walk(dir, Path::new(""), &mut files)?;
+    walk(dir, Path::new(""), hidden, &mut files)?;
     let infos = files
         .iter()
         .map(|(_, abs)| {
@@ -345,18 +417,19 @@ fn list(ctx: &Ctx, dir: &Path) -> Result<(Vec<RelAbs>, Vec<MediaInfo>)> {
     Ok((files, infos))
 }
 
-/// Recursively list files as (relative path, absolute path), skipping hidden files.
-fn walk(dir: &Path, rel: &Path, out: &mut Vec<RelAbs>) -> Result<()> {
+/// Recursively list files as (relative path, absolute path), skipping hidden files
+/// unless `hidden`.
+fn walk(dir: &Path, rel: &Path, hidden: bool, out: &mut Vec<RelAbs>) -> Result<()> {
     let mut items: Vec<_> = std::fs::read_dir(dir)?.collect::<io::Result<_>>()?;
     items.sort_by_key(|e| e.file_name());
     for e in items {
         let name = e.file_name();
-        if name.to_string_lossy().starts_with('.') {
+        if !hidden && name.to_string_lossy().starts_with('.') {
             continue;
         }
         let (abs, rel) = (e.path(), rel.join(&name));
         if e.file_type()?.is_dir() {
-            walk(&abs, &rel, out)?;
+            walk(&abs, &rel, hidden, out)?;
         } else {
             out.push((rel, abs));
         }
@@ -376,9 +449,8 @@ fn guess_kind(p: &Path) -> MediaKind {
         "mp3" | "wav" | "flac" | "m4a" | "aac" | "ogg" | "opus" | "wma" | "aiff" => {
             MediaKind::Audio
         }
-        "jpg" | "jpeg" | "png" | "webp" | "bmp" | "gif" | "tif" | "tiff" | "heic" => {
-            MediaKind::Image
-        }
+        "jpg" | "jpeg" | "png" | "webp" | "bmp" | "gif" | "tif" | "tiff" | "heic" | "heif"
+        | "hif" | "avif" => MediaKind::Image,
         _ => MediaKind::Other,
     }
 }
@@ -387,12 +459,12 @@ fn guess_kind(p: &Path) -> MediaKind {
 /// (each shrinkable file gets its share of the limit; everything else stays the same).
 pub(crate) fn preview(dir: &Path, target: u64) -> Result<Vec<crate::TreeRow>> {
     let mut files = Vec::new();
-    walk(dir, Path::new(""), &mut files)?;
+    walk(dir, Path::new(""), false, &mut files)?;
     let sized: Vec<(PathBuf, u64, bool)> = files
         .into_iter()
         .map(|(rel, abs)| {
             let size = std::fs::metadata(&abs).map(|m| m.len()).unwrap_or(0);
-            let shrink = is_media(guess_kind(&abs)) || super::docs::kind(&abs).is_some();
+            let shrink = is_media(guess_kind(&abs)) || shrinkable_file(&abs);
             (rel, size, shrink)
         })
         .collect();

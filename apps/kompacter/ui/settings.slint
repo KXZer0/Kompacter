@@ -19,6 +19,7 @@ export global Prefs {
     in property <int> output-index;
     in property <string> output-dir;
     in property <bool> gpu;
+    in property <bool> auto-update;
     in property <bool> auto-hide;
     in property <string> auto-hide-error;
     in property <bool> start-with-windows;
@@ -44,6 +45,7 @@ export global Prefs {
     callback choose-folder();
     callback open-outputs();
     callback set-gpu(bool);
+    callback set-auto-update(bool);
     callback set-auto-hide(bool);
     callback set-start(bool);
     callback set-tray-pinned(bool);
@@ -552,6 +554,15 @@ export component SettingsView inherits Rectangle {
                         checked: Prefs.explorer-menu;
                         y: (parent.height - self.height) / 2;
                         toggled(on) => { Prefs.set-explorer-menu(on); }
+                    }
+                }
+                Cell {
+                    label: "Install updates";
+                    small: "Checks GitHub once a day, installs on restart";
+                    Switch {
+                        checked: Prefs.auto-update;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-auto-update(on); }
                     }
                 }
                 Cell {

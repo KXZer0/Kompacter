@@ -656,6 +656,97 @@ fn office_pictures_are_shrunk_and_it_stays_a_document() {
 }
 
 #[test]
+fn glb_textures_are_shrunk_and_it_stays_a_model() {
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let tex = dir.path().join("tex.png");
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=2048x2048:rate=1:duration=1",
+            "-vf",
+            "noise=alls=40:allf=t",
+            "-frames:v",
+            "1",
+        ],
+        &tex,
+    );
+    let png = std::fs::read(&tex).unwrap();
+    // One triangle (3 float positions) then the texture, in one binary chunk.
+    let positions: Vec<u8> = [0f32, 0., 0., 1., 0., 0., 0., 1., 0.]
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let mut bin = positions.clone();
+    let tex_off = bin.len();
+    bin.extend(&png);
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+    let json = serde_json::json!({
+        "asset": {"version": "2.0"},
+        "buffers": [{"byteLength": bin.len()}],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": positions.len()},
+            {"buffer": 0, "byteOffset": tex_off, "byteLength": png.len()}
+        ],
+        "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                       "min": [0, 0, 0], "max": [1, 1, 0]}],
+        "images": [{"bufferView": 1, "mimeType": "image/png"}],
+        "textures": [{"source": 0}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}]
+    });
+    let mut text = serde_json::to_vec(&json).unwrap();
+    while !text.len().is_multiple_of(4) {
+        text.push(b' ');
+    }
+    let mut glb = Vec::new();
+    glb.extend(b"glTF");
+    glb.extend(2u32.to_le_bytes());
+    glb.extend(((12 + 8 + text.len() + 8 + bin.len()) as u32).to_le_bytes());
+    glb.extend((text.len() as u32).to_le_bytes());
+    glb.extend(b"JSON");
+    glb.extend(&text);
+    glb.extend((bin.len() as u32).to_le_bytes());
+    glb.extend(b"BIN\0");
+    glb.extend(&bin);
+    let src = dir.path().join("chair.glb");
+    std::fs::write(&src, &glb).unwrap();
+
+    let size = glb.len() as u64;
+    let res = run(&Engine::default(), &src, &Options::new(size / 4));
+    assert!(res.fits, "{} of {size}", res.output_bytes);
+    assert_eq!(res.path.extension().unwrap(), "glb");
+
+    // Still a valid GLB: header length, JSON, views inside the binary chunk, mesh intact.
+    let out = std::fs::read(&res.path).unwrap();
+    let u32_at = |at: usize| u32::from_le_bytes(out[at..at + 4].try_into().unwrap()) as usize;
+    assert_eq!(&out[0..4], b"glTF");
+    assert_eq!(u32_at(8), out.len());
+    let json_len = u32_at(12);
+    let json: serde_json::Value = serde_json::from_slice(&out[20..20 + json_len]).unwrap();
+    let bin_at = 20 + json_len;
+    assert_eq!(&out[bin_at + 4..bin_at + 8], b"BIN\0");
+    let bin = &out[bin_at + 8..bin_at + 8 + u32_at(bin_at)];
+    assert_eq!(
+        json["buffers"][0]["byteLength"].as_u64().unwrap() as usize,
+        bin.len()
+    );
+    assert_eq!(json["images"][0]["mimeType"], "image/jpeg");
+    let view = |i: usize| {
+        let v = &json["bufferViews"][i];
+        let off = v["byteOffset"].as_u64().unwrap_or(0) as usize;
+        &bin[off..off + v["byteLength"].as_u64().unwrap() as usize]
+    };
+    assert_eq!(view(0), &positions[..]);
+    assert_eq!(&view(1)[..2], &[0xFF, 0xD8]); // a JPEG
+}
+
+#[test]
 fn folder_preview_shows_the_tree_with_sizes() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("Memes");
@@ -801,4 +892,248 @@ fn portrait_video_stays_upright() {
         out.width,
         out.height
     );
+}
+
+fn ffmpeg_has(encoder: &str) -> bool {
+    Command::new(Ffmpeg::default().ffmpeg)
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(encoder))
+}
+
+fn zip_names(path: &Path) -> Vec<String> {
+    let z = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    let mut names: Vec<String> = z.file_names().map(|n| n.unwrap().into_owned()).collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn animated_gif_stays_a_gif() {
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("reaction.gif");
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x360:rate=20:duration=6",
+            "-vf",
+            "noise=alls=30:allf=t",
+        ],
+        &src,
+    );
+    let size = std::fs::metadata(&src).unwrap().len();
+    let engine = Engine::default();
+    assert_eq!(engine.probe(&src).unwrap().kind, MediaKind::Video);
+    let res = run(&engine, &src, &Options::new(size / 3));
+    assert!(res.fits, "{} of {size}", res.output_bytes);
+    assert_eq!(res.path.extension().unwrap(), "gif");
+}
+
+#[test]
+fn zip_media_inside_is_shrunk_and_the_layout_kept() {
+    use std::io::Write;
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let photo = dir.path().join("photo.png");
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=2400x1600",
+            "-vf",
+            "noise=alls=50",
+            "-frames:v",
+            "1",
+        ],
+        &photo,
+    );
+    // Loose files at the top and a hidden one: all of it comes back, in place.
+    let src = dir.path().join("holiday.zip");
+    let mut z = zip::ZipWriter::new(std::fs::File::create(&src).unwrap());
+    let opts = zip::write::SimpleFileOptions::default();
+    z.start_file("pics/photo.png", opts).unwrap();
+    z.write_all(&std::fs::read(&photo).unwrap()).unwrap();
+    z.start_file("readme.txt", opts).unwrap();
+    z.write_all(b"hello").unwrap();
+    z.start_file(".config", opts).unwrap();
+    z.write_all(b"x=1").unwrap();
+    z.finish().unwrap();
+
+    let size = std::fs::metadata(&src).unwrap().len();
+    let res = run(&Engine::default(), &src, &Options::new(size / 4));
+    assert!(res.fits, "{} of {size}", res.output_bytes);
+    assert_eq!(res.path.extension().unwrap(), "zip");
+    assert_eq!(
+        zip_names(&res.path),
+        [".config", "pics/photo.jpg", "readme.txt"]
+    );
+}
+
+#[test]
+fn seven_z_media_inside_is_shrunk_and_it_stays_7z() {
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("shots");
+    std::fs::create_dir(&folder).unwrap();
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=2400x1600",
+            "-vf",
+            "noise=alls=50",
+            "-frames:v",
+            "1",
+        ],
+        &folder.join("a.png"),
+    );
+    std::fs::write(folder.join("notes.txt"), "note ".repeat(100)).unwrap();
+    let engine = Engine::default();
+    // Make the 7z with Kompacter itself (a roomy limit: everything kept as-is).
+    let mut o = Options::new(u64::MAX / 4);
+    o.archive = kompacter_core::ArchiveFormat::SevenZ;
+    o.out_dir = Some(dir.path().join("made"));
+    let made = run(&engine, &folder, &o).path;
+    assert_eq!(made.extension().unwrap(), "7z");
+
+    let size = std::fs::metadata(&made).unwrap().len();
+    let mut o = Options::new(size / 4);
+    o.out_dir = Some(dir.path().join("out"));
+    let res = run(&engine, &made, &o);
+    assert!(res.fits, "{} of {size}", res.output_bytes);
+    assert_eq!(res.path.extension().unwrap(), "7z");
+}
+
+#[test]
+fn epub_pngs_are_shrunk_and_keep_their_names() {
+    use std::io::Write;
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let pic = dir.path().join("cover.png");
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=2400x3200",
+            "-vf",
+            "noise=alls=40",
+            "-frames:v",
+            "1",
+        ],
+        &pic,
+    );
+    let src = dir.path().join("book.epub");
+    let mut z = zip::ZipWriter::new(std::fs::File::create(&src).unwrap());
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    z.start_file("mimetype", stored).unwrap();
+    z.write_all(b"application/epub+zip").unwrap();
+    z.start_file("OEBPS/cover.png", stored).unwrap();
+    z.write_all(&std::fs::read(&pic).unwrap()).unwrap();
+    z.finish().unwrap();
+
+    let size = std::fs::metadata(&src).unwrap().len();
+    let res = run(&Engine::default(), &src, &Options::new(size / 3));
+    assert!(res.fits, "{} of {size}", res.output_bytes);
+    assert_eq!(res.path.extension().unwrap(), "epub");
+    let mut out = zip::ZipArchive::new(std::fs::File::open(&res.path).unwrap()).unwrap();
+    assert_eq!(out.by_index(0).unwrap().name().unwrap(), "mimetype");
+    let mut png = Vec::new();
+    std::io::Read::read_to_end(&mut out.by_name("OEBPS/cover.png").unwrap(), &mut png).unwrap();
+    assert_eq!(&png[1..4], b"PNG");
+}
+
+#[test]
+fn avif_photo_is_read_as_a_picture() {
+    if !have_ffmpeg() || !ffmpeg_has("libaom-av1") {
+        return eprintln!("ffmpeg or libaom missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("photo.avif");
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=1600x1200",
+            "-vf",
+            "noise=alls=30",
+            "-frames:v",
+            "1",
+            "-c:v",
+            "libaom-av1",
+            "-still-picture",
+            "1",
+            "-crf",
+            "8",
+            "-cpu-used",
+            "8",
+        ],
+        &src,
+    );
+    let engine = Engine::default();
+    let info = engine.probe(&src).unwrap();
+    assert_eq!(info.kind, MediaKind::Image, "{info:?}");
+    let size = info.size_bytes;
+    let res = run(&engine, &src, &Options::new(size / 3));
+    assert!(res.fits, "{} of {size}", res.output_bytes);
+    assert_eq!(res.path.extension().unwrap(), "jpg");
+}
+
+#[test]
+fn text_that_zip_cant_fit_goes_7z() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("server.log");
+    // Log-like text: repetitive enough for both, but LZMA finds far more than deflate.
+    let mut text = String::new();
+    let mut x: u64 = 7;
+    let words = [
+        "GET",
+        "POST",
+        "/api/user",
+        "/api/items",
+        "200",
+        "404",
+        "ok",
+        "slow",
+    ];
+    for i in 0..60_000u64 {
+        x = x
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let w = words[(x >> 33) as usize % words.len()];
+        text.push_str(&format!(
+            "2026-11-17 12:{:02}:{:02} {w} id={} {}\n",
+            i % 60,
+            (x >> 40) % 60,
+            (x >> 20) % 5000,
+            w
+        ));
+    }
+    std::fs::write(&src, &text).unwrap();
+    let size = text.len() as u64;
+    let engine = Engine::default();
+    let zipped = run(&engine, &src, &Options::new(size - 1));
+    assert_eq!(zipped.path.extension().unwrap(), "zip");
+    let res = run(&engine, &src, &Options::new(zipped.output_bytes - 1));
+    assert!(
+        res.fits,
+        "{} vs zip {}",
+        res.output_bytes, zipped.output_bytes
+    );
+    assert_eq!(res.path.extension().unwrap(), "7z");
 }

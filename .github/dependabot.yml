@@ -1,0 +1,18 @@
+# Opens a PR when a dependency has a new version (one grouped PR per week each).
+# ffmpeg isn't listed: the release workflow downloads the latest build every time.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      rust:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

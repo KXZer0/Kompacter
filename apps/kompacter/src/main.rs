@@ -10,12 +10,14 @@
 mod flow;
 mod format;
 mod motion;
+mod news;
 mod output;
 mod quick;
 mod settings;
 mod sys;
 mod trim;
 mod trim_cache;
+mod update;
 mod watch;
 
 use std::cell::{Cell, RefCell};
@@ -123,6 +125,10 @@ pub struct App {
     /// New clips waiting to shrink on their own, one at a time.
     pub auto_queue: RefCell<std::collections::VecDeque<PathBuf>>,
     pub auto_busy: Cell<bool>,
+    /// "Install updates" (read by the background check).
+    pub update_on: Arc<AtomicBool>,
+    /// A downloaded, checked update; installed when Kompacter quits.
+    pub update_ready: RefCell<Option<update::Ready>>,
 }
 
 impl App {
@@ -225,6 +231,7 @@ impl App {
         });
         prefs.set_output_dir(s.output_dir.as_str().into());
         prefs.set_gpu(s.gpu);
+        prefs.set_auto_update(s.auto_update);
         prefs.set_auto_hide(s.auto_hide);
         prefs.set_start_with_windows(s.start_with_windows);
         prefs.set_explorer_menu(s.explorer_menu);
@@ -284,6 +291,62 @@ impl App {
         ui.set_welcome_step(0);
         drop(s);
         self.set_view(View::Welcome);
+    }
+
+    /// After an update: "What's new" for `version`, once.
+    fn whats_new(&self, version: &str, lines: &[&str]) {
+        let ui = self.ui();
+        ui.set_news_version(version.into());
+        let items: Vec<SharedString> = lines.iter().map(|l| (*l).into()).collect();
+        ui.set_news_items(ModelRc::new(VecModel::from(items)));
+        self.set_view(View::News);
+    }
+
+    /// Check GitHub for a newer version now and then, in the background (release builds
+    /// on Windows only). A checked download shows the "Update ready" line.
+    fn start_update_checks(&self, current: &'static str) {
+        let on = self.update_on.clone();
+        std::thread::spawn(move || {
+            // The installer of the update that just ran (or an old one) isn't needed.
+            update::clear_downloads();
+            // Let startup (and Start with Windows) settle first.
+            std::thread::sleep(Duration::from_secs(90));
+            loop {
+                if on.load(Ordering::Relaxed) {
+                    // The pill shows the download filling a ring (only whole-percent steps
+                    // reach the window).
+                    let shown = std::sync::atomic::AtomicI32::new(-1);
+                    let progress = |version: &str, p: f32| {
+                        let pct = (p * 100.0) as i32;
+                        if shown.swap(pct, Ordering::Relaxed) != pct {
+                            let version = version.to_string();
+                            with_app(move |a| {
+                                let ui = a.ui();
+                                ui.set_update_version(version.into());
+                                ui.set_update_progress(pct as f32 / 100.0);
+                            });
+                        }
+                    };
+                    match update::check(current, &update::download_dir(), &progress) {
+                        Ok(Some(ready)) => {
+                            with_app(move |a| {
+                                let ui = a.ui();
+                                ui.set_update_version(ready.version.as_str().into());
+                                ui.set_update_progress(1.0);
+                                *a.update_ready.borrow_mut() = Some(ready);
+                            });
+                            return;
+                        }
+                        // A failed download: hide the pill until the next try.
+                        Err(_) if shown.load(Ordering::Relaxed) >= 0 => {
+                            with_app(|a| a.ui().set_update_version(SharedString::new()));
+                        }
+                        _ => {}
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(24 * 60 * 60));
+            }
+        });
     }
 
     /// "Done" on the first-run screen: save the three choices and never ask again.
@@ -477,6 +540,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_opened(false);
 
     let tray = Tray::new()?;
+    let prefs_auto_update = prefs.auto_update;
     let app = Rc::new(App {
         ui: ui.as_weak(),
         engine: Arc::new(Engine::new(sys::ffmpeg())),
@@ -502,6 +566,8 @@ fn main() -> Result<(), slint::PlatformError> {
         watch: watch::Watch::new(|e| with_app(move |a| a.on_watch(e))),
         auto_queue: RefCell::new(Default::default()),
         auto_busy: Cell::new(false),
+        update_on: Arc::new(AtomicBool::new(prefs_auto_update)),
+        update_ready: RefCell::new(None),
     });
     APP.with(|a| *a.borrow_mut() = Rc::downgrade(&app));
     sys::start_input(|e| with_app(move |a| a.on_input(e)));
@@ -741,14 +807,27 @@ fn main() -> Result<(), slint::PlatformError> {
                 a.trim_activate();
             }
             View::Trim => a.set_view(View::Big),
+            View::News => a.set_view(View::Idle),
             _ => a.close(),
         });
+        let a = app.clone();
+        ui.on_news_done(move || a.set_view(View::Idle));
+        // Restart: quit, and the installer runs on the way out (see the end of main).
+        let a = app.clone();
+        ui.on_restart_to_update(move || a.trim_quit());
         let a = app.clone();
         ui.on_quick_expand(move || a.quick_expand());
         let a = app.clone();
         ui.on_quick_trim(move || a.quick_trim());
         let a = app.clone();
         ui.on_paste_anyway(move || a.paste_anyway());
+        let a = app.clone();
+        prefs.on_set_auto_update(move |on| {
+            a.settings.borrow_mut().auto_update = on;
+            a.update_on.store(on, Ordering::Relaxed);
+            a.save();
+            a.sync_settings();
+        });
         let a = app.clone();
         prefs.on_set_shortcut(move |i| {
             let id = settings::SHORTCUTS[i.clamp(0, 3) as usize].0;
@@ -926,11 +1005,57 @@ fn main() -> Result<(), slint::PlatformError> {
     if let Ok(p) = std::env::var("KOMPACTER_OPEN") {
         app.open(PathBuf::from(p));
     }
+    // Dev builds only: `KOMPACTER_DROP=<file>@<seconds>` acts out a drop at that time
+    // (drag-over state, then the file opens), for recording the README demos.
+    #[cfg(debug_assertions)]
+    if let Some((p, at)) = std::env::var("KOMPACTER_DROP")
+        .ok()
+        .and_then(|v| {
+            v.rsplit_once('@')
+                .map(|(p, t)| (p.to_string(), t.to_string()))
+        })
+        .and_then(|(p, t)| Some((PathBuf::from(p), t.parse::<f64>().ok()?)))
+    {
+        let hover = Duration::from_secs_f64((at - 0.7).max(0.0));
+        let weak = Rc::downgrade(&app);
+        slint::Timer::single_shot(hover, move || {
+            if let Some(a) = weak.upgrade() {
+                a.ui().set_dragging(true);
+            }
+        });
+        let weak = Rc::downgrade(&app);
+        slint::Timer::single_shot(Duration::from_secs_f64(at.max(0.0)), move || {
+            if let Some(a) = weak.upgrade() {
+                a.ui().set_dragging(false);
+                a.open_many(vec![p]);
+            }
+        });
+    }
     // Dev builds only: the quick bar (or the paste guard's) for this file.
     #[cfg(debug_assertions)]
     if let Ok(p) = std::env::var("KOMPACTER_QUICK") {
         let guard = std::env::var("KOMPACTER_GUARD").is_ok().then_some(0);
         app.quick_open(vec![PathBuf::from(p)], guard);
+    }
+    // A new version's first start: "What's new", once. A fresh install gets the first-run
+    // screen instead, so it just remembers the version.
+    if let Some(version) = update::VERSION {
+        let (seen, welcomed) = {
+            let s = app.settings.borrow();
+            (s.seen_version.clone(), s.welcomed)
+        };
+        if seen != version {
+            if welcomed && app.view() == View::Idle && !app.quick.get() {
+                if let Some(lines) = news::for_version(version) {
+                    app.whats_new(version, lines);
+                }
+            }
+            app.settings.borrow_mut().seen_version = version.into();
+            app.save();
+        }
+        if cfg!(windows) {
+            app.start_update_checks(version);
+        }
     }
     // First run: ask once what Kompacter may do on its own (see `welcome_done`).
     if !app.settings.borrow().welcomed && app.view() == View::Idle && !app.quick.get() {
@@ -948,6 +1073,12 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     slint::run_event_loop_until_quit()?;
     drop(tray);
+    // A checked update waits for Kompacter to close; the installer reopens it.
+    if app.settings.borrow().auto_update {
+        if let Some(ready) = app.update_ready.borrow().as_ref() {
+            let _ = update::install(ready);
+        }
+    }
     Ok(())
 }
 
@@ -960,7 +1091,7 @@ fn set_custom_dir(app: &Rc<App>, dir: PathBuf) {
     app.sync_settings();
 }
 
-/// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord|welcome(-2|-3)`
+/// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord|welcome(-2|-3)|news|update`
 /// shows a screen with sample data, for screenshots.
 #[cfg(debug_assertions)]
 fn demo(app: &Rc<App>, which: &str) {
@@ -1076,6 +1207,12 @@ fn demo(app: &Rc<App>, which: &str) {
             ui.set_view(View::Settings);
         }
         "drag" => ui.set_dragging(true),
+        "news" => app.whats_new(news::NOTES[0].0, news::NOTES[0].1),
+        "update" => ui.set_update_version("0.0.8".into()),
+        "update-downloading" => {
+            ui.set_update_version("0.0.8".into());
+            ui.set_update_progress(0.42);
+        }
         "tip" => ui.set_tray_tip(true),
         // `welcome-2` and `welcome-3` open on that step.
         "welcome" | "welcome-1" | "welcome-2" | "welcome-3" => {

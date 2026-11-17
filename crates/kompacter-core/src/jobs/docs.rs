@@ -1,11 +1,14 @@
-//! PDFs and Office documents (Word, PowerPoint, Excel, OpenDocument). They're usually big
+//! PDFs, Office documents (Word, PowerPoint, Excel, OpenDocument), EPUB ebooks and CBZ
+//! comics. They're usually big
 //! because of the photos inside, so those are resized and recompressed; the result stays a
 //! normal document that opens the same way. Steps down until it fits.
 //!
 //! PDF: only plain 8-bit color or gray photos are touched (masks, CMYK, palettes and the
 //! like are left alone), and a picture is only replaced when the new one is smaller.
-//! Office files are zips: JPEG pictures inside are recompressed and everything is repacked
-//! at maximum compression.
+//! Office files, EPUBs and CBZs are zips: JPEG pictures inside are recompressed, PNGs
+//! (screenshots, mostly) are resized and, past the first step, reduced to 256 colors
+//! (transparency kept), and everything is repacked at maximum compression. Pictures keep
+//! their names and formats, so nothing that points at them needs to change.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -32,7 +35,7 @@ pub(crate) fn kind(path: &Path) -> Option<Doc> {
     let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
     match ext.as_str() {
         "pdf" => Some(Doc::Pdf),
-        "docx" | "pptx" | "xlsx" | "odt" | "odp" | "ods" => Some(Doc::Office),
+        "docx" | "pptx" | "xlsx" | "odt" | "odp" | "ods" | "epub" | "cbz" => Some(Doc::Office),
         _ => None,
     }
 }
@@ -97,6 +100,40 @@ fn jpeg(
     a.push(out.into());
     ctx.ff.run(&a, 0.0, &mut |_| {}, ctx.cancel)?;
     Ok((tw, th, std::fs::read(out)?))
+}
+
+/// Re-encode one PNG no bigger than `side`, still a PNG; `palette` makes it 256 colors.
+fn png(ctx: &Ctx, input: &Path, out: &Path, side: u32, palette: bool) -> Result<Vec<u8>> {
+    let info = ctx
+        .ff
+        .probe_json(input)?
+        .ok_or_else(|| Error::Unsupported("unreadable picture".into()))?;
+    let s = &info["streams"][0];
+    let (w, h) = (
+        s["width"].as_u64().unwrap_or(0),
+        s["height"].as_u64().unwrap_or(0),
+    );
+    if w == 0 || h == 0 {
+        return Err(Error::Unsupported("unreadable picture".into()));
+    }
+    let k = (side as f64 / w.max(h) as f64).min(1.0);
+    let (tw, th) = (
+        ((w as f64 * k).round() as u64).max(1),
+        ((h as f64 * k).round() as u64).max(1),
+    );
+    let scale = format!("scale={tw}:{th}:flags=lanczos");
+    let filter = if palette {
+        format!("{scale},split[a][b];[a]palettegen=max_colors=256[p];[b][p]paletteuse=dither=sierra2_4a")
+    } else {
+        scale
+    };
+    let mut a = args(["-i".into(), input.as_os_str().to_owned()]);
+    a.extend(args(["-frames:v", "1", "-vf"]));
+    a.push(filter.into());
+    a.extend(args(["-c:v", "png", "-compression_level", "9"]));
+    a.push(out.into());
+    ctx.ff.run(&a, 0.0, &mut |_| {}, ctx.cancel)?;
+    Ok(std::fs::read(out)?)
 }
 
 fn int(o: Option<&Object>) -> Option<i64> {
@@ -224,12 +261,21 @@ fn shrink_office(ctx: &Ctx, src: &Path, out: &Path, tmp: &Path, side: u32, q: u3
             return Err(Error::Cancelled);
         }
         let mut entry = zin.by_index(i).map_err(bad)?;
-        let name = entry.name().to_string();
+        let name = entry.name().map_err(bad)?.to_string();
         let mut data = Vec::new();
         entry.read_to_end(&mut data)?;
         drop(entry);
         let lower = name.to_ascii_lowercase();
-        if (lower.ends_with(".jpg") || lower.ends_with(".jpeg")) && data.len() >= MIN_BYTES {
+        if lower.ends_with(".png") && data.len() >= MIN_BYTES {
+            let input = tmp.join(format!("in{i}.png"));
+            std::fs::write(&input, &data)?;
+            let made = tmp.join(format!("out{i}.png"));
+            if let Ok(bytes) = png(ctx, &input, &made, side, q >= 7) {
+                if bytes.len() < data.len() {
+                    data = bytes;
+                }
+            }
+        } else if (lower.ends_with(".jpg") || lower.ends_with(".jpeg")) && data.len() >= MIN_BYTES {
             let input = tmp.join(format!("in{i}.jpg"));
             std::fs::write(&input, &data)?;
             // Size: ask ffmpeg's probe instead of decoding ourselves.

@@ -32,6 +32,9 @@ SetCompressor /SOLID lzma
 Section "Install"
   ; Close a running copy so its files can be replaced.
   nsExec::Exec 'taskkill /IM Kompacter.exe /F'
+  ; Updates install over the old files (same names). If a version stops shipping a
+  ; file, delete it here so updated installs don't keep it, e.g.:
+  ;   Delete "$INSTDIR\old-file.dll"
   SetOutPath "$INSTDIR"
   File "dist\Kompacter.exe"
   File "dist\ffmpeg.exe"
@@ -50,6 +53,12 @@ Section "Install"
   WriteRegDWORD HKCU "${UNINST}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINST}" "NoRepair" 1
 SectionEnd
+
+; A silent install is an update from inside Kompacter: open the new version afterwards.
+Function .onInstSuccess
+  IfSilent 0 +2
+    Exec '"$INSTDIR\Kompacter.exe"'
+FunctionEnd
 
 Section "Uninstall"
   nsExec::Exec 'taskkill /IM Kompacter.exe /F'
@@ -71,4 +80,14 @@ Section "Uninstall"
   RMDir /r "$INSTDIR\Kompacted"
   ; Removed only if it's now empty.
   RMDir "$INSTDIR"
+  ; Settings, and results in the folders used when the install folder isn't writable
+  ; (only Kompacter's own *.kompacter.* files in Videos, which is the user's folder).
+  RMDir /r "$APPDATA\app.kompacter.desktop"
+  RMDir /r "$LOCALAPPDATA\Kompacter\Kompacted"
+  RMDir "$LOCALAPPDATA\Kompacter"
+  Delete "$VIDEOS\Kompacter\*.kompacter.*"
+  RMDir "$VIDEOS\Kompacter"
+  ; Temporary files: a downloaded update and the file that hands files to a running copy.
+  RMDir /r "$TEMP\Kompacter-update"
+  Delete "$TEMP\kompacter-open.txt"
 SectionEnd

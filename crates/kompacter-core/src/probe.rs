@@ -122,7 +122,14 @@ pub(crate) fn classify(path: &Path, size_bytes: u64, json: &Value) -> Option<Med
         channels: s["channels"].as_u64().unwrap_or(2) as u32,
     });
 
-    let is_still_image = format_name == "image2" || format_name.ends_with("_pipe");
+    // HEIC/HEIF/AVIF photos come through the MP4 demuxer, with no duration and one frame.
+    let one_frame = video_json
+        .and_then(|s| s["nb_frames"].as_str())
+        .and_then(|n| n.parse::<u64>().ok())
+        .is_none_or(|n| n <= 1);
+    let is_still_image = format_name == "image2"
+        || format_name.ends_with("_pipe")
+        || (is_heif_like(path) && (duration <= 0.0 || one_frame));
     let kind = match (&video, &audio) {
         (Some(_), _) if is_still_image => MediaKind::Image,
         (Some(_), _) if duration > 0.0 => MediaKind::Video,
@@ -151,6 +158,13 @@ pub(crate) fn classify(path: &Path, size_bytes: u64, json: &Value) -> Option<Med
         audio,
         has_alpha,
     })
+}
+
+/// Phone photo formats (HEIC/HEIF from iPhones, AVIF) that ffmpeg reads as one-frame MP4s.
+pub(crate) fn is_heif_like(path: &Path) -> bool {
+    path.extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .is_some_and(|e| matches!(e.as_str(), "heic" | "heif" | "hif" | "avif"))
 }
 
 /// True when the stream's rotation flag is a quarter turn (90° or 270°). Newer files carry

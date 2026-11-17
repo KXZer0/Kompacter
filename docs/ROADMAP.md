@@ -4,7 +4,7 @@
 
 | Phase | Goal | Status |
 |---|---|---|
-| 0. UI mockups | Clickable mockup of popup, trimmer, settings; iterate on look | In progress |
+| 0. UI mockups | Clickable mockup of popup, trimmer, settings; iterate on look | **Done**: replaced by the real app (README demos are recorded from it) |
 | 1. Engine | Rust library + CLI: probe, fit video/audio/image/folder, trim, estimates, GPU | **Working** |
 | 2. App shell | Native tray app (Slint, no web view): popup, drag & drop, result on clipboard, settings | **Rewritten natively**, testing |
 | 3. Triggers | Right-click menu, hotkey, paste guard, heads-up on copy, per-app profiles | Hotkey, paste guard (Discord), heads-up on copy **built**, testing |

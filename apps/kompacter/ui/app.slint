@@ -12,7 +12,7 @@ import { FeatureDemo } from "demo.slint";
 
 export { Theme, Fx, Prefs, PresetItem }
 
-export enum View { idle, reading, big, trim, busy, done, error, settings, quick, welcome }
+export enum View { idle, reading, big, trim, busy, done, error, settings, quick, welcome, news }
 
 /// One line of a before → after list (a folder's tree, or a video's stats).
 export struct DiffRow {
@@ -203,6 +203,13 @@ export component AppWindow inherits Window {
     in-out property <bool> welcome-clips;
     /// Which step is showing: 0 copies, 1 paste guard, 2 game clips.
     in-out property <int> welcome-step;
+    /// After an update: the version and its few lines of "What's new".
+    in property <string> news-version;
+    in property <[string]> news-items;
+    /// A newer version is downloaded and checked; installs on restart ("" = none).
+    in property <string> update-version;
+    /// The update's download, 0…1 (1: downloaded and checked, ready to install).
+    in property <float> update-progress: 1;
 
     in property <string> error-text;
 
@@ -244,6 +251,8 @@ export component AppWindow inherits Window {
     callback tray-tip-pin();
     callback tray-tip-dismiss();
     callback welcome-done();
+    callback news-done();
+    callback restart-to-update();
 
     property <length> inset: Fx.glass ? 12px : 0;
     property <length> full-h: view == View.trim ? 624px : view == View.settings ? 600px : view == View.quick ? (guard ? 168px : 136px) : 472px;
@@ -306,6 +315,10 @@ export component AppWindow inherits Window {
         key-pressed(event) => {
             if (event.text == Key.Escape) {
                 root.escape();
+                return accept;
+            }
+            if (root.view == View.news && event.text == Key.Return) {
+                root.news-done();
                 return accept;
             }
             if (root.view == View.welcome && event.text == Key.Return) {
@@ -374,7 +387,7 @@ export component AppWindow inherits Window {
             height: root.full-h;
 
             // ── Header ──
-            if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome: Rectangle {
+            if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome && root.view != View.news: Rectangle {
                 x: 16px;
                 y: 14px;
                 width: pill-row.preferred-width;
@@ -412,7 +425,7 @@ export component AppWindow inherits Window {
                     clicked => { menu.show(); }
                 }
             }
-            if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome: IconBtn {
+            if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome && root.view != View.news: IconBtn {
                 x: parent.width - 14px - self.width;
                 y: 13px;
                 icon: Icons.gear;
@@ -619,6 +632,101 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // A newer version: an accent pill under the buttons. While it downloads, a ring
+            // fills around the icon; once it's checked and ready, the circle fills in, its
+            // ring pulses (on the blob's ambient clock, no extra timer) and it says Restart.
+            if root.view == View.idle && root.update-version != "" && !root.tray-tip && !root.dragging: Appear {
+                x: 20px;
+                y: 433px;
+                width: 320px;
+                height: 34px;
+                HorizontalLayout {
+                    alignment: center;
+                    upd := Rectangle {
+                        property <bool> ready: root.update-progress >= 1;
+                        property <float> p: Math.clamp(root.update-progress, 0, 0.999);
+                        property <float> pulse: Fx.rich && self.ready ? Math.mod(root.ambient-turn * 12, 1) : 0;
+                        width: upd-row.preferred-width;
+                        height: 32px;
+                        border-radius: 16px;
+                        background: upd-ta.has-hover && self.ready ? Theme.accent-soft.darker(0.08) : Theme.accent-soft;
+                        animate background { duration: 120ms; }
+                        border-width: 1px;
+                        border-color: Theme.accent-text.transparentize(0.6);
+                        transform-scale: upd-ta.pressed && self.ready ? 0.96 : 1;
+                        animate transform-scale { duration: 220ms; easing: ease-out-back; }
+                        upd-row := HorizontalLayout {
+                            padding-left: 5px;
+                            padding-right: 14px;
+                            spacing: 8px;
+                            alignment: center;
+                            Rectangle {
+                                width: 24px;
+                                height: 24px;
+                                y: (parent.height - self.height) / 2;
+                                // Ready: a pulse ring that grows and fades, again and again.
+                                if Fx.rich && upd.ready: Rectangle {
+                                    border-radius: self.width / 2;
+                                    border-width: 2px;
+                                    border-color: Theme.accent;
+                                    transform-scale: 1 + 0.6 * upd.pulse;
+                                    opacity: 0.55 * (1 - upd.pulse);
+                                }
+                                // Downloading: a faint track and the part that's done.
+                                if !upd.ready: Rectangle {
+                                    border-radius: self.width / 2;
+                                    border-width: 2.4px;
+                                    border-color: Theme.accent.transparentize(0.78);
+                                }
+                                if !upd.ready: Path {
+                                    viewbox-width: 24;
+                                    viewbox-height: 24;
+                                    stroke: Theme.accent;
+                                    stroke-width: 2.4px;
+                                    stroke-line-cap: round;
+                                    fill: transparent;
+                                    commands: "M 12 1.2 A 10.8 10.8 0 " + (upd.p > 0.5 ? "1" : "0") + " 1 "
+                                        + (12 + 10.8 * Math.sin(upd.p * 360deg)) + " "
+                                        + (12 - 10.8 * Math.cos(upd.p * 360deg));
+                                }
+                                Rectangle {
+                                    border-radius: self.width / 2;
+                                    background: upd.ready ? Theme.accent : transparent;
+                                    animate background { duration: 250ms; }
+                                    Icon {
+                                        d: Icons.download;
+                                        size: upd.ready ? 15px : 13px;
+                                        color: upd.ready ? Theme.on-accent : Theme.accent-text;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                            }
+                            Text {
+                                text: upd.ready ? "Update " + root.update-version + " ready"
+                                    : "Downloading " + root.update-version + " · " + Math.round(upd.p * 100) + "%";
+                                font-size: 13px;
+                                font-weight: 650;
+                                color: Theme.label;
+                                vertical-alignment: center;
+                            }
+                            if upd.ready: Text {
+                                text: "Restart";
+                                font-size: 13px;
+                                font-weight: 700;
+                                color: Theme.accent-text;
+                                vertical-alignment: center;
+                            }
+                        }
+                        upd-ta := TouchArea {
+                            enabled: upd.ready;
+                            mouse-cursor: upd.ready ? pointer : default;
+                            clicked => { root.restart-to-update(); }
+                        }
+                    }
+                }
+            }
+
             if root.view == View.idle && root.tray-tip && !root.dragging: Appear {
                 x: 16px;
                 y: 428px;
@@ -764,6 +872,72 @@ export component AppWindow inherits Window {
                             mouse-cursor: pointer;
                             clicked => { root.welcome-step = i; }
                         }
+                    }
+                }
+            }
+
+            // After an update, once: the happy blob and a few lines on what changed.
+            if root.view == View.news: Appear {
+                x: 0;
+                y: 0;
+                width: 360px;
+                height: 472px;
+                Rectangle {
+                    y: 28px;
+                    width: parent.width;
+                    height: 140px;
+                    Blob {
+                        mood: Mood.happy;
+                        s: 0.8;
+                        touchable: false;
+                        cx: parent.width / 2;
+                        cy: parent.height / 2;
+                    }
+                }
+                Title {
+                    x: 24px;
+                    y: 170px;
+                    width: parent.width - 48px;
+                    text: "What's new in " + root.news-version;
+                }
+                VerticalLayout {
+                    x: 40px;
+                    y: 212px;
+                    width: parent.width - 80px;
+                    height: 160px;
+                    spacing: 8px;
+                    alignment: start;
+                    for line in root.news-items: HorizontalLayout {
+                        spacing: 10px;
+                        Rectangle {
+                            width: 6px;
+                            height: 18px;
+                            Rectangle {
+                                y: 6px;
+                                width: 6px;
+                                height: 6px;
+                                border-radius: 3px;
+                                background: Theme.accent;
+                            }
+                        }
+                        Text {
+                            text: line;
+                            font-size: 13px;
+                            color: Theme.label;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    x: 40px;
+                    y: 396px;
+                    width: 280px;
+                    height: 44px;
+                    Btn {
+                        large: true;
+                        primary: true;
+                        text: "Got it";
+                        clicked => { root.news-done(); }
                     }
                 }
             }
