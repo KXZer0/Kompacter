@@ -306,13 +306,10 @@ export component AppWindow inherits Window {
     animate blob-lift { duration: Fx.rich ? 300ms : 0ms; easing: ease-out; }
 
     property <bool> track-eyes: (stage-lg || stage-md) && !stage-hidden;
-    /// The window has the keyboard focus. While another app is in use the blob rests
-    /// (a file dragged over the window still wakes it).
-    in property <bool> focused: true;
     Timer {
         // Ambient motion advances less than a degree (or a dash pixel) per tick.
         interval: 33ms;
-        running: Fx.rich && root.opened && ((root.focused && root.track-eyes) || root.dragging);
+        running: Fx.rich && root.opened && (root.track-eyes || root.dragging);
         triggered => { root.motion-tick(root.track-eyes); }
     }
 
@@ -584,7 +581,7 @@ export component AppWindow inherits Window {
                     mood: root.mood;
                     s: root.blob-s;
                     swell: root.dragging;
-                    ambient-active: root.opened && root.focused && root.track-eyes;
+                    ambient-active: root.opened && root.track-eyes;
                     ambient-turn: root.ambient-turn;
                     cx: parent.width / 2;
                     cy: parent.height / 2 - root.blob-lift;

@@ -674,13 +674,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.window().on_winit_window_event(move |_, event| {
             let ui = a.ui();
             match event {
-                winit::event::WindowEvent::Focused(focused) => {
-                    // The blob rests while another app is in use (no redraws then).
-                    ui.set_focused(*focused);
-                    if !*focused {
-                        a.away();
-                    }
-                }
+                winit::event::WindowEvent::Focused(false) => a.away(),
                 winit::event::WindowEvent::HoveredFile(_) => {
                     if a.view() != View::Busy && !ui.get_dragging() {
                         if a.quick.get() || !matches!(a.view(), View::Idle | View::Reading) {

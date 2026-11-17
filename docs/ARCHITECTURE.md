@@ -70,11 +70,15 @@
 
 - Hidden in the tray, nothing redraws and no timer runs (the clipboard check for "copied
   files" is the only wake-up, twice a second, and only when that setting is on).
-- Open, the breathing blob ticks at 30 fps only while the window has the focus; it rests
-  while another app is in use (a file dragged over it still wakes it).
-- No animation follows the display's refresh rate for long: the feature demos and the
-  press while compressing step at 30 Hz (`animation-tick()` and long `animate` blocks
-  would redraw at 144–240 Hz on gaming monitors).
+- Whatever is on screen stays alive: the blob breathes whenever the window is open (its
+  timer moves it by the real time passed, so it's the same speed on every screen), and
+  stops only when the window is hidden.
+- The feature demos run on `animation-tick()`, the real clock, at the display's full
+  refresh rate: same speed everywhere, smoother on faster screens. They're only on screen
+  briefly (first run, a hover in Settings).
+- The press while compressing steps at 30 Hz: it follows the progress, moving far less
+  than a pixel a step, so it looks the same, and a long compress doesn't redraw at
+  144–240 Hz the whole time (that CPU goes to the encode instead).
 - Blob art is drawn at 2× (sharp up to 200% scaling); the trimmer drops its preview frame
   when you leave it, updates its detail rows in place, and lets a frame finish decoding
   while a handle is dragged (instead of restarting ffmpeg on every move).
