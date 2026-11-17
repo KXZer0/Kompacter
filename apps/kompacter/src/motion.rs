@@ -138,6 +138,10 @@ impl App {
             self.motion.settings_return.set(Some(was));
         }
         ui.set_view(v);
+        // Settings and a compress started from the trimmer go back to it.
+        if !matches!(v, View::Trim | View::Settings | View::Busy) {
+            self.trim_release();
+        }
         if was != self.view() {
             self.motion.result_hide.stop();
         }

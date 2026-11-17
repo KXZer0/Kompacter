@@ -77,9 +77,36 @@ pub fn budget_kbps(target_bytes: u64, seconds: f64) -> f64 {
     target_bytes as f64 * 8.0 * SAFETY / seconds / 1000.0
 }
 
+/// A video's audio track: less sounds broken, more isn't heard.
+const MIN_AUDIO_KBPS: f64 = 48.0;
+const MAX_AUDIO_KBPS: f64 = 128.0;
+
+/// Below this, one clean channel sounds better than two starved ones.
+pub const MONO_BELOW_KBPS: u32 = 64;
+
+/// The untouched video's size is only known from an average (or worked out from the
+/// file's), so copying it keeps 5% spare on top of `SAFETY`.
+const COPY_HEADROOM: f64 = 1.05;
+
 /// Audio gets a small slice of the budget: enough to sound fine, never more than 128 kbps.
 pub fn audio_kbps_for(total_kbps: f64) -> u32 {
-    (total_kbps * 0.1).clamp(48.0, 128.0).round() as u32
+    (total_kbps * 0.1)
+        .clamp(MIN_AUDIO_KBPS, MAX_AUDIO_KBPS)
+        .round() as u32
+}
+
+/// Fold stereo (or surround) down to mono when the audio bitrate is too low for it to
+/// sound good. Never adds channels: mono stays mono.
+pub fn mono(audio_kbps: u32, channels: u32) -> bool {
+    audio_kbps < MONO_BELOW_KBPS && channels > 1
+}
+
+/// Video copied as-is, only the audio re-encoded: the audio bitrate that still fits next
+/// to a `video_kbps` stream. `None` when less than a decent 48 kbps would be left.
+pub fn copy_audio_kbps(target_bytes: u64, seconds: f64, video_kbps: u32) -> Option<u32> {
+    let left = budget_kbps(target_bytes, seconds) - video_kbps as f64 * COPY_HEADROOM;
+    let kbps = left.min(MAX_AUDIO_KBPS).floor();
+    (kbps >= MIN_AUDIO_KBPS).then_some(kbps as u32)
 }
 
 /// Pick resolution, frame rate and bitrates so a clip of `seconds` lands under `target_bytes`.
@@ -209,6 +236,29 @@ mod tests {
             Trim::new(10.0, 99.0).unwrap().clamp(60.0).unwrap().end,
             60.0
         );
+    }
+
+    #[test]
+    fn mono_only_below_64_kbps_and_never_upmixed() {
+        assert!(mono(48, 2));
+        assert!(mono(63, 6));
+        assert!(!mono(64, 2));
+        assert!(!mono(128, 2));
+        assert!(!mono(32, 1));
+    }
+
+    #[test]
+    fn copying_the_video_leaves_room_for_the_audio() {
+        // 10 s, 1 MB: a 217 kbps video leaves plenty, so the audio gets the full 128.
+        assert_eq!(copy_audio_kbps(MB, 10.0, 217), Some(128));
+        // A big video leaves just a little.
+        let kbps = copy_audio_kbps(MB, 10.0, 700).unwrap();
+        assert!((48..128).contains(&kbps), "{kbps}");
+        let bytes = (700.0 * COPY_HEADROOM + kbps as f64) * 1000.0 / 8.0 * 10.0;
+        assert!(bytes <= MB as f64, "{bytes}");
+        // The video alone (almost) fills it, or there's no length: re-encode instead.
+        assert_eq!(copy_audio_kbps(MB, 10.0, 760), None);
+        assert_eq!(copy_audio_kbps(MB, 0.0, 100), None);
     }
 
     #[test]

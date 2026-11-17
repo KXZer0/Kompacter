@@ -45,7 +45,8 @@ pub struct Settings {
     /// Global shortcut for the quick bar: "off" | "ctrl+alt+k" | "ctrl+shift+k" |
     /// "ctrl+shift+space".
     pub shortcut: String,
-    /// Catch Ctrl+V in Discord when the copied file is over the limit.
+    /// Catch Ctrl+V in a chat app (Discord, Slack, WhatsApp, Telegram, Signal) when the
+    /// copied file is over that app's limit.
     pub paste_guard: bool,
     /// Offer the quick bar when a file over the limit is copied.
     pub watch_copies: bool,

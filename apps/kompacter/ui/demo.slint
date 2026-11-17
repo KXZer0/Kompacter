@@ -607,19 +607,29 @@ export component FeatureDemo inherits Rectangle {
     // Loop lengths, each with a short rest at the end, and the still frame for each.
     property <duration> period: feature == 1 ? 5200ms : feature == 2 ? 4600ms : 4400ms;
     property <float> still: feature == 1 ? 0.535 : 0.85;
-    // When this loop started. animation-tick() only advances, and only asks for frames,
-    // while something on screen reads it, so nothing ticks while this isn't playing or
-    // isn't drawn.
-    property <duration> t0;
-    init => { self.t0 = animation-tick(); }
+    // Where this loop is: a 30 Hz timer moves it on, only while playing, and each time it
+    // starts playing it starts from the top. (animation-tick() would ask for a frame at the
+    // display's full refresh rate, 144 or 240 a second on gaming monitors, even when read
+    // only from the timer.)
+    property <duration> clock;
     changed playing => {
         if (self.playing) {
-            self.t0 = animation-tick();
+            self.clock = 0;
+        }
+    }
+    Timer {
+        interval: 33ms;
+        running: Fx.rich && root.playing;
+        triggered => {
+            root.clock += 33ms;
+            if (root.clock >= root.period) {
+                root.clock -= root.period;
+            }
         }
     }
     property <float> phase: !Fx.rich ? still
         : !playing ? 0
-        : Math.mod((animation-tick() - t0) / 1ms, period / 1ms) / (period / 1ms);
+        : clock / period;
     // One design pixel: the frame is drawn at 280×170 and scaled to fit.
     property <length> u: Math.min(self.width / 280, self.height / 170);
 

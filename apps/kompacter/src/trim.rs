@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kompacter_core::{MediaInfo, MediaKind, Mode, Quality};
-use slint::{Image, ModelRc, Rgb8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel};
+use slint::{Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel};
 
 use crate::format::{bytes, clock_ms, parse_time, rate};
 use crate::trim_cache::FrameCache;
@@ -29,6 +29,8 @@ pub struct Trim {
     keep_ok: Cell<bool>,
     /// Seeks and playback share a single worker slot, even across trimmer sessions.
     preview_work: RefCell<Option<Arc<AtomicBool>>>,
+    /// The worker in that slot is decoding one exact frame (see `run_exact_seek`).
+    exact_seek: Cell<bool>,
     scrub_window: RefCell<Option<Arc<ScrubWindow>>>,
     scrub_painted: Cell<Option<u64>>,
     scrub_unavailable: Cell<bool>,
@@ -360,7 +362,11 @@ impl App {
                     Arc::ptr_eq(work, &window.stop) && !work.load(Ordering::Relaxed)
                 })
         });
-        if !reuse_decoder {
+        // While a handle or the playhead is dragged, the frame being decoded finishes and
+        // shows, then the newest position is decoded. Cancelling it on every step started
+        // FFmpeg dozens of times a second and froze the preview until the drag stopped.
+        let finish_seek = self.trim.dragging.get() && self.trim.exact_seek.get();
+        if !reuse_decoder && !finish_seek {
             self.cancel_preview_work();
         }
         if let Some(window) = nearby {
@@ -456,7 +462,9 @@ impl App {
         let Some(t) = self.trim.want.get() else {
             return;
         };
-        if self.trim.scrub_unavailable.get() {
+        // Mid-drag the position moves on before a window of frames would be used: one
+        // exact frame is quicker, and it always shows.
+        if self.trim.scrub_unavailable.get() || self.trim.dragging.get() {
             self.run_exact_seek(info, t);
         } else {
             self.run_scrub_window(info, t);
@@ -545,12 +553,14 @@ impl App {
         let weak = Rc::downgrade(self);
         let stop = Arc::new(AtomicBool::new(false));
         *self.trim.preview_work.borrow_mut() = Some(stop.clone());
+        self.trim.exact_seek.set(true);
         let mine = stop.clone();
         run(
             move || engine.frame_at_cancellable(&info, t, 360, &stop).ok(),
             move |frame| {
                 let Some(app) = weak.upgrade() else { return };
                 app.trim.preview_work.borrow_mut().take();
+                app.trim.exact_seek.set(false);
                 if !mine.load(Ordering::Relaxed) {
                     if let Some(frame) = frame {
                         app.trim.scrub_painted.take();
@@ -840,9 +850,31 @@ impl App {
         self.trim_set_handle(side, f64::from(time) + step);
     }
 
+    /// Update the rows in place: this runs on every drag step, and a new model would
+    /// rebuild every row (its layout and its text) each time.
     fn set_details(&self, rows: Vec<DetailRow>) {
-        self.ui()
-            .set_trim_details(ModelRc::new(VecModel::from(rows)));
+        let ui = self.ui();
+        let model = ui.get_trim_details();
+        if let Some(list) = model.as_any().downcast_ref::<VecModel<DetailRow>>() {
+            if list.row_count() == rows.len() {
+                for (i, row) in rows.into_iter().enumerate() {
+                    if list.row_data(i).as_ref() != Some(&row) {
+                        list.set_row_data(i, row);
+                    }
+                }
+            } else {
+                list.set_vec(rows);
+            }
+            return;
+        }
+        ui.set_trim_details(ModelRc::new(VecModel::from(rows)));
+    }
+
+    /// The trimmer was left for another screen: let go of its preview frame. (Its
+    /// filmstrip stays, so coming back doesn't redo it; the frame is decoded again.)
+    pub fn trim_release(&self) {
+        self.trim.scrub_painted.take();
+        self.ui().set_trim_frame(Image::default());
     }
 
     pub fn trim_compress(self: &Rc<Self>) {

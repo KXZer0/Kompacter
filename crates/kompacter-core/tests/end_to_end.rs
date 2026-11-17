@@ -1137,3 +1137,322 @@ fn text_that_zip_cant_fit_goes_7z() {
     );
     assert_eq!(res.path.extension().unwrap(), "7z");
 }
+
+/// ffprobe's view of one stream (`v:0`, `a:0`) of a file.
+fn stream(path: &Path, which: &str) -> serde_json::Value {
+    let out = Command::new(Ffmpeg::default().ffprobe)
+        .args(["-v", "error", "-select_streams", which, "-show_streams"])
+        .args(["-of", "json"])
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    json["streams"][0].clone()
+}
+
+/// Size and checksum of every video packet, as stored (no decoding).
+fn video_packets(path: &Path) -> Vec<String> {
+    let out = Command::new(Ffmpeg::default().ffmpeg)
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args(["-map", "0:v:0", "-c", "copy", "-f", "framemd5", "-"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .map(|l| l.split(',').skip(4).collect::<Vec<_>>().join(","))
+        .collect()
+}
+
+#[test]
+fn hdr_video_is_tone_mapped_and_tagged_sdr() {
+    use kompacter_core::Hdr;
+    if !have_ffmpeg() || !ffmpeg_has("libx265") {
+        return eprintln!("ffmpeg or libx265 missing, skipping");
+    }
+    let engine = Engine::default();
+    if !engine.can_tonemap() {
+        return eprintln!("this ffmpeg has no zscale/tonemap, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    // 10-bit H.265 with HDR colour tags, like a phone or console clip.
+    let clip = |name: &str, tags: &[&str]| {
+        let path = dir.path().join(name);
+        let mut a = vec![
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=960x540:rate=30:duration=2",
+            "-vf",
+            "noise=alls=30:allf=t,format=yuv420p10le",
+            "-c:v",
+            "libx265",
+            "-x265-params",
+            "log-level=error",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "12",
+        ];
+        a.extend(tags);
+        gen(&a, &path);
+        path
+    };
+    // HDR10: BT.2020 primaries and matrix, PQ curve.
+    let src = clip(
+        "hdr.mp4",
+        &[
+            "-color_primaries",
+            "bt2020",
+            "-color_trc",
+            "smpte2084",
+            "-colorspace",
+            "bt2020nc",
+        ],
+    );
+    let info = engine.probe(&src).unwrap();
+    assert_eq!(info.video.as_ref().unwrap().hdr, Some(Hdr::Pq));
+
+    // Small enough that it's scaled down too (the tone-map runs after the scale).
+    let target = 150 * KB;
+    assert!(info.size_bytes > target, "source is {}", info.size_bytes);
+    let mut opts = Options::new(target);
+    opts.gpu = false;
+    opts.out_dir = Some(dir.path().join("out"));
+    let res = run(&engine, &src, &opts);
+    assert!(res.fits, "{} of {target}", res.output_bytes);
+    let v = stream(&res.path, "v:0");
+    assert_eq!(v["codec_name"], "h264");
+    assert_eq!(v["pix_fmt"], "yuv420p");
+    assert!(v["height"].as_u64().unwrap() < 540, "not scaled: {v}");
+    for key in ["color_primaries", "color_transfer", "color_space"] {
+        assert_eq!(v[key], "bt709", "{key}: {v}");
+    }
+    assert_eq!(engine.probe(&res.path).unwrap().video.unwrap().hdr, None);
+
+    // GIFs from HDR clips go through the same tone-map.
+    let mut gif = Options::new(MB);
+    gif.mode = Mode::Gif;
+    gif.out_dir = opts.out_dir.clone();
+    let res = run(&engine, &src, &gif);
+    assert!(res.fits, "{} bytes", res.output_bytes);
+    assert_eq!(res.path.extension().unwrap(), "gif");
+
+    // Only the curve tagged: zscale refuses it, so it's encoded as before instead of failing.
+    let odd = clip("odd.mp4", &["-color_trc", "smpte2084"]);
+    assert_eq!(
+        engine.probe(&odd).unwrap().video.unwrap().hdr,
+        Some(Hdr::Pq)
+    );
+    let res = run(&engine, &odd, &Options::new(target));
+    assert!(res.fits, "{} of {target}", res.output_bytes);
+}
+
+#[test]
+fn low_bitrate_audio_is_folded_to_mono() {
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    // A different tone on each side, so it's real stereo.
+    let stereo = "aevalsrc=0.4*sin(2*PI*440*t)|0.4*sin(2*PI*660*t):s=48000:d=8";
+    let src = dir.path().join("talk.mp4");
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x360:rate=30:duration=8",
+            "-f",
+            "lavfi",
+            "-i",
+            stereo,
+            "-vf",
+            "noise=alls=30:allf=t",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "14",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-shortest",
+        ],
+        &src,
+    );
+    let engine = Engine::default();
+    let channels = |path: &Path| stream(path, "a:0")["channels"].as_u64().unwrap();
+    assert_eq!(channels(&src), 2);
+    // 400 KB over 8 s leaves the audio 48 kbps: mono.
+    let mut opts = Options::new(400 * KB);
+    opts.gpu = false;
+    opts.out_dir = Some(dir.path().join("out"));
+    let res = run(&engine, &src, &opts);
+    assert!(res.fits, "{} bytes", res.output_bytes);
+    assert_eq!(channels(&res.path), 1);
+
+    // Audio files too: mono when tiny, stereo kept when there's room.
+    let song = dir.path().join("song.wav");
+    gen(
+        &["-f", "lavfi", "-i", &stereo.replace("d=8", "d=20")],
+        &song,
+    );
+    let mut tiny = Options::new(120 * KB);
+    tiny.out_dir = opts.out_dir.clone();
+    let res = run(&engine, &song, &tiny);
+    assert!(res.fits, "{} bytes", res.output_bytes);
+    assert_eq!(channels(&res.path), 1);
+    let mut roomy = Options::new(400 * KB);
+    roomy.out_dir = Some(dir.path().join("roomy"));
+    let res = run(&engine, &song, &roomy);
+    assert!(res.fits, "{} bytes", res.output_bytes);
+    assert_eq!(res.path.extension().unwrap(), "mp3");
+    assert_eq!(channels(&res.path), 2);
+}
+
+#[test]
+fn only_the_audio_is_reencoded_when_the_video_already_fits() {
+    if !have_ffmpeg() {
+        return eprintln!("ffmpeg missing, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("screen.mkv");
+    // A small video under 1.5 Mbps of raw PCM audio, like a screen recording.
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x240:rate=30:duration=10",
+            "-f",
+            "lavfi",
+            "-i",
+            "aevalsrc=0.4*sin(2*PI*440*t)|0.4*sin(2*PI*660*t):s=48000:d=10",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-b:v",
+            "200k",
+            "-c:a",
+            "pcm_s16le",
+        ],
+        &src,
+    );
+    let engine = Engine::default();
+    let info = engine.probe(&src).unwrap();
+    let target = MB;
+    assert!(info.size_bytes > target, "source is {}", info.size_bytes);
+    // MKV has no per-stream bitrate: it's worked out from the file's minus the audio's.
+    let kbps = info.video.as_ref().unwrap().bitrate_kbps.unwrap();
+    assert!((150..400).contains(&kbps), "video {kbps} kbps");
+
+    let mut opts = Options::new(target);
+    opts.gpu = false;
+    opts.out_dir = Some(dir.path().join("out"));
+    let res = run(&engine, &src, &opts);
+    assert!(res.fits, "{} bytes", res.output_bytes);
+    assert_eq!(res.path.extension().unwrap(), "mp4");
+    // Every video packet is the source's own: copied, not re-encoded.
+    let (before, after) = (video_packets(&src), video_packets(&res.path));
+    assert_eq!(before.len(), 300);
+    assert_eq!(before, after);
+    let a = stream(&res.path, "a:0");
+    assert_eq!(a["codec_name"], "aac");
+    assert_eq!(a["channels"], 2);
+}
+
+#[test]
+fn hdr_previews_are_tone_mapped_like_the_result() {
+    if !have_ffmpeg() || !ffmpeg_has("libx265") {
+        return eprintln!("ffmpeg or libx265 missing, skipping");
+    }
+    let engine = Engine::default();
+    if !engine.can_tonemap() {
+        return eprintln!("this ffmpeg has no zscale/tonemap, skipping");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let clip = |name: &str, tags: &[&str]| {
+        let path = dir.path().join(name);
+        let mut a = vec![
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x360:rate=30:duration=2",
+            "-vf",
+            "format=yuv420p10le",
+            "-c:v",
+            "libx265",
+            "-x265-params",
+            // A keyframe every half second: the filmstrip reads keyframes only.
+            "log-level=error:keyint=15",
+            "-preset",
+            "ultrafast",
+        ];
+        a.extend(tags);
+        gen(&a, &path);
+        path
+    };
+    let hdr = clip(
+        "hdr.mp4",
+        &[
+            "-color_primaries",
+            "bt2020",
+            "-color_trc",
+            "smpte2084",
+            "-colorspace",
+            "bt2020nc",
+        ],
+    );
+    let info = engine.probe(&hdr).unwrap();
+    let preview = engine.frame_at(&info, 1.0, 90).unwrap();
+    assert_eq!(preview.rgb.len(), 1);
+
+    // The same frame decoded without tone-mapping, at the same size.
+    let raw = Command::new(Ffmpeg::default().ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-ss", "1", "-i"])
+        .arg(&hdr)
+        .args(["-frames:v", "1", "-vf"])
+        .arg(format!(
+            "scale={}:{}:flags=fast_bilinear",
+            preview.width, preview.height
+        ))
+        .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
+        .output()
+        .unwrap()
+        .stdout;
+    assert_eq!(raw.len(), preview.rgb[0].len());
+    let diff: u64 = raw
+        .iter()
+        .zip(&preview.rgb[0])
+        .map(|(a, b)| u64::from(a.abs_diff(*b)))
+        .sum();
+    let mean = diff as f64 / raw.len() as f64;
+    assert!(
+        mean > 4.0,
+        "preview looks untouched (mean difference {mean:.1})"
+    );
+
+    // The filmstrip too, and a file that tags only its curve (zscale refuses it) still
+    // gets a preview, made the plain way.
+    let strip = engine.thumbnails(&info, 4, 40).unwrap();
+    assert!(!strip.rgb.is_empty());
+    let partial = clip("partial.mp4", &["-color_trc", "smpte2084"]);
+    let info = engine.probe(&partial).unwrap();
+    assert!(info.video.as_ref().unwrap().hdr.is_some());
+    assert_eq!(engine.frame_at(&info, 1.0, 90).unwrap().rgb.len(), 1);
+}

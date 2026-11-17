@@ -1,12 +1,13 @@
 //! Short clips as GIFs that fit the limit. GIF size grows with width² × frame rate, so one
 //! test encode in the middle of the ladder predicts which step fits; then at most a few
-//! more encodes walk down until it does.
+//! more encodes walk down until it does. HDR clips are tone-mapped to SDR when ffmpeg can.
 
 use std::path::{Path, PathBuf};
 
 use super::{file_size, input_args, name_of, with_ext, Ctx};
 use crate::error::{Error, Result};
 use crate::ffmpeg::{args, scaled, Progress};
+use crate::hdr;
 use crate::plan::Trim;
 use crate::probe::MediaInfo;
 
@@ -64,12 +65,13 @@ pub fn guess(info: &MediaInfo, seconds: f64, target: u64) -> Option<(u32, f64)> 
     })
 }
 
+/// One GIF at `width` and `fps`. `tonemap`: HDR colours to SDR first (see `hdr`).
 fn encode(
     ctx: &Ctx,
     info: &MediaInfo,
     trim: Option<Trim>,
     (width, fps): (u32, f64),
-    secs: f64,
+    tonemap: bool,
     out: &Path,
     progress: Progress,
 ) -> Result<u64> {
@@ -77,8 +79,14 @@ fn encode(
     // still areas cheap. Trim before the split so palette generation doesn't consume
     // and buffer the rest of the source while waiting to see all its frames.
     let limit = trim.map_or_else(String::new, |t| format!("trim=end={:.6},", t.len()));
+    // After the frame rate and the scale: far fewer pixels to tone-map at GIF sizes.
+    let tone = if tonemap {
+        format!("{},", hdr::TONEMAP)
+    } else {
+        String::new()
+    };
     let filter = format!(
-        "[0:v:0]{limit}fps={fps},scale={width}:-2:flags=lanczos,split[a][b];\
+        "[0:v:0]{limit}fps={fps},scale={width}:-2:flags=lanczos,{tone}split[a][b];\
          [a]palettegen=max_colors=256:stats_mode=diff[p];\
          [b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[g]"
     );
@@ -88,6 +96,7 @@ fn encode(
     a.extend(args(["-map", "[g]", "-an"]));
     a.extend(args(["-loop", "0", "-f", "gif"]));
     a.push(out.as_os_str().to_owned());
+    let secs = trim.map_or(info.duration, |t| t.len());
     ctx.ff.run(&a, secs, progress, ctx.cancel)?;
     file_size(out)
 }
@@ -115,15 +124,19 @@ pub(crate) fn fit(
 
     // Test encode in the middle, then predict the best step that fits.
     let probe = PROBE.min(steps.len() - 1);
-    let size = encode(
-        ctx,
-        info,
-        trim,
-        steps[probe],
-        secs,
-        &probe_out,
-        &mut scaled(&mut *progress, 0.0, 0.4),
-    )?;
+    let mut tonemap = super::tonemap(ctx, info);
+    let mut probe_encode = |tone| {
+        let mut p = scaled(&mut *progress, 0.0, 0.4);
+        encode(ctx, info, trim, steps[probe], tone, &probe_out, &mut p)
+    };
+    let size = match probe_encode(tonemap) {
+        // The tone-map filters can still refuse an oddly tagged file: make it as before.
+        Err(Error::Ffmpeg(_)) if tonemap => {
+            tonemap = false;
+            probe_encode(false)?
+        }
+        size => size?,
+    };
     let per_cost = size as f64 / cost(steps[probe].0, steps[probe].1);
     let pick = steps
         .iter()
@@ -145,7 +158,7 @@ pub(crate) fn fit(
             info,
             trim,
             step,
-            secs,
+            tonemap,
             &candidate_out,
             &mut scaled(&mut *progress, from, (from + 0.15).min(1.0)),
         )?;

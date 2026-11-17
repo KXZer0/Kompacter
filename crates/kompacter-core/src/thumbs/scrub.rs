@@ -30,6 +30,7 @@ pub(crate) fn decode(
     start: f64,
     end: f64,
     height: u32,
+    tonemap: bool,
     stop: &AtomicBool,
     on_frame: &mut dyn FnMut(TimedFrame) -> bool,
 ) -> Result<()> {
@@ -37,7 +38,7 @@ pub(crate) fn decode(
         return Err(Error::Unsupported("invalid scrub window".into()));
     }
     let (width, height) = fit_size(size, height)?;
-    let scale = scale_filter(width, height);
+    let scale = scale_filter(width, height, tonemap);
     let start_us = (start * 1e6).round() as i64;
     let mut cmd = preview_command(ff, "4");
     cmd.args([
@@ -138,7 +139,7 @@ pub(crate) fn decode(
     })?;
     if index == 0 {
         // The window starts at or past the video's end: its last frame covers it.
-        let pixels = super::last_frame(ff, path, width, height, stop)?;
+        let pixels = super::last_frame(ff, path, width, height, tonemap, stop)?;
         on_frame(TimedFrame {
             time: start,
             width,

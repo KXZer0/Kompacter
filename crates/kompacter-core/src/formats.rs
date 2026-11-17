@@ -34,6 +34,15 @@ impl VideoCodec {
             VideoCodec::Av1 => "AV1",
         }
     }
+
+    /// What ffprobe calls a stream in this codec.
+    pub(crate) fn probe_name(self) -> &'static str {
+        match self {
+            VideoCodec::H264 => "h264",
+            VideoCodec::H265 => "hevc",
+            VideoCodec::Av1 => "av1",
+        }
+    }
 }
 
 /// Audio-only files.

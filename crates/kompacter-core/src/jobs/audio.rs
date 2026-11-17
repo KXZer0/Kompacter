@@ -1,12 +1,12 @@
 //! Audio: MP3 for compatibility; Opus when the budget is tiny (it sounds far better there),
-//! unless the user picked one of them.
+//! unless the user picked one of them. Under 64 kbps it's folded to mono.
 
 use std::path::{Path, PathBuf};
 
 use super::{file_size, input_args, name_of, with_ext, Ctx};
 use crate::error::{Error, Result};
 use crate::ffmpeg::{args, Progress};
-use crate::plan::{plan_audio_kbps, Trim};
+use crate::plan::{mono, plan_audio_kbps, Trim};
 use crate::probe::MediaInfo;
 use crate::AudioFormat;
 
@@ -39,6 +39,11 @@ pub(crate) fn fit(
         let mut a = input_args(&info.path, trim);
         a.extend(args(["-map", "0:a:0", "-vn", "-c:a", codec, "-b:a"]));
         a.push(format!("{kbps}k").into());
+        let channels = info.audio.as_ref().map_or(2, |s| s.channels);
+        if mono(kbps, channels) {
+            // Stereo this starved sounds worse than one clean channel.
+            a.extend(args(["-ac", "1"]));
+        }
         if codec == "libopus" {
             // Plain VBR can overshoot a lot on simple audio.
             a.extend(args(["-vbr", "constrained"]));

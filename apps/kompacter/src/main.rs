@@ -59,10 +59,11 @@ pub fn targets(custom_bytes: u64) -> Vec<Target> {
                 id if id.starts_with("email") => "Email",
                 _ => p.label,
             };
-            let brand = if p.id.starts_with("discord") {
-                "discord"
-            } else {
-                "mail"
+            // The logo shown next to it (see AppLogo in theme.slint).
+            let brand = match p.id {
+                id if id.starts_with("discord") => "discord",
+                id @ ("slack" | "whatsapp" | "telegram" | "signal") => id,
+                _ => "mail",
             };
             Target {
                 id: p.id.into(),
@@ -79,6 +80,15 @@ pub fn targets(custom_bytes: u64) -> Vec<Target> {
         bytes: custom_bytes,
     });
     list
+}
+
+/// True when `model` already holds exactly `rows`.
+pub fn same_rows<T: Clone + PartialEq + 'static>(model: &ModelRc<T>, rows: &[T]) -> bool {
+    model.row_count() == rows.len()
+        && rows
+            .iter()
+            .enumerate()
+            .all(|(i, r)| model.row_data(i).as_ref() == Some(r))
 }
 
 /// The file currently in the window.
@@ -117,8 +127,11 @@ pub struct App {
     /// The quick bar is showing (see quick.rs); `quick_real` is the flow's screen.
     pub quick: Cell<bool>,
     pub quick_real: Cell<View>,
-    /// Paste guard: the Discord window whose Ctrl+V was held back.
+    /// Paste guard: the chat window whose Ctrl+V was held back.
     pub guard: Cell<Option<isize>>,
+    /// Paste guard: which chat app that was (its preset id); its limit is the target
+    /// while the guard's bar is open.
+    pub guard_app: Cell<Option<&'static str>>,
     /// The shortcut currently registered (so it's only re-registered when it changes).
     pub shortcut_set: RefCell<String>,
     pub watch: watch::Watch,
@@ -136,7 +149,31 @@ impl App {
         self.ui.upgrade().expect("window")
     }
 
+    /// The limit to fit: the chat app's while the paste guard's bar is open, else the
+    /// user's target.
     pub fn target_bytes(&self) -> u64 {
+        match self.guard_app.get() {
+            Some(app) => self.chat_limit(app),
+            None => self.user_target_bytes(),
+        }
+    }
+
+    /// A chat app's limit. Discord follows the user's Discord tier if they picked one.
+    pub fn chat_limit(&self, app: &str) -> u64 {
+        let preset = self.settings.borrow().preset.clone();
+        let id = if app == "discord" && preset.starts_with("discord") {
+            preset.as_str()
+        } else {
+            app
+        };
+        PRESETS
+            .iter()
+            .find(|p| p.id == id)
+            .map_or_else(|| self.user_target_bytes(), |p| p.bytes)
+    }
+
+    /// The target picked in the window (or Settings).
+    pub fn user_target_bytes(&self) -> u64 {
         let s = self.settings.borrow();
         if s.preset == "custom" {
             s.custom_bytes
@@ -221,7 +258,10 @@ impl App {
             )
         };
         let options: Vec<SharedString> = options.iter().map(|o| (*o).into()).collect();
-        prefs.set_theme_options(ModelRc::new(VecModel::from(options)));
+        // Only when it changes (switching style): a new list rebuilds the whole control.
+        if !same_rows(&prefs.get_theme_options(), &options) {
+            prefs.set_theme_options(ModelRc::new(VecModel::from(options)));
+        }
         prefs.set_theme_index(index);
         prefs.set_output_index(match s.output.as_str() {
             "beside" => 1,
@@ -389,6 +429,7 @@ impl App {
         *self.current.borrow_mut() = None;
         self.batch.borrow_mut().clear();
         self.guard.set(None);
+        self.guard_app.set(None);
         self.ui().set_guard(false);
         self.set_view(View::Idle);
     }
@@ -562,6 +603,7 @@ fn main() -> Result<(), slint::PlatformError> {
         quick: Cell::new(false),
         quick_real: Cell::new(View::Idle),
         guard: Cell::new(None),
+        guard_app: Cell::new(None),
         shortcut_set: RefCell::new(String::from("unset")),
         watch: watch::Watch::new(|e| with_app(move |a| a.on_watch(e))),
         auto_queue: RefCell::new(Default::default()),
@@ -632,7 +674,13 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.window().on_winit_window_event(move |_, event| {
             let ui = a.ui();
             match event {
-                winit::event::WindowEvent::Focused(false) => a.away(),
+                winit::event::WindowEvent::Focused(focused) => {
+                    // The blob rests while another app is in use (no redraws then).
+                    ui.set_focused(*focused);
+                    if !*focused {
+                        a.away();
+                    }
+                }
                 winit::event::WindowEvent::HoveredFile(_) => {
                     if a.view() != View::Busy && !ui.get_dragging() {
                         if a.quick.get() || !matches!(a.view(), View::Idle | View::Reading) {
@@ -1035,6 +1083,9 @@ fn main() -> Result<(), slint::PlatformError> {
     #[cfg(debug_assertions)]
     if let Ok(p) = std::env::var("KOMPACTER_QUICK") {
         let guard = std::env::var("KOMPACTER_GUARD").is_ok().then_some(0);
+        if guard.is_some() {
+            app.guard_app.set(Some(demo_guard_app()));
+        }
         app.quick_open(vec![PathBuf::from(p)], guard);
     }
     // A new version's first start: "What's new", once. A fresh install gets the first-run
@@ -1089,6 +1140,19 @@ fn set_custom_dir(app: &Rc<App>, dir: PathBuf) {
     drop(s);
     app.save();
     app.sync_settings();
+}
+
+/// Dev builds only: the chat app a demo paste guard is for,
+/// `KOMPACTER_GUARD_APP=slack|whatsapp|telegram|signal` (default Discord).
+#[cfg(debug_assertions)]
+fn demo_guard_app() -> &'static str {
+    match std::env::var("KOMPACTER_GUARD_APP").as_deref() {
+        Ok("slack") => "slack",
+        Ok("whatsapp") => "whatsapp",
+        Ok("telegram") => "telegram",
+        Ok("signal") => "signal",
+        _ => "discord",
+    }
 }
 
 /// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord|welcome(-2|-3)|news|update`
@@ -1227,6 +1291,13 @@ fn demo(app: &Rc<App>, which: &str) {
             ui.set_guard(which == "guard");
             app.guard.set((which == "guard").then_some(1));
             ui.set_sum_after("≤ 20 MB".into());
+            if which == "guard" {
+                let id = demo_guard_app();
+                app.guard_app.set(Some(id));
+                ui.set_guard_brand(id.into());
+                let limit = bytes(app.chat_limit(id));
+                ui.set_sum_after(format!("≤ {limit}").into());
+            }
             let real = match which {
                 "quick-busy" => View::Busy,
                 "quick-done" => View::Done,
@@ -1242,6 +1313,8 @@ fn demo(app: &Rc<App>, which: &str) {
             }
             ui.set_busy_left("About 40 s left".into());
             app.set_view(real);
+            // The quick bar opens itself (normally the shortcut or the guard does).
+            app.show();
         }
         "trim-gif" => {
             ui.set_trim_a_text("0:12.000".into());

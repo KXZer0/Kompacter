@@ -25,6 +25,7 @@ pub struct Frames {
 }
 
 /// Up to `count` frames, `height` px tall (width follows the video's shape).
+#[allow(clippy::too_many_arguments)]
 pub fn thumbnails(
     ff: &Ffmpeg,
     path: &Path,
@@ -32,6 +33,7 @@ pub fn thumbnails(
     size: (u32, u32),
     count: u32,
     height: u32,
+    tonemap: bool,
     stop: &AtomicBool,
 ) -> Result<Frames> {
     if duration <= 0.0 || count == 0 {
@@ -40,7 +42,7 @@ pub fn thumbnails(
     let (width, height) = fit_size(size, height)?;
     let mut cmd = preview_command(ff, "2");
     cmd.args(["-skip_frame", "nokey", "-i"]).arg(path);
-    let scale = scale_filter(width, height);
+    let scale = scale_filter(width, height, tonemap);
     let fps = f64::from(count) / duration;
     video_output(&mut cmd, &format!("fps={fps}:start_time=0,{scale}"));
     cmd.args(["-frames:v", &count.to_string(), "pipe:1"]);
@@ -59,10 +61,11 @@ pub fn frame_at(
     size: (u32, u32),
     t: f64,
     height: u32,
+    tonemap: bool,
     stop: &AtomicBool,
 ) -> Result<Frames> {
     let (width, height) = fit_size(size, height)?;
-    let scale = scale_filter(width, height);
+    let scale = scale_filter(width, height, tonemap);
     let seek = format!("{:.6}", t.max(0.0));
     let mut frame = Vec::new();
 
@@ -82,7 +85,7 @@ pub fn frame_at(
     })?;
 
     if frame.is_empty() {
-        frame = last_frame(ff, path, width, height, stop)?;
+        frame = last_frame(ff, path, width, height, tonemap, stop)?;
     }
     Ok(Frames {
         width,
@@ -101,9 +104,10 @@ pub(crate) fn last_frame(
     path: &Path,
     width: u32,
     height: u32,
+    tonemap: bool,
     stop: &AtomicBool,
 ) -> Result<Vec<u8>> {
-    let scale = scale_filter(width, height);
+    let scale = scale_filter(width, height, tonemap);
     for back in ["-2", "-15", "-120"] {
         let mut frame = Vec::new();
         let mut cmd = preview_command(ff, "4");
@@ -133,6 +137,7 @@ pub fn play(
     end: f64,
     height: u32,
     fps: f64,
+    tonemap: bool,
     stop: &AtomicBool,
     elapsed: &mut dyn FnMut() -> Option<f64>,
     on_frame: &mut dyn FnMut(f64, u32, u32, Vec<u8>) -> bool,
@@ -167,7 +172,7 @@ pub fn play(
     ])
     .arg(path)
     .args(["-t", &format!("{duration:.6}")]);
-    let scale = scale_filter(width, height);
+    let scale = scale_filter(width, height, tonemap);
     video_output(
         &mut cmd,
         &format!("setpts=max(PTS\\,0),fps={fps}:start_time=0:round=up:eof_action=pass,{scale}"),
@@ -383,8 +388,15 @@ fn video_output(cmd: &mut Command, filter: &str) {
     ]);
 }
 
-fn scale_filter(width: u32, height: u32) -> String {
-    format!("scale={width}:{height}:flags=fast_bilinear")
+/// Scale to the preview size; `tonemap` then turns an HDR picture into plain SDR (on the
+/// small frame, so it's cheap), so previews look like the result will.
+fn scale_filter(width: u32, height: u32, tonemap: bool) -> String {
+    let scale = format!("scale={width}:{height}:flags=fast_bilinear");
+    if tonemap {
+        format!("{scale},{}", crate::hdr::TONEMAP)
+    } else {
+        scale
+    }
 }
 
 /// Even dimensions that keep the video's shape within the preview pixel budget.
@@ -494,8 +506,8 @@ mod tests {
         let Some(ff) = ffmpeg() else { return };
         let (_dir, path) = fixture(&ff);
         let stop = AtomicBool::new(false);
-        let before = frame_at(&ff, &path, (96, 64), 0.875, 64, &stop).unwrap();
-        let eof = frame_at(&ff, &path, (96, 64), 1.15, 64, &stop).unwrap();
+        let before = frame_at(&ff, &path, (96, 64), 0.875, 64, false, &stop).unwrap();
+        let eof = frame_at(&ff, &path, (96, 64), 1.15, 64, false, &stop).unwrap();
         assert_eq!(before.rgb, eof.rgb);
     }
 
@@ -521,7 +533,11 @@ mod tests {
             .unwrap();
         assert!(status.success());
         let stop = AtomicBool::new(false);
-        let seek = |time| frame_at(&ff, &path, (96, 64), time, 64, &stop).unwrap().rgb;
+        let seek = |time| {
+            frame_at(&ff, &path, (96, 64), time, 64, false, &stop)
+                .unwrap()
+                .rgb
+        };
         assert_eq!(seek(0.5), seek(0.0));
         assert_ne!(seek(0.75), seek(0.5));
     }
@@ -552,10 +568,20 @@ mod tests {
         let stop = AtomicBool::new(false);
         let decode = |start, end| {
             let mut frames = Vec::new();
-            scrub::decode(&ff, &path, (96, 64), start, end, 64, &stop, &mut |frame| {
-                frames.push(frame);
-                true
-            })
+            scrub::decode(
+                &ff,
+                &path,
+                (96, 64),
+                start,
+                end,
+                64,
+                false,
+                &stop,
+                &mut |frame| {
+                    frames.push(frame);
+                    true
+                },
+            )
             .unwrap();
             frames
         };
@@ -565,7 +591,7 @@ mod tests {
             [0.5, 0.75]
         );
         assert_ne!(nearby[0].pixels, nearby[1].pixels);
-        let seek = frame_at(&ff, &path, (96, 64), 0.5, 64, &stop).unwrap();
+        let seek = frame_at(&ff, &path, (96, 64), 0.5, 64, false, &stop).unwrap();
         assert_eq!(nearby[0].pixels, seek.rgb[0]);
         let tail = decode(1.05, 1.15);
         assert_eq!(tail.len(), 1);
@@ -599,16 +625,26 @@ mod tests {
 
         let stop = AtomicBool::new(false);
         let mut frames = Vec::new();
-        scrub::decode(&ff, &path, (96, 64), 0.05, 0.3, 64, &stop, &mut |frame| {
-            frames.push(frame);
-            true
-        })
+        scrub::decode(
+            &ff,
+            &path,
+            (96, 64),
+            0.05,
+            0.3,
+            64,
+            false,
+            &stop,
+            &mut |frame| {
+                frames.push(frame);
+                true
+            },
+        )
         .unwrap();
         assert_eq!(
             frames.iter().map(|f| f.time).collect::<Vec<_>>(),
             [0.05, 0.125, 0.375]
         );
-        let last = frame_at(&ff, &input, (96, 64), 0.25, 64, &stop).unwrap();
+        let last = frame_at(&ff, &input, (96, 64), 0.25, 64, false, &stop).unwrap();
         assert_eq!(frames[1].pixels, last.rgb[0]);
     }
 
@@ -618,11 +654,21 @@ mod tests {
         let (_dir, path) = fixture(&ff);
         let stop = AtomicBool::new(false);
         let mut delivered = 0;
-        let result = scrub::decode(&ff, &path, (96, 64), 0.0, 0.9, 64, &stop, &mut |_| {
-            delivered += 1;
-            stop.store(true, Ordering::Relaxed);
-            true
-        });
+        let result = scrub::decode(
+            &ff,
+            &path,
+            (96, 64),
+            0.0,
+            0.9,
+            64,
+            false,
+            &stop,
+            &mut |_| {
+                delivered += 1;
+                stop.store(true, Ordering::Relaxed);
+                true
+            },
+        );
         assert!(matches!(result, Err(Error::Cancelled)));
         assert_eq!(delivered, 1);
     }
@@ -665,6 +711,10 @@ mod tests {
             height: 64,
             fps: 8.0,
             codec: "ffv1".into(),
+            pix_fmt: "yuv420p".into(),
+            bitrate_kbps: None,
+            hdr: None,
+            rotated: false,
         };
         play(
             &ff,
@@ -674,6 +724,7 @@ mod tests {
             0.9,
             64,
             8.0,
+            false,
             &AtomicBool::new(false),
             &mut || {
                 polls += 1;

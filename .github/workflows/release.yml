@@ -32,13 +32,23 @@ jobs:
       - name: Build Kompacter
         run: cargo build --release -p kompacter
 
-      # ffmpeg ships inside the installer so users don't install anything.
-      # GPL build (includes x264); its license goes into the install folder.
+      # ffmpeg ships inside the installer so users don't install anything: the newest
+      # stable release (BtbN's "nX.Y" build with the latest fixes on that branch, never
+      # the nightly "master" build). GPL build (includes x264); its license goes into the
+      # install folder.
       - name: Download ffmpeg
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-          Invoke-WebRequest $url -OutFile ffmpeg.zip
+          $rel = Invoke-RestMethod -Headers @{ Authorization = "Bearer $env:GH_TOKEN" } `
+            "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest"
+          $stable = $rel.assets | Where-Object { $_.name -match '^ffmpeg-n(\d+)\.(\d+)-latest-win64-gpl-\d+\.\d+\.zip$' } |
+            Sort-Object { [version]($_.name -replace '^ffmpeg-n(\d+\.\d+)-.*$', '$1') } -Descending |
+            Select-Object -First 1
+          if (-not $stable) { throw "No stable win64 GPL ffmpeg build found in BtbN's latest release" }
+          Write-Host "ffmpeg: $($stable.name)"
+          Invoke-WebRequest $stable.browser_download_url -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-dl
           $bin = (Get-ChildItem ffmpeg-dl -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
           $dist = "apps/kompacter/installer/dist"

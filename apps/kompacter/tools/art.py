@@ -7,7 +7,7 @@ Run: python3 tools/art.py (needs numpy + Pillow).
 import numpy as np
 from PIL import Image
 
-W, H, S = 132, 116, 3  # design size, drawn at 3x for sharp high-DPI screens
+W, H, S = 132, 116, 2  # design size, drawn at 2x (sharp up to 200% scaling, half the memory of 3x)
 SS = 4                 # supersampling for smooth edges
 
 def hexc(h):
