@@ -8,6 +8,7 @@ pub mod error;
 pub mod ffmpeg;
 pub mod formats;
 pub mod gpu;
+mod hdr;
 mod jobs;
 pub mod plan;
 pub mod probe;
@@ -26,7 +27,7 @@ pub use formats::{ArchiveFormat, AudioFormat, ImageFormat, VideoCodec};
 pub use gpu::Encoder;
 pub use jobs::split::MAX_PARTS;
 pub use plan::{Quality, Trim, VideoPlan};
-pub use probe::{MediaInfo, MediaKind};
+pub use probe::{Hdr, MediaInfo, MediaKind};
 pub use thumbs::scrub::TimedFrame;
 pub use thumbs::Frames;
 pub use thumbs::PCM_RATE as PREVIEW_PCM_RATE;
@@ -144,6 +145,8 @@ pub struct Engine {
     ff: Ffmpeg,
     /// Working hardware encoders per video codec (H.264, H.265, AV1), found on first use.
     encoders: [OnceLock<Vec<Encoder>>; 3],
+    /// Whether ffmpeg has the HDR tone-mapping filters, found on first use.
+    tonemap: OnceLock<bool>,
 }
 
 impl Engine {
@@ -151,7 +154,14 @@ impl Engine {
         Engine {
             ff,
             encoders: Default::default(),
+            tonemap: OnceLock::new(),
         }
+    }
+
+    /// True when HDR videos get tone-mapped to SDR (ffmpeg has `zscale` and `tonemap`).
+    /// Checked once, then cached.
+    pub fn can_tonemap(&self) -> bool {
+        *self.tonemap.get_or_init(|| hdr::detect(&self.ff))
     }
 
     /// Hardware encoders that work on this PC, best first. Detected once, then cached.
@@ -182,7 +192,47 @@ impl Engine {
         stop: &AtomicBool,
     ) -> Result<thumbs::Frames> {
         let size = info.video.as_ref().map_or((0, 0), |v| (v.width, v.height));
-        thumbs::frame_at(&self.ff, &info.path, size, t, height, stop)
+        self.with_preview_tonemap(info, |tone| {
+            thumbs::frame_at(&self.ff, &info.path, size, t, height, tone, stop)
+        })
+    }
+
+    /// Previews of an HDR video are tone-mapped like the result will be (when this ffmpeg
+    /// can). If ffmpeg refuses a file that way (some tag only part of their colours), the
+    /// preview is made again as before, just paler.
+    fn with_preview_tonemap<T>(
+        &self,
+        info: &MediaInfo,
+        mut make: impl FnMut(bool) -> Result<T>,
+    ) -> Result<T> {
+        let hdr = info.video.as_ref().is_some_and(|v| v.hdr.is_some());
+        if !hdr || !self.can_tonemap() {
+            return make(false);
+        }
+        match make(true) {
+            Err(Error::Cancelled) => Err(Error::Cancelled),
+            Err(_) => make(false),
+            ok => ok,
+        }
+    }
+
+    /// Like `with_preview_tonemap` for previews that stream frames: it only tries again
+    /// when nothing was delivered yet, so no frame is shown twice.
+    fn stream_preview_tonemap(
+        &self,
+        info: &MediaInfo,
+        mut run: impl FnMut(bool, &mut bool) -> Result<()>,
+    ) -> Result<()> {
+        let hdr = info.video.as_ref().is_some_and(|v| v.hdr.is_some());
+        if !hdr || !self.can_tonemap() {
+            return run(false, &mut false);
+        }
+        let mut delivered = false;
+        match run(true, &mut delivered) {
+            Err(Error::Cancelled) => Err(Error::Cancelled),
+            Err(_) if !delivered => run(false, &mut false),
+            other => other,
+        }
     }
 
     /// Decode a small window of source frames for repeated nearby scrubs.
@@ -195,16 +245,22 @@ impl Engine {
         on_frame: &mut dyn FnMut(TimedFrame) -> bool,
     ) -> Result<()> {
         let size = info.video.as_ref().map_or((0, 0), |v| (v.width, v.height));
-        thumbs::scrub::decode(
-            &self.ff,
-            &info.path,
-            size,
-            range.start,
-            range.end,
-            height,
-            stop,
-            on_frame,
-        )
+        self.stream_preview_tonemap(info, |tone, delivered| {
+            thumbs::scrub::decode(
+                &self.ff,
+                &info.path,
+                size,
+                range.start,
+                range.end,
+                height,
+                tone,
+                stop,
+                &mut |frame| {
+                    *delivered = true;
+                    on_frame(frame)
+                },
+            )
+        })
     }
 
     /// Play `start..end` silently in real time as small RGB frames (see `thumbs::play`).
@@ -257,9 +313,24 @@ impl Engine {
             .video
             .as_ref()
             .ok_or_else(|| Error::Unsupported("not a video".into()))?;
-        thumbs::play(
-            &self.ff, &info.path, video, start, end, height, fps, stop, elapsed, on_frame,
-        )
+        self.stream_preview_tonemap(info, |tone, delivered| {
+            thumbs::play(
+                &self.ff,
+                &info.path,
+                video,
+                start,
+                end,
+                height,
+                fps,
+                tone,
+                stop,
+                &mut *elapsed,
+                &mut |t, w, h, rgb| {
+                    *delivered = true;
+                    on_frame(t, w, h, rgb)
+                },
+            )
+        })
     }
 
     /// Stream 48 kHz stereo signed 16-bit PCM for a preview selection.
@@ -310,15 +381,18 @@ impl Engine {
         stop: &AtomicBool,
     ) -> Result<thumbs::Frames> {
         let size = info.video.as_ref().map_or((0, 0), |v| (v.width, v.height));
-        thumbs::thumbnails(
-            &self.ff,
-            &info.path,
-            info.duration,
-            size,
-            count,
-            height,
-            stop,
-        )
+        self.with_preview_tonemap(info, |tone| {
+            thumbs::thumbnails(
+                &self.ff,
+                &info.path,
+                info.duration,
+                size,
+                count,
+                height,
+                tone,
+                stop,
+            )
+        })
     }
 
     /// Width and frame rate a GIF of `seconds` of this video would likely get (a guess;
@@ -401,11 +475,13 @@ impl Engine {
                 &[]
             }
         };
+        let tonemap = || self.can_tonemap();
         let ctx = jobs::Ctx {
             ff: &self.ff,
             cancel,
             speed: opts.speed,
             encoders: &encoders,
+            tonemap: &tonemap,
             codec: opts.video_codec,
             audio_format: opts.audio_format,
             image_format: opts.image_format,

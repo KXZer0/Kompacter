@@ -20,6 +20,11 @@ The installer is per-user (no admin), into `%LOCALAPPDATA%\Programs\Kompacter`, 
 entry and an uninstaller in Settings → Apps. ffmpeg's GPL license is installed next to the app as
 `FFMPEG-LICENSE.txt`.
 
+Before a release meant for everyone, go through [TESTING.md](TESTING.md) on a real PC.
+
+The installer bundles the newest *stable* ffmpeg from BtbN's builds (the highest `nX.Y`
+version; never the nightly), picked when the workflow runs.
+
 ## Before calling it "official"
 
 | Step | Why | How |

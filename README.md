@@ -38,7 +38,7 @@ Grab the Windows installer from [Releases](https://github.com/KXZer0/Kompacter/r
 
 ## Features (planned for v1)
 
-- Fits files under a target size: Discord 20 / 50 / 500 MB, email 25 MB, or custom.
+- Fits files under a target size: Discord 20 / 50 / 500 MB, Slack 1 GB, WhatsApp 2 GB, Telegram 2 GB, Signal 100 MB, email 25 MB, or custom.
 - **Trim + compress** with live size and quality estimates while you drag the handles.
 - Folders: shrinks every video, picture, document and model inside, then zips (several zips that each fit, if one can't).
 - Documents (PDF, Word, PowerPoint, Excel, EPUB, CBZ) and 3D models (glTF/GLB) stay documents and models: only the pictures and textures inside are shrunk.
@@ -46,7 +46,7 @@ Grab the Windows installer from [Releases](https://github.com/KXZer0/Kompacter/r
 - Animated GIFs stay GIFs. iPhone HEIC and AVIF photos become JPEGs that fit.
 - Logs, CSVs and other text: a 7z when a zip isn't small enough.
 - Short clips as **GIFs** that fit.
-- Lives in the tray. Open it by dropping a file, right-clicking **Kompact** in Explorer, a hotkey (Ctrl+Alt+K opens a small quick bar for what you copied), or the optional paste guard that notices a too-big paste into Discord.
+- Lives in the tray. Open it by dropping a file, right-clicking **Kompact** in Explorer, a hotkey (Ctrl+Alt+K opens a small quick bar for what you copied), or the optional paste guard that notices a too-big paste into Discord, Slack, WhatsApp, Telegram or Signal and shrinks it to that app's limit.
 - Optional: shrink new clips in your clip folders (Medal, Game Bar, ShadowPlay, OBS) on their own.
 - Updates itself: a new version downloads in the background, is checked against its published checksum, and installs on the next restart (with a short "What's new"). Can be switched off.
 - No admin rights needed. No account. No network access except update checks.

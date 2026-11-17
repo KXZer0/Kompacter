@@ -95,6 +95,27 @@ impl Encoder {
         ]);
         a
     }
+
+    /// Extra quality options for `codec`, on top of `rate_args`. NVENC: spatial AQ (more
+    /// bits for flat areas, where blocks show first) and a 20-frame lookahead (bits go
+    /// where they're needed, scene cuts get a keyframe), plus temporal AQ on H.264/H.265
+    /// (AV1 support for it is newer, so it's left out there). Not every card or driver
+    /// takes all of these, so the video job tries once without them before giving up on
+    /// the GPU (see `works` for why detection doesn't test them).
+    pub(crate) fn quality_args(self, codec: VideoCodec) -> &'static [&'static str] {
+        match (self, codec) {
+            (Encoder::Nvenc, VideoCodec::Av1) => &["-spatial-aq", "1", "-rc-lookahead", "20"],
+            (Encoder::Nvenc, _) => &[
+                "-spatial-aq",
+                "1",
+                "-temporal-aq",
+                "1",
+                "-rc-lookahead",
+                "20",
+            ],
+            _ => &[],
+        }
+    }
 }
 
 /// Candidates worth trying on this OS, best first.
@@ -119,6 +140,10 @@ pub fn detect(ff: &Ffmpeg, codec: VideoCodec) -> Vec<Encoder> {
         .collect()
 }
 
+/// The test encode uses only the plain settings, never `quality_args`: an older card that
+/// refuses AQ or lookahead can still encode fine without them. Testing them here would
+/// drop such a GPU to the much slower CPU path for every video; instead the real encode
+/// retries once without them, which costs one quick failed start.
 fn works(ff: &Ffmpeg, enc: Encoder, name: &str) -> bool {
     crate::ffmpeg::command(&ff.ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-nostdin"])
@@ -143,5 +168,24 @@ mod tests {
         let i = a.iter().position(|x| x == "-maxrate").unwrap();
         assert_eq!(a[i + 1], "3000k");
         assert!(a.contains(&"2000k".to_string()));
+    }
+
+    #[test]
+    fn aq_and_lookahead_only_on_nvenc() {
+        for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
+            let nv = Encoder::Nvenc.quality_args(codec);
+            assert!(
+                nv.windows(2).any(|w| w == ["-spatial-aq", "1"]),
+                "{codec:?}"
+            );
+            assert!(
+                nv.windows(2).any(|w| w == ["-rc-lookahead", "20"]),
+                "{codec:?}"
+            );
+            assert_eq!(nv.contains(&"-temporal-aq"), codec != VideoCodec::Av1);
+            for other in [Encoder::Qsv, Encoder::Amf, Encoder::VideoToolbox] {
+                assert!(other.quality_args(codec).is_empty());
+            }
+        }
     }
 }

@@ -1,5 +1,5 @@
 //! The quick bar and everything that opens it without the user opening Kompacter:
-//! the global shortcut, the paste guard (Ctrl+V in Discord with a file that's too big),
+//! the global shortcut, the paste guard (Ctrl+V in a chat app with a file that's too big),
 //! copied files, and new clips in clip folders (those shrink on their own).
 //!
 //! The quick bar is a small view on top of the normal flow: the flow still moves through
@@ -31,7 +31,7 @@ impl App {
     }
 
     /// Open the quick bar for these files (nothing copied: says so). `guard` is the
-    /// Discord window whose paste was held back.
+    /// chat window whose paste was held back (and `guard_app` says which app it is).
     pub fn quick_open(self: &Rc<Self>, files: Vec<PathBuf>, guard: Option<isize>) {
         if self.view() == View::Busy {
             // Already compressing: show that instead.
@@ -41,7 +41,11 @@ impl App {
         }
         let ui = self.ui();
         self.guard.set(guard);
+        if guard.is_none() {
+            self.guard_app.set(None);
+        }
         ui.set_guard(guard.is_some());
+        ui.set_guard_brand(self.guard_app.get().unwrap_or("").into());
         self.quick.set(true);
         if files.is_empty() {
             *self.current.borrow_mut() = None;
@@ -85,16 +89,17 @@ impl App {
         }
     }
 
-    /// Fold away, bring `window` (Discord) back to the front and press Ctrl+V there.
+    /// Fold away, bring `window` (the chat app) back to the front and press Ctrl+V there.
     pub fn paste_into(self: &Rc<Self>, window: isize, delay_ms: u64) {
         self.guard.set(None);
+        self.guard_app.set(None);
         self.ui().set_guard(false);
         let weak = Rc::downgrade(self);
         slint::Timer::single_shot(Duration::from_millis(delay_ms), move || {
             let Some(app) = weak.upgrade() else { return };
             sys::focus_window(window);
             app.close();
-            // Only if Discord really is in front: never paste into something else.
+            // Only if the chat app really is in front: never paste into something else.
             slint::Timer::single_shot(Duration::from_millis(140), move || {
                 if sys::is_foreground(window) {
                     sys::send_paste();
@@ -112,6 +117,7 @@ impl App {
                 true
             }
             _ => {
+                self.guard_app.set(None);
                 self.ui().set_guard(false);
                 false
             }
@@ -121,6 +127,7 @@ impl App {
     /// The bar is closing: back to the normal window for next time.
     pub fn quick_hidden(&self) {
         self.guard.set(None);
+        self.guard_app.set(None);
         self.ui().set_guard(false);
         if self.quick.replace(false) {
             let real = match self.quick_real.get() {
@@ -142,7 +149,10 @@ impl App {
                     self.quick_open(sys::clipboard_files(), None);
                 }
             }
-            InputEvent::Guard { files, window } => self.quick_open(files, Some(window)),
+            InputEvent::Guard { files, window, app } => {
+                self.guard_app.set(Some(app));
+                self.quick_open(files, Some(window));
+            }
             InputEvent::ShortcutTaken(taken) => {
                 self.ui().global::<Prefs>().set_shortcut_taken(taken);
             }
@@ -177,7 +187,7 @@ impl App {
         let name = file_name(&path);
         self.set_tray_tip(&format!("Kompacter · shrinking {name}"));
         let prefs = self.settings.borrow().clone();
-        let target = self.target_bytes();
+        let target = self.user_target_bytes();
         let mut opts = self.options(target);
         opts.out_dir = output::dir(&prefs, &path).ok();
         let engine = self.engine.clone();
@@ -270,14 +280,16 @@ impl App {
             .iter()
             .map(|f| short_folder(f).into())
             .collect();
-        prefs.set_clip_folders(slint::ModelRc::new(slint::VecModel::from(shown)));
+        if !crate::same_rows(&prefs.get_clip_folders(), &shown) {
+            prefs.set_clip_folders(slint::ModelRc::new(slint::VecModel::from(shown)));
+        }
 
-        let limit = self.target_bytes();
+        let limit = self.user_target_bytes();
         if *self.shortcut_set.borrow() != s.shortcut {
             *self.shortcut_set.borrow_mut() = s.shortcut.clone();
             sys::set_shortcut(shortcut_keys(&s.shortcut));
         }
-        sys::set_guard(s.paste_guard, limit);
+        sys::set_guard(s.paste_guard, self.chat_limit("discord"));
         self.watch.set(watch::Config {
             copies: s.watch_copies,
             folders_on: s.watch_folders,

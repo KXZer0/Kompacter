@@ -97,11 +97,50 @@ pub fn play_preview(
 pub enum InputEvent {
     /// The global shortcut was pressed.
     Shortcut,
-    /// Ctrl+V in Discord while the clipboard holds files over the limit. The paste was
-    /// held back; `window` is the Discord window, to paste into later.
-    Guard { files: Vec<PathBuf>, window: isize },
+    /// Ctrl+V in a chat app while the clipboard holds files over that app's limit. The
+    /// paste was held back; `window` is the chat window, to paste into later, and `app`
+    /// the chat app's preset id ("discord", "slack", ...).
+    Guard {
+        files: Vec<PathBuf>,
+        window: isize,
+        app: &'static str,
+    },
     /// Whether the shortcut is taken by another app (true) or registered / off (false).
     ShortcutTaken(bool),
+}
+
+/// The chat app a window belongs to, as its preset id: by its program, or for a browser,
+/// by the page title (web Discord, Slack, WhatsApp, Telegram). `None`: not a chat app.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn chat_app(exe: &str, title: &str) -> Option<&'static str> {
+    let exe = exe.to_ascii_lowercase();
+    let exe = exe.strip_suffix(".exe").unwrap_or(&exe);
+    match exe {
+        // Discord, DiscordPTB, DiscordCanary.
+        e if e.starts_with("discord") => return Some("discord"),
+        "slack" => return Some("slack"),
+        // The Store app and the newer desktop app.
+        "whatsapp" | "whatsapp.root" => return Some("whatsapp"),
+        "telegram" => return Some("telegram"),
+        "signal" => return Some("signal"),
+        _ => {}
+    }
+    const BROWSERS: [&str; 8] = [
+        "chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "arc", "zen",
+    ];
+    if !BROWSERS.contains(&exe) {
+        return None;
+    }
+    // Tab titles like "#general | Server - Discord - Google Chrome".
+    [
+        ("Discord", "discord"),
+        ("Slack", "slack"),
+        ("WhatsApp", "whatsapp"),
+        ("Telegram", "telegram"),
+    ]
+    .into_iter()
+    .find(|(name, _)| title.contains(name))
+    .map(|(_, id)| id)
 }
 
 /// Where a second launch leaves the files it was started with ("Kompact" in Explorer,
@@ -668,7 +707,7 @@ mod imp {
                         | "Shell_TrayWnd"
                         | "Shell_SecondaryTrayWnd"
                 )
-            }) || window_executable_matches(h, |name| name.eq_ignore_ascii_case("explorer.exe"))
+            }) || window_executable(h).is_some_and(|name| name.eq_ignore_ascii_case("explorer.exe"))
         }
     }
 
@@ -1096,29 +1135,29 @@ mod imp {
         post(MSG_SHORTCUT, mods as usize, vk as isize);
     }
 
-    /// Turn the paste guard on or off; `limit` is the current target in bytes.
-    pub fn set_guard(on: bool, limit: u64) {
-        GUARD_LIMIT.store(limit, Ordering::SeqCst);
+    /// Turn the paste guard on or off; `discord_limit` is the Discord limit in bytes (the
+    /// user's Discord tier). Other chat apps use their own preset's limit.
+    pub fn set_guard(on: bool, discord_limit: u64) {
+        GUARD_LIMIT.store(discord_limit, Ordering::SeqCst);
         post(MSG_GUARD, on as usize, 0);
     }
 
-    /// The window in front is Discord (the app, or Discord in a browser tab).
-    fn is_discord(h: windows_sys::Win32::Foundation::HWND) -> bool {
+    /// The chat app in front, and its limit in bytes.
+    fn chat_in_front(h: windows_sys::Win32::Foundation::HWND) -> Option<(&'static str, u64)> {
         use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowTextW;
-        unsafe {
-            let mut title = [0u16; 256];
-            let n = GetWindowTextW(h, title.as_mut_ptr(), title.len() as i32);
-            if String::from_utf16_lossy(&title[..n.max(0) as usize]).contains("Discord") {
-                return true;
-            }
-        }
-        window_executable_matches(h, |name| name.to_ascii_lowercase().starts_with("discord"))
+        let mut title = [0u16; 256];
+        let n = unsafe { GetWindowTextW(h, title.as_mut_ptr(), title.len() as i32) };
+        let title = String::from_utf16_lossy(&title[..n.max(0) as usize]);
+        let app = super::chat_app(&window_executable(h).unwrap_or_default(), &title)?;
+        let limit = match app {
+            "discord" => GUARD_LIMIT.load(Ordering::SeqCst),
+            id => kompacter_core::size::preset(id)?.bytes,
+        };
+        Some((app, limit))
     }
 
-    fn window_executable_matches(
-        h: windows_sys::Win32::Foundation::HWND,
-        matches: impl FnOnce(&str) -> bool,
-    ) -> bool {
+    /// The file name of the program that owns window `h` ("Discord.exe").
+    fn window_executable(h: windows_sys::Win32::Foundation::HWND) -> Option<String> {
         use windows_sys::Win32::System::Threading::{
             OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
             PROCESS_QUERY_LIMITED_INFORMATION,
@@ -1129,23 +1168,24 @@ mod imp {
             GetWindowThreadProcessId(h, &mut pid);
             let p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if p.is_null() {
-                return false;
+                return None;
             }
             let mut buf = [0u16; 512];
             let mut len = buf.len() as u32;
             let ok = QueryFullProcessImageNameW(p, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len);
             CloseHandle(p);
-            ok != 0
-                && Path::new(&String::from_utf16_lossy(&buf[..len as usize]))
-                    .file_name()
-                    .is_some_and(|f| matches(&f.to_string_lossy()))
+            if ok == 0 {
+                return None;
+            }
+            Path::new(&String::from_utf16_lossy(&buf[..len as usize]))
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
         }
     }
 
-    /// The files on the clipboard if any of them is over the limit (else empty).
-    fn too_big_on_clipboard() -> Vec<PathBuf> {
+    /// The files on the clipboard if any of them is over `limit` (else empty).
+    fn too_big_on_clipboard(limit: u64) -> Vec<PathBuf> {
         let seq = clipboard_seq();
-        let limit = GUARD_LIMIT.load(Ordering::SeqCst);
         let mut seen = GUARD_SEEN.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((s, l, files)) = seen.as_ref() {
             if *s == seq && *l == limit {
@@ -1181,14 +1221,20 @@ mod imp {
                     && !down(VK_MENU)
                 {
                     let front = GetForegroundWindow();
-                    if !front.is_null() && is_discord(front) {
-                        let files = too_big_on_clipboard();
+                    let chat = if front.is_null() {
+                        None
+                    } else {
+                        chat_in_front(front)
+                    };
+                    if let Some((app, limit)) = chat {
+                        let files = too_big_on_clipboard(limit);
                         if !files.is_empty() {
                             emit(InputEvent::Guard {
                                 files,
                                 window: front as isize,
+                                app,
                             });
-                            return 1; // Discord never sees this paste.
+                            return 1; // The chat app never sees this paste.
                         }
                     }
                 }
@@ -1332,7 +1378,7 @@ mod imp {
     pub fn listen_for_show(_on_show: impl Fn() + Send + 'static) {}
     pub fn start_input(_on_event: impl Fn(super::InputEvent) + Send + Sync + 'static) {}
     pub fn set_shortcut(_key: Option<(u32, u32)>) {}
-    pub fn set_guard(_on: bool, _limit: u64) {}
+    pub fn set_guard(_on: bool, _discord_limit: u64) {}
     pub fn focus_window(_window: isize) {}
     pub fn is_foreground(_window: isize) -> bool {
         true
@@ -1348,6 +1394,28 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn finds_chat_apps_by_program_or_tab() {
+        use super::chat_app;
+        assert_eq!(chat_app("Discord.exe", ""), Some("discord"));
+        assert_eq!(chat_app("DiscordPTB.exe", ""), Some("discord"));
+        assert_eq!(chat_app("slack.exe", "general - Team"), Some("slack"));
+        assert_eq!(chat_app("WhatsApp.Root.exe", ""), Some("whatsapp"));
+        assert_eq!(chat_app("Telegram.exe", ""), Some("telegram"));
+        assert_eq!(chat_app("Signal.exe", ""), Some("signal"));
+        assert_eq!(
+            chat_app("chrome.exe", "#general | Server - Discord - Google Chrome"),
+            Some("discord")
+        );
+        assert_eq!(
+            chat_app("msedge.exe", "(3) WhatsApp - Microsoft Edge"),
+            Some("whatsapp")
+        );
+        // A document that mentions Discord is not Discord.
+        assert_eq!(chat_app("WINWORD.EXE", "Discord notes.docx - Word"), None);
+        assert_eq!(chat_app("explorer.exe", ""), None);
+    }
+
     use super::*;
 
     #[test]

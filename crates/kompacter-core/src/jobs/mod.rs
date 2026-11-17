@@ -28,6 +28,8 @@ pub(crate) struct Ctx<'a> {
     pub speed: Speed,
     /// Look up hardware encoders only when a video actually needs encoding.
     pub encoders: &'a dyn Fn() -> &'a [Encoder],
+    /// Whether this ffmpeg can tone-map HDR, asked only when an HDR video comes along.
+    pub tonemap: &'a dyn Fn() -> bool,
     pub codec: VideoCodec,
     pub audio_format: AudioFormat,
     pub image_format: ImageFormat,
@@ -89,6 +91,11 @@ pub(crate) fn fit_media(
 /// An animated GIF (ffprobe reports it as a video).
 pub(crate) fn is_gif(info: &MediaInfo) -> bool {
     info.video.as_ref().is_some_and(|v| v.codec == "gif")
+}
+
+/// An HDR video that this ffmpeg can tone-map to SDR (see `hdr`).
+pub(crate) fn tonemap(ctx: &Ctx, info: &MediaInfo) -> bool {
+    info.video.as_ref().is_some_and(|v| v.hdr.is_some()) && (ctx.tonemap)()
 }
 
 /// `base` + "." + `ext`, without eating dots already in the name.

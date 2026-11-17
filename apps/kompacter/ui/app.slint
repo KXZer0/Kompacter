@@ -125,9 +125,18 @@ export component AppWindow inherits Window {
     in property <float> progress;
     /// Smoothed squeeze and press intro, driven by Rust each frame while compressing.
     in property <float> squeeze;
-    // Smoothed here, at the display's refresh rate, so the press and the % glide.
-    property <float> shown: root.squeeze;
-    animate shown { duration: 450ms; easing: linear; }
+    // Smoothed here at 30 Hz, so the press and the % glide without redrawing at the
+    // display's refresh rate (144 Hz and more) for the whole compress. A drop (the reset
+    // when the press is out of sight) is immediate.
+    property <float> shown;
+    Timer {
+        interval: 33ms;
+        running: root.shown != root.squeeze;
+        triggered => {
+            let d = root.squeeze - root.shown;
+            root.shown = d < 0.002 ? root.squeeze : root.shown + Math.max(d * 0.2, Math.min(d, 0.004));
+        }
+    }
     property <float> intro: root.view == View.busy ? 1 : 0;
     animate intro { duration: 550ms; easing: ease-out; }
     in property <float> look-x;
@@ -218,6 +227,8 @@ export component AppWindow inherits Window {
     in property <int> quick-state;
     /// Paste guard: the bar offers Compress & paste / Trim / Paste anyway.
     in property <bool> guard;
+    /// Paste guard: the chat app's logo id ("discord", "slack", ...), shown with its limit.
+    in property <string> guard-brand;
 
     // Formats.
 
@@ -778,7 +789,7 @@ export component AppWindow inherits Window {
                 // One block per step, all in the same place. The current one is shown;
                 // the others wait off to the side, so a step slides in from the way it
                 // comes and the old one drifts out the other way.
-                for title[i] in ["When I copy a big file", "When I paste into Discord", "When I save a game clip"]: Rectangle {
+                for title[i] in ["When I copy a big file", "When I paste into a chat", "When I save a game clip"]: Rectangle {
                     property <bool> current: i == root.welcome-step;
                     property <bool> on: i == 0 ? root.welcome-copies : i == 1 ? root.welcome-guard : root.welcome-clips;
                     x: Fx.rich ? (i - root.welcome-step) * 48px : 0;
@@ -816,7 +827,7 @@ export component AppWindow inherits Window {
                         y: 30px;
                         width: parent.width - 48px;
                         text: i == 0 ? "A small bar pops up and offers to shrink it"
-                            : i == 1 ? "Holds a too-big paste and asks first"
+                            : i == 1 ? "Discord, Slack, WhatsApp and more: holds a too-big paste and asks first"
                             : "Shrinks new clips on its own";
                     }
                     Switch {
@@ -1322,6 +1333,15 @@ export component AppWindow inherits Window {
                         font-weight: 600;
                         color: Theme.ok;
                         vertical-alignment: center;
+                        horizontal-stretch: root.guard && root.guard-brand != "" ? 0 : 1;
+                    }
+                    // Paste guard: whose limit this is.
+                    if root.guard && root.guard-brand != "": AppLogo {
+                        brand: root.guard-brand;
+                        size: 14px;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    if root.guard && root.guard-brand != "": Rectangle {
                         horizontal-stretch: 1;
                     }
                 }

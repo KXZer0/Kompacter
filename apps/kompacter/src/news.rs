@@ -5,9 +5,9 @@
 pub const NOTES: &[(&str, &[&str])] = &[(
     "0.0.7",
     &[
+        "Slack, WhatsApp, Telegram and Signal targets, each with its own limit",
+        "The paste guard works in those apps too",
         "Zip and 7z files: the videos and photos inside shrink too",
-        "Animated GIFs stay GIFs",
-        "iPhone photos (HEIC), ebooks and 3D models",
         "Updates now install themselves",
     ],
 )];

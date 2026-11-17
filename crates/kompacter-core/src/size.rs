@@ -34,6 +34,28 @@ pub const PRESETS: &[Preset] = &[
         label: "Discord Nitro",
         bytes: 500 * MB,
     },
+    // Slack: 1 GB per file. WhatsApp: 2 GB (its document limit). Telegram: 2 GB without
+    // Premium. Signal: 100 MB per attachment. Email: 25 MB (Gmail and most providers).
+    Preset {
+        id: "slack",
+        label: "Slack",
+        bytes: GB,
+    },
+    Preset {
+        id: "whatsapp",
+        label: "WhatsApp",
+        bytes: 2 * GB,
+    },
+    Preset {
+        id: "telegram",
+        label: "Telegram",
+        bytes: 2 * GB,
+    },
+    Preset {
+        id: "signal",
+        label: "Signal",
+        bytes: 100 * MB,
+    },
     Preset {
         id: "email",
         label: "Email attachment",

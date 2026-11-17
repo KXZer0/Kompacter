@@ -7,9 +7,9 @@
 | 0. UI mockups | Clickable mockup of popup, trimmer, settings; iterate on look | **Done**: replaced by the real app (README demos are recorded from it) |
 | 1. Engine | Rust library + CLI: probe, fit video/audio/image/folder, trim, estimates, GPU | **Working** |
 | 2. App shell | Native tray app (Slint, no web view): popup, drag & drop, result on clipboard, settings | **Rewritten natively**, testing |
-| 3. Triggers | Right-click menu, hotkey, paste guard, heads-up on copy, per-app profiles | Hotkey, paste guard (Discord), heads-up on copy **built**, testing |
+| 3. Triggers | Right-click menu, hotkey, paste guard, heads-up on copy, per-app profiles | Hotkey, paste guard (Discord, Slack, WhatsApp, Telegram, Signal, each with its own limit), heads-up on copy **built**, testing |
 | 4. Trimmer + extras | Live trimmer, GPU encoding, GIFs, pre-compress on copy, clip-folder watcher, queue | Trimmer, GPU, GIFs, clip-folder watcher **built** |
-| 5. Release | Signed per-user installer, auto-update, macOS/Linux builds | |
+| 5. Release | Signed per-user installer, auto-update, macOS/Linux builds | Per-user installer and auto-update **built**; code signing to do; macOS/Linux later |
 
 ## Living in the tray
 
@@ -35,16 +35,20 @@ in the "^" overflow and gives apps no official way to pin themselves, so:
 
 ## Next up (suggested order)
 
-1. Try on real Windows 10 and 11: the tray switch, default start-up, the first-run
-   screen, and right-click → Kompact (one file, several files, a folder).
-2. Paste guard for more apps than Discord; a Windows notification when a clip was shrunk
-   in the background; "Send to → Kompacter".
+1. Try on real Windows 10 and 11: the checklist in [TESTING.md](TESTING.md) (tray switch,
+   start-up, first-run screen, right-click → Kompact, the paste guard in each chat app,
+   HEIC/HDR, GPU encoding, a real update, uninstall).
+2. A Windows notification when a clip was shrunk in the background; "Send to →
+   Kompacter". (Paste guard for more apps: **built**.)
 3. Engine quality that changes nothing for the person receiving the file (same codecs and
-   containers): NVENC adaptive quantisation + lookahead once GPU paths are confirmed on
-   hardware; tone-map HDR sources to SDR so colours don't wash out; fold audio to mono
-   under ~64 kbps; skip the video re-encode when only the audio pushes a file over.
-4. Pin the bundled ffmpeg to a fixed release, so two installers built a week apart behave
-   the same.
+   containers). **Built**: HDR sources tone-mapped to SDR (when ffmpeg has zscale), audio
+   folded to mono under 64 kbps, the video copied as-is when only the audio pushes a file
+   over, and NVENC adaptive quantisation + lookahead (retried without them on cards that
+   refuse); the trimmer's HDR previews are tone-mapped too. Left: check the NVENC options
+   on real old and new NVIDIA cards.
+4. ~~Pin the bundled ffmpeg~~ **Done differently**: installers bundle BtbN's newest
+   *stable* ffmpeg (the latest `nX.Y` build, never the nightly), so they stay current
+   without shipping untested nightlies.
 
 ## Design direction
 

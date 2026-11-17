@@ -479,8 +479,8 @@ export component SettingsView inherits Rectangle {
                     }
                 }
                 paste-cell := Cell {
-                    label: "When I paste into Discord";
-                    small: "Holds a too-big paste and asks first";
+                    label: "When I paste into a chat";
+                    small: "Asks first in Discord, Slack and more";
                     paste-switch := Switch {
                         checked: Prefs.paste-guard;
                         y: (parent.height - self.height) / 2;
@@ -558,7 +558,7 @@ export component SettingsView inherits Rectangle {
                 }
                 Cell {
                     label: "Install updates";
-                    small: "Checks GitHub once a day, installs on restart";
+                    small: "Checked daily, installed on restart";
                     Switch {
                         checked: Prefs.auto-update;
                         y: (parent.height - self.height) / 2;
@@ -614,7 +614,7 @@ export component SettingsView inherits Rectangle {
             }
             Text {
                 text: root.preview-row == 0 ? "Copy a file that's too big to send, and a small bar offers to shrink it."
-                    : root.preview-row == 1 ? "Paste a too-big file into Discord, and Kompacter holds it back and asks to shrink it first."
+                    : root.preview-row == 1 ? "Paste a too-big file into Discord, Slack, WhatsApp, Telegram or Signal, and Kompacter holds it back and asks to shrink it to that app's limit."
                     : "New game clips are shrunk on their own and copied, ready to paste.";
                 font-size: 12px;
                 color: Theme.label;

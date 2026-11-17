@@ -72,30 +72,62 @@ export component Icon inherits Path {
 /// App logo for a preset: a filled brand glyph, or a neutral line icon.
 export component AppLogo inherits Rectangle {
     in property <string> brand;
+    /// On an accent background (a highlighted menu row): plain white marks.
     in property <bool> on-accent;
-    width: 15px;
-    height: 15px;
-    if brand == "mail" || brand == "custom": Icon {
-        size: 15px;
-        d: brand == "mail" ? Icons.mail : Icons.custom;
+    in property <length> size: 15px;
+    width: size;
+    height: size;
+    // The real marks in each brand's colours (Simple Icons paths, 24×24). Slack is drawn
+    // in its four colours, Telegram as its blue circle with a white plane.
+    property <bool> plain: brand == "mail" || brand == "custom";
+    property <bool> multi: (brand == "slack" || brand == "telegram") && !on-accent;
+    if root.plain: Icon {
+        size: root.size;
+        d: root.brand == "mail" ? Icons.mail : Icons.custom;
         color: root.on-accent ? white : Theme.label-2;
     }
-    if brand != "mail" && brand != "custom": Path {
-        width: 15px;
-        height: 15px;
+    if !root.plain && !root.multi: Path {
+        width: root.size;
+        height: root.size;
         viewbox-width: 24;
         viewbox-height: 24;
-        commands: brand == "discord" ? Icons.brand-discord
-            : brand == "whatsapp" ? Icons.brand-whatsapp
-            : brand == "telegram" ? Icons.brand-telegram
-            : brand == "slack" ? Icons.brand-slack
+        commands: root.brand == "discord" ? Icons.brand-discord
+            : root.brand == "whatsapp" ? Icons.brand-whatsapp
+            : root.brand == "telegram" ? Icons.brand-telegram
+            : root.brand == "slack" ? Icons.brand-slack
+            : root.brand == "signal" ? Icons.brand-signal
             : Icons.brand-gmail;
         fill: root.on-accent ? white
-            : brand == "discord" ? #5865f2
-            : brand == "whatsapp" ? #1fa855
-            : brand == "telegram" ? #229ed9
-            : brand == "slack" ? (Theme.is-dark ? #e3b6e6 : #4a154b)
+            : root.brand == "discord" ? #5865f2
+            : root.brand == "whatsapp" ? #25d366
+            : root.brand == "signal" ? #3b45fd
             : #ea4335;
+    }
+    if root.multi && root.brand == "telegram": Path {
+        width: root.size;
+        height: root.size;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: Icons.brand-telegram-circle;
+        fill: #26a5e4;
+    }
+    if root.multi && root.brand == "telegram": Path {
+        width: root.size;
+        height: root.size;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: Icons.brand-telegram-plane;
+        fill: white;
+    }
+    for part[k] in root.multi && root.brand == "slack"
+        ? [Icons.brand-slack-red, Icons.brand-slack-blue, Icons.brand-slack-green, Icons.brand-slack-yellow]
+        : []: Path {
+        width: root.size;
+        height: root.size;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: part;
+        fill: k == 0 ? #e01e5a : k == 1 ? #36c5f0 : k == 2 ? #2eb67d : #ecb22e;
     }
 }
 

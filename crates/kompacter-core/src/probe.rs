@@ -25,6 +25,24 @@ pub struct VideoStream {
     pub height: u32,
     pub fps: f64,
     pub codec: String,
+    /// ffprobe's pixel format, e.g. `yuv420p` (8-bit 4:2:0) or `yuv420p10le` (10-bit).
+    pub pix_fmt: String,
+    /// The video's own bitrate, when it's known or can be worked out.
+    pub bitrate_kbps: Option<u32>,
+    /// HDR (PQ or HLG): looks washed out as ordinary video unless tone-mapped.
+    pub hdr: Option<Hdr>,
+    /// A rotation flag turns the picture (by any quarter turn).
+    pub rotated: bool,
+}
+
+/// HDR transfer curves, from the stream's `color_transfer`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Hdr {
+    /// PQ (SMPTE ST 2084): HDR10, HDR10+, most Dolby Vision.
+    Pq,
+    /// HLG (ARIB STD-B67): phones and TV broadcasts.
+    Hlg,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,7 +121,8 @@ pub(crate) fn classify(path: &Path, size_bytes: u64, json: &Value) -> Option<Med
         );
         // Phones store portrait video sideways plus a rotation flag. ffmpeg turns the
         // picture upright before our filters run, so plan with the upright size.
-        let (width, height) = if sideways(s) { (h, w) } else { (w, h) };
+        let turns = quarter_turns(s);
+        let (width, height) = if turns % 2 == 1 { (h, w) } else { (w, h) };
         VideoStream {
             width,
             height,
@@ -111,14 +130,19 @@ pub(crate) fn classify(path: &Path, size_bytes: u64, json: &Value) -> Option<Med
                 .or_else(|| parse_rate(s["r_frame_rate"].as_str()))
                 .unwrap_or(30.0),
             codec: s["codec_name"].as_str().unwrap_or("").into(),
+            pix_fmt: s["pix_fmt"].as_str().unwrap_or("").into(),
+            bitrate_kbps: video_kbps(s, streams, format),
+            hdr: match s["color_transfer"].as_str() {
+                Some("smpte2084") => Some(Hdr::Pq),
+                Some("arib-std-b67") => Some(Hdr::Hlg),
+                _ => None,
+            },
+            rotated: turns != 0,
         }
     });
     let audio = audio_json.map(|s| AudioStream {
         codec: s["codec_name"].as_str().unwrap_or("").into(),
-        bitrate_kbps: s["bit_rate"]
-            .as_str()
-            .and_then(|b| b.parse::<u64>().ok())
-            .map(|b| (b / 1000) as u32),
+        bitrate_kbps: bits_per_second(s).map(|b| (b / 1000) as u32),
         channels: s["channels"].as_u64().unwrap_or(2) as u32,
     });
 
@@ -167,9 +191,9 @@ pub(crate) fn is_heif_like(path: &Path) -> bool {
         .is_some_and(|e| matches!(e.as_str(), "heic" | "heif" | "hif" | "avif"))
 }
 
-/// True when the stream's rotation flag is a quarter turn (90° or 270°). Newer files carry
-/// it as display-matrix side data, older ones as a `rotate` tag.
-fn sideways(stream: &Value) -> bool {
+/// How many quarter turns (0–3) the stream's rotation flag asks for; odd means sideways.
+/// Newer files carry it as display-matrix side data, older ones as a `rotate` tag.
+fn quarter_turns(stream: &Value) -> i64 {
     let from_matrix = stream["side_data_list"]
         .as_array()
         .and_then(|l| l.iter().find_map(|d| d["rotation"].as_f64()));
@@ -177,7 +201,30 @@ fn sideways(stream: &Value) -> bool {
         .as_str()
         .and_then(|r| r.parse::<f64>().ok());
     let turns = (from_matrix.or(from_tag).unwrap_or(0.0) / 90.0).round() as i64;
-    turns.rem_euclid(2) == 1
+    turns.rem_euclid(4)
+}
+
+/// `bit_rate` of a stream or of the whole file, in bits per second.
+fn bits_per_second(v: &Value) -> Option<u64> {
+    v["bit_rate"].as_str()?.parse().ok()
+}
+
+/// The video's own bitrate: ffprobe's number when the container has one (MP4, MOV),
+/// otherwise the whole file's minus the audio (MKV, WebM). Rounded up, so a guess errs
+/// on the big side. `None` when an audio track's bitrate is unknown too.
+fn video_kbps(video: &Value, streams: &[Value], format: Option<&Value>) -> Option<u32> {
+    let bits = match bits_per_second(video) {
+        Some(b) => b,
+        None => {
+            let audio: Option<u64> = streams
+                .iter()
+                .filter(|s| s["codec_type"] == "audio")
+                .map(bits_per_second)
+                .sum();
+            bits_per_second(format?)?.saturating_sub(audio?)
+        }
+    };
+    (bits > 0).then(|| bits.div_ceil(1000) as u32)
 }
 
 fn parse_rate(rate: Option<&str>) -> Option<f64> {
@@ -244,15 +291,62 @@ mod tests {
         };
         let size = |j: &Value| {
             let v = classify(Path::new("a.mp4"), 1, j).unwrap().video.unwrap();
-            (v.width, v.height)
+            (v.width, v.height, v.rotated)
         };
         let matrix = stream(json!({"side_data_list": [{"rotation": -90}]}));
-        assert_eq!(size(&matrix), (1080, 1920));
+        assert_eq!(size(&matrix), (1080, 1920, true));
         let tag = stream(json!({"tags": {"rotate": "270"}}));
-        assert_eq!(size(&tag), (1080, 1920));
+        assert_eq!(size(&tag), (1080, 1920, true));
         let upside_down = stream(json!({"tags": {"rotate": "180"}}));
-        assert_eq!(size(&upside_down), (1920, 1080));
-        assert_eq!(size(&stream(json!({}))), (1920, 1080));
+        assert_eq!(size(&upside_down), (1920, 1080, true));
+        assert_eq!(size(&stream(json!({}))), (1920, 1080, false));
+    }
+
+    #[test]
+    fn detects_hdr_from_the_transfer_curve() {
+        let with = |trc: &str| {
+            let j = json!({
+                "format": {"format_name": "mov,mp4", "duration": "5"},
+                "streams": [{"codec_type": "video", "codec_name": "hevc", "width": 3840,
+                             "height": 2160, "avg_frame_rate": "60/1",
+                             "pix_fmt": "yuv420p10le", "color_primaries": "bt2020",
+                             "color_transfer": trc}]
+            });
+            classify(Path::new("a.mp4"), 1, &j).unwrap().video.unwrap()
+        };
+        assert_eq!(with("smpte2084").hdr, Some(Hdr::Pq));
+        assert_eq!(with("arib-std-b67").hdr, Some(Hdr::Hlg));
+        assert_eq!(with("bt709").hdr, None);
+        assert_eq!(with("bt709").pix_fmt, "yuv420p10le");
+    }
+
+    #[test]
+    fn video_bitrate_from_the_stream_or_the_file_minus_audio() {
+        let video = |video_rate: Option<&str>, file_rate: &str, audio_rate: Option<&str>| {
+            let mut v = json!({"codec_type": "video", "codec_name": "h264", "width": 320,
+                               "height": 240, "avg_frame_rate": "30/1"});
+            let mut a = json!({"codec_type": "audio", "codec_name": "pcm_s16le"});
+            if let Some(r) = video_rate {
+                v["bit_rate"] = r.into();
+            }
+            if let Some(r) = audio_rate {
+                a["bit_rate"] = r.into();
+            }
+            let j = json!({
+                "format": {"format_name": "matroska,webm", "duration": "10",
+                           "bit_rate": file_rate},
+                "streams": [v, a]
+            });
+            classify(Path::new("a.mkv"), 1, &j).unwrap().video.unwrap()
+        };
+        // MP4 / MOV: the stream says it (rounded up).
+        let mp4 = video(Some("200400"), "1752709", Some("1536000"));
+        assert_eq!(mp4.bitrate_kbps, Some(201));
+        // MKV: the file's bitrate minus the audio's.
+        let mkv = video(None, "1752709", Some("1536000"));
+        assert_eq!(mkv.bitrate_kbps, Some(217));
+        // The audio's bitrate is unknown too: no guess.
+        assert_eq!(video(None, "1752709", None).bitrate_kbps, None);
     }
 
     #[test]
