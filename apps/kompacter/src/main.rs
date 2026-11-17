@@ -307,6 +307,8 @@ impl App {
     fn start_update_checks(&self, current: &'static str) {
         let on = self.update_on.clone();
         std::thread::spawn(move || {
+            // The installer of the update that just ran (or an old one) isn't needed.
+            update::clear_downloads();
             // Let startup (and Start with Windows) settle first.
             std::thread::sleep(Duration::from_secs(90));
             loop {

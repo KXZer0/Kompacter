@@ -173,6 +173,12 @@ pub fn download_dir() -> PathBuf {
     std::env::temp_dir().join("Kompacter-update")
 }
 
+/// Remove downloaded installers. Run when Kompacter starts: anything there is either the
+/// update that was just installed or one that wasn't (it's fetched again if still newer).
+pub fn clear_downloads() {
+    let _ = std::fs::remove_dir_all(download_dir());
+}
+
 /// Run the installer silently; it closes Kompacter, replaces it and opens the new version.
 pub fn install(ready: &Ready) -> io::Result<()> {
     Command::new(&ready.installer).arg("/S").spawn().map(drop)

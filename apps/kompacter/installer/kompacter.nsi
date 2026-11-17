@@ -32,6 +32,9 @@ SetCompressor /SOLID lzma
 Section "Install"
   ; Close a running copy so its files can be replaced.
   nsExec::Exec 'taskkill /IM Kompacter.exe /F'
+  ; Updates install over the old files (same names). If a version stops shipping a
+  ; file, delete it here so updated installs don't keep it, e.g.:
+  ;   Delete "$INSTDIR\old-file.dll"
   SetOutPath "$INSTDIR"
   File "dist\Kompacter.exe"
   File "dist\ffmpeg.exe"
