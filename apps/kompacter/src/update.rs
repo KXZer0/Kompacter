@@ -51,8 +51,8 @@ pub fn newer(candidate: &str, current: &str) -> bool {
     }
 }
 
-/// Fetch a URL with curl (hidden window, HTTPS only, follows GitHub's redirects).
-fn curl(url: &str, out: Option<&Path>) -> Result<Vec<u8>, String> {
+/// curl for one URL: hidden window, HTTPS only, follows GitHub's redirects.
+fn curl_cmd(url: &str, out: Option<&Path>) -> Command {
     let mut cmd = Command::new("curl");
     cmd.args(["-fsSL", "--proto", "=https", "--proto-redir", "=https"])
         .args(["--max-time", "600", "-A", "Kompacter-updater"]);
@@ -69,7 +69,12 @@ fn curl(url: &str, out: Option<&Path>) -> Result<Vec<u8>, String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let done = cmd
+    cmd
+}
+
+/// Fetch a small file (the release list, a checksum) into memory.
+fn curl(url: &str) -> Result<Vec<u8>, String> {
+    let done = curl_cmd(url, None)
         .output()
         .map_err(|e| format!("couldn't run curl: {e}"))?;
     if !done.status.success() {
@@ -79,6 +84,24 @@ fn curl(url: &str, out: Option<&Path>) -> Result<Vec<u8>, String> {
         ));
     }
     Ok(done.stdout)
+}
+
+/// Download to `out`, reporting 0..1 by watching the file grow against `size`.
+fn download(url: &str, out: &Path, size: u64, progress: &dyn Fn(f32)) -> Result<(), String> {
+    let mut child = curl_cmd(url, Some(out))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("couldn't run curl: {e}"))?;
+    loop {
+        let got = std::fs::metadata(out).map_or(0, |m| m.len());
+        progress((got as f64 / size.max(1) as f64).min(0.99) as f32);
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(status) if status.success() => return Ok(()),
+            Some(_) => return Err("download failed".into()),
+            None => std::thread::sleep(std::time::Duration::from_millis(300)),
+        }
+    }
 }
 
 fn sha256_hex(path: &Path) -> io::Result<String> {
@@ -100,28 +123,43 @@ fn sha256_hex(path: &Path) -> io::Result<String> {
         .collect())
 }
 
-/// The installer and its checksum file in a release's JSON: (name, installer url, sha url).
-fn assets(release: &Value) -> Option<(String, String, String)> {
+/// A release's installer and its checksum file.
+#[derive(Debug)]
+struct Asset {
+    name: String,
+    exe: String,
+    sha: String,
+    size: u64,
+}
+
+fn assets(release: &Value) -> Option<Asset> {
     let list = release["assets"].as_array()?;
-    let url_of = |name: &str| {
+    let find = |name: &str| {
         list.iter()
             .find(|a| a["name"].as_str() == Some(name))
-            .and_then(|a| a["browser_download_url"].as_str())
-            .filter(|u| HOSTS.iter().any(|h| u.starts_with(h)))
-            .map(str::to_string)
+            .filter(|a| {
+                a["browser_download_url"]
+                    .as_str()
+                    .is_some_and(|u| HOSTS.iter().any(|h| u.starts_with(h)))
+            })
     };
     let name = list
         .iter()
         .filter_map(|a| a["name"].as_str())
         .find(|n| n.starts_with("Kompacter-") && n.ends_with("-setup.exe"))?
         .to_string();
-    let exe = url_of(&name)?;
-    let sha = url_of(&format!("{name}.sha256"))?;
-    Some((name, exe, sha))
+    let exe = find(&name)?;
+    let sha = find(&format!("{name}.sha256"))?;
+    Some(Asset {
+        exe: exe["browser_download_url"].as_str()?.to_string(),
+        sha: sha["browser_download_url"].as_str()?.to_string(),
+        size: exe["size"].as_u64().unwrap_or(0),
+        name,
+    })
 }
 
-/// The newest published release that has an installer and its checksum: (tag, assets).
-fn newest(list: &Value) -> Option<(String, (String, String, String))> {
+/// The newest published release that has an installer and its checksum.
+fn newest(list: &Value) -> Option<(String, Asset)> {
     list.as_array()?
         .iter()
         .filter(|r| r["draft"].as_bool() != Some(true))
@@ -135,16 +173,23 @@ fn newest(list: &Value) -> Option<(String, (String, String, String))> {
 
 /// Check for a newer release and download it into `dir`. `Ok(None)`: nothing newer (or
 /// a dev build). A file that doesn't match its checksum is deleted, never returned.
-pub fn check(current: &str, dir: &Path) -> Result<Option<Ready>, String> {
-    let body = curl(RELEASES, None)?;
+/// `progress` gets the new version and 0..1 while the installer downloads.
+pub fn check(
+    current: &str,
+    dir: &Path,
+    progress: &dyn Fn(&str, f32),
+) -> Result<Option<Ready>, String> {
+    let body = curl(RELEASES)?;
     let list: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
-    let Some((tag, (name, exe_url, sha_url))) = newest(&list) else {
+    let Some((tag, asset)) = newest(&list) else {
         return Ok(None);
     };
     if !newer(&tag, current) {
         return Ok(None);
     }
-    let want = String::from_utf8_lossy(&curl(&sha_url, None)?)
+    let (a, b, c) = parse(&tag).unwrap_or_default();
+    let version = format!("{a}.{b}.{c}");
+    let want = String::from_utf8_lossy(&curl(&asset.sha)?)
         .split_whitespace()
         .next()
         .unwrap_or_default()
@@ -153,18 +198,18 @@ pub fn check(current: &str, dir: &Path) -> Result<Option<Ready>, String> {
         return Err("the checksum file is broken".into());
     }
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let installer = dir.join(&name);
+    let installer = dir.join(&asset.name);
     // Already downloaded on an earlier check.
     if sha256_hex(&installer).ok().as_deref() != Some(want.as_str()) {
-        curl(&exe_url, Some(&installer))?;
+        download(&asset.exe, &installer, asset.size, &|p| {
+            progress(&version, p)
+        })?;
         let got = sha256_hex(&installer).map_err(|e| e.to_string())?;
         if got != want {
             let _ = std::fs::remove_file(&installer);
             return Err("the download didn't match its checksum".into());
         }
     }
-    let (a, b, c) = parse(&tag).unwrap_or_default();
-    let version = format!("{a}.{b}.{c}");
     Ok(Some(Ready { version, installer }))
 }
 
@@ -193,7 +238,7 @@ mod tests {
     #[ignore]
     fn live_check_against_github() {
         let dir = tempfile::tempdir().unwrap();
-        let got = check("0.0.0", dir.path());
+        let got = check("0.0.0", dir.path(), &|_, _| {});
         assert!(got.is_ok(), "{got:?}");
     }
 
@@ -242,12 +287,13 @@ mod tests {
     fn finds_the_installer_and_its_checksum() {
         let base = "https://github.com/KXZer0/Kompacter/releases/download/v0.0.8";
         let release = serde_json::json!({"assets": [
-            {"name": "Kompacter-0.0.8-setup.exe", "browser_download_url": format!("{base}/Kompacter-0.0.8-setup.exe")},
+            {"name": "Kompacter-0.0.8-setup.exe", "size": 41_000_000, "browser_download_url": format!("{base}/Kompacter-0.0.8-setup.exe")},
             {"name": "Kompacter-0.0.8-setup.exe.sha256", "browser_download_url": format!("{base}/Kompacter-0.0.8-setup.exe.sha256")}
         ]});
-        let (name, exe, sha) = assets(&release).unwrap();
-        assert_eq!(name, "Kompacter-0.0.8-setup.exe");
-        assert!(exe.ends_with(".exe") && sha.ends_with(".sha256"));
+        let a = assets(&release).unwrap();
+        assert_eq!(a.name, "Kompacter-0.0.8-setup.exe");
+        assert!(a.exe.ends_with(".exe") && a.sha.ends_with(".sha256"));
+        assert_eq!(a.size, 41_000_000);
         // Files hosted anywhere else are ignored.
         let elsewhere = serde_json::json!({"assets": [
             {"name": "Kompacter-0.0.8-setup.exe", "browser_download_url": "https://example.com/x.exe"},

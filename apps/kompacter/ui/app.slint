@@ -208,6 +208,8 @@ export component AppWindow inherits Window {
     in property <[string]> news-items;
     /// A newer version is downloaded and checked; installs on restart ("" = none).
     in property <string> update-version;
+    /// The update's download, 0…1 (1: downloaded and checked, ready to install).
+    in property <float> update-progress: 1;
 
     in property <string> error-text;
 
@@ -630,8 +632,9 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // A newer version is ready: an accent pill under the buttons. The icon's ring
-            // pulses on the blob's ambient clock (no extra timer).
+            // A newer version: an accent pill under the buttons. While it downloads, a ring
+            // fills around the icon; once it's checked and ready, the circle fills in, its
+            // ring pulses (on the blob's ambient clock, no extra timer) and it says Restart.
             if root.view == View.idle && root.update-version != "" && !root.tray-tip && !root.dragging: Appear {
                 x: 20px;
                 y: 433px;
@@ -640,55 +643,74 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     alignment: center;
                     upd := Rectangle {
-                        property <float> pulse: Fx.rich ? Math.mod(root.ambient-turn * 12, 1) : 0;
+                        property <bool> ready: root.update-progress >= 1;
+                        property <float> p: Math.clamp(root.update-progress, 0, 0.999);
+                        property <float> pulse: Fx.rich && self.ready ? Math.mod(root.ambient-turn * 12, 1) : 0;
                         width: upd-row.preferred-width;
                         height: 32px;
                         border-radius: 16px;
-                        background: upd-ta.has-hover ? Theme.accent-soft.darker(0.08) : Theme.accent-soft;
+                        background: upd-ta.has-hover && self.ready ? Theme.accent-soft.darker(0.08) : Theme.accent-soft;
                         animate background { duration: 120ms; }
                         border-width: 1px;
                         border-color: Theme.accent-text.transparentize(0.6);
-                        transform-scale: upd-ta.pressed ? 0.96 : 1;
+                        transform-scale: upd-ta.pressed && self.ready ? 0.96 : 1;
                         animate transform-scale { duration: 220ms; easing: ease-out-back; }
                         upd-row := HorizontalLayout {
-                            padding-left: 6px;
+                            padding-left: 5px;
                             padding-right: 14px;
                             spacing: 8px;
                             alignment: center;
                             Rectangle {
-                                width: 22px;
-                                height: 22px;
+                                width: 24px;
+                                height: 24px;
                                 y: (parent.height - self.height) / 2;
-                                // Pulse ring: grows and fades out, then starts again.
-                                if Fx.rich: Rectangle {
-                                    width: parent.width;
-                                    height: parent.height;
+                                // Ready: a pulse ring that grows and fades, again and again.
+                                if Fx.rich && upd.ready: Rectangle {
                                     border-radius: self.width / 2;
                                     border-width: 2px;
                                     border-color: Theme.accent;
                                     transform-scale: 1 + 0.6 * upd.pulse;
                                     opacity: 0.55 * (1 - upd.pulse);
                                 }
+                                // Downloading: a faint track and the part that's done.
+                                if !upd.ready: Rectangle {
+                                    border-radius: self.width / 2;
+                                    border-width: 2.4px;
+                                    border-color: Theme.accent.transparentize(0.78);
+                                }
+                                if !upd.ready: Path {
+                                    viewbox-width: 24;
+                                    viewbox-height: 24;
+                                    stroke: Theme.accent;
+                                    stroke-width: 2.4px;
+                                    stroke-line-cap: round;
+                                    fill: transparent;
+                                    commands: "M 12 1.2 A 10.8 10.8 0 " + (upd.p > 0.5 ? "1" : "0") + " 1 "
+                                        + (12 + 10.8 * Math.sin(upd.p * 360deg)) + " "
+                                        + (12 - 10.8 * Math.cos(upd.p * 360deg));
+                                }
                                 Rectangle {
                                     border-radius: self.width / 2;
-                                    background: Theme.accent;
+                                    background: upd.ready ? Theme.accent : transparent;
+                                    animate background { duration: 250ms; }
                                     Icon {
-                                        d: Icons.update;
-                                        size: 15px;
-                                        color: Theme.on-accent;
+                                        d: Icons.download;
+                                        size: upd.ready ? 15px : 13px;
+                                        color: upd.ready ? Theme.on-accent : Theme.accent-text;
                                         x: (parent.width - self.width) / 2;
                                         y: (parent.height - self.height) / 2;
                                     }
                                 }
                             }
                             Text {
-                                text: "Update " + root.update-version + " ready";
+                                text: upd.ready ? "Update " + root.update-version + " ready"
+                                    : "Downloading " + root.update-version + " · " + Math.round(upd.p * 100) + "%";
                                 font-size: 13px;
                                 font-weight: 650;
                                 color: Theme.label;
                                 vertical-alignment: center;
                             }
-                            Text {
+                            if upd.ready: Text {
                                 text: "Restart";
                                 font-size: 13px;
                                 font-weight: 700;
@@ -697,7 +719,8 @@ export component AppWindow inherits Window {
                             }
                         }
                         upd-ta := TouchArea {
-                            mouse-cursor: pointer;
+                            enabled: upd.ready;
+                            mouse-cursor: upd.ready ? pointer : default;
                             clicked => { root.restart-to-update(); }
                         }
                     }

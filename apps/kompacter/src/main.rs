@@ -313,12 +313,35 @@ impl App {
             std::thread::sleep(Duration::from_secs(90));
             loop {
                 if on.load(Ordering::Relaxed) {
-                    if let Ok(Some(ready)) = update::check(current, &update::download_dir()) {
-                        with_app(move |a| {
-                            a.ui().set_update_version(ready.version.as_str().into());
-                            *a.update_ready.borrow_mut() = Some(ready);
-                        });
-                        return;
+                    // The pill shows the download filling a ring (only whole-percent steps
+                    // reach the window).
+                    let shown = std::sync::atomic::AtomicI32::new(-1);
+                    let progress = |version: &str, p: f32| {
+                        let pct = (p * 100.0) as i32;
+                        if shown.swap(pct, Ordering::Relaxed) != pct {
+                            let version = version.to_string();
+                            with_app(move |a| {
+                                let ui = a.ui();
+                                ui.set_update_version(version.into());
+                                ui.set_update_progress(pct as f32 / 100.0);
+                            });
+                        }
+                    };
+                    match update::check(current, &update::download_dir(), &progress) {
+                        Ok(Some(ready)) => {
+                            with_app(move |a| {
+                                let ui = a.ui();
+                                ui.set_update_version(ready.version.as_str().into());
+                                ui.set_update_progress(1.0);
+                                *a.update_ready.borrow_mut() = Some(ready);
+                            });
+                            return;
+                        }
+                        // A failed download: hide the pill until the next try.
+                        Err(_) if shown.load(Ordering::Relaxed) >= 0 => {
+                            with_app(|a| a.ui().set_update_version(SharedString::new()));
+                        }
+                        _ => {}
                     }
                 }
                 std::thread::sleep(Duration::from_secs(24 * 60 * 60));
@@ -1186,6 +1209,10 @@ fn demo(app: &Rc<App>, which: &str) {
         "drag" => ui.set_dragging(true),
         "news" => app.whats_new(news::NOTES[0].0, news::NOTES[0].1),
         "update" => ui.set_update_version("0.0.8".into()),
+        "update-downloading" => {
+            ui.set_update_version("0.0.8".into());
+            ui.set_update_progress(0.42);
+        }
         "tip" => ui.set_tray_tip(true),
         // `welcome-2` and `welcome-3` open on that step.
         "welcome" | "welcome-1" | "welcome-2" | "welcome-3" => {
