@@ -266,10 +266,16 @@ pub fn anchor() -> Option<super::Anchor> {
     })
 }
 
-/// Give the frameless panel the system's rounded corners and shadow: a titled window
-/// whose content fills it, with the title bar and its buttons hidden.
+/// Give the frameless panel rounded corners and the system shadow: a titled window
+/// whose content fills it, with the title bar and its buttons hidden. Its OpenGL
+/// content would still paint square corners over the window's own, so the content
+/// view's layer clips it to the same radius over a clear window background.
 pub fn style_panel(view: NonNull<std::ffi::c_void>) {
-    use objc2_app_kit::{NSView, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility};
+    use objc2::msg_send;
+    use objc2_app_kit::{
+        NSColor, NSView, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
+    };
+    const RADIUS: f64 = 12.0;
     // SAFETY: winit hands out the panel's live NSView, used here on the main thread.
     let view: &NSView = unsafe { view.cast().as_ref() };
     let Some(window) = view.window() else { return };
@@ -286,6 +292,18 @@ pub fn style_panel(view: NonNull<std::ffi::c_void>) {
     ] {
         if let Some(button) = window.standardWindowButton(button) {
             button.setHidden(true);
+        }
+    }
+    window.setOpaque(false);
+    window.setBackgroundColor(Some(&NSColor::clearColor()));
+    view.setWantsLayer(true);
+    // SAFETY: `layer` is an NSView method returning its CALayer (or nil); the setters
+    // are CALayer's documented `cornerRadius` (CGFloat) and `masksToBounds` (BOOL).
+    unsafe {
+        let layer: *mut AnyObject = msg_send![view, layer];
+        if let Some(layer) = layer.as_ref() {
+            let _: () = msg_send![layer, setCornerRadius: RADIUS];
+            let _: () = msg_send![layer, setMasksToBounds: true];
         }
     }
     window.setHasShadow(true);
