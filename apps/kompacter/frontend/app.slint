@@ -354,9 +354,25 @@ export component AppWindow inherits Window {
                 root.news-done();
                 return accept;
             }
-            if (root.view == View.welcome && event.text == Key.Return) {
-                root.welcome-next();
-                return accept;
+            if (root.view == View.welcome) {
+                if (event.text == Key.Return) {
+                    root.welcome-next();
+                    return accept;
+                }
+                if (root.welcome-step + 1 == root.welcome-step-count) {
+                    if (event.text == Key.LeftArrow || event.text == Key.DownArrow) {
+                        root.welcome-preference = Math.max(0, root.welcome-preference - 1);
+                        return accept;
+                    }
+                    if (event.text == Key.RightArrow || event.text == Key.UpArrow) {
+                        root.welcome-preference = Math.min(2, root.welcome-preference + 1);
+                        return accept;
+                    }
+                    if (event.text == Key.Home || event.text == Key.End) {
+                        root.welcome-preference = event.text == Key.Home ? 0 : 2;
+                        return accept;
+                    }
+                }
             }
             if ((event.modifiers.control || event.modifiers.meta) && (event.text == "v" || event.text == "V")) {
                 root.paste();
