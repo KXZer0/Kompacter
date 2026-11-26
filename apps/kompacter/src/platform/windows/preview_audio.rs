@@ -22,7 +22,12 @@ pub(in crate::platform) struct Control<'a> {
     pub clock: &'a AtomicU64,
 }
 
-pub(in crate::platform) fn play(engine: &Engine, info: &MediaInfo, range: Range<f64>, control: Control<'_>) {
+pub(in crate::platform) fn play(
+    engine: &Engine,
+    info: &MediaInfo,
+    range: Range<f64>,
+    control: Control<'_>,
+) {
     let Some(mut output) = Output::open() else {
         return;
     };

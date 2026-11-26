@@ -26,7 +26,9 @@ use kompacter_core::{
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use crate::frontend::{motion, AppWindow, DetailRow, DiffRow, Fx, Prefs, PresetItem, Theme, Tray, View};
+use crate::frontend::{
+    motion, AppWindow, DetailRow, DiffRow, Fx, Prefs, PresetItem, Theme, Tray, View,
+};
 use crate::platform as sys;
 
 use self::format::bytes;

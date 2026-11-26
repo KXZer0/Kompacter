@@ -14,8 +14,8 @@ use windows_sys::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows_sys::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
-    OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    RegisterClipboardFormatW, SetClipboardData,
 };
 use windows_sys::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT,
@@ -29,8 +29,8 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::UI::Shell::{
-    DragQueryFileW, SHFileOperationW, DROPFILES, FOF_ALLOWUNDO, FOF_NOCONFIRMATION,
-    FOF_NOERRORUI, FOF_SILENT, FO_DELETE, HDROP, SHFILEOPSTRUCTW,
+    DragQueryFileW, SHFileOperationW, DROPFILES, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI,
+    FOF_SILENT, FO_DELETE, HDROP, SHFILEOPSTRUCTW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
@@ -349,8 +349,7 @@ pub fn resize_flyout(hwnd: isize, x: i32, y: i32, width: i32, height: i32) -> bo
         if GetWindowRect(hwnd, &mut outer) == 0 || GetClientRect(hwnd, &mut client) == 0 {
             return false;
         }
-        if outer.left == x && outer.top == y && client.right == width && client.bottom == height
-        {
+        if outer.left == x && outer.top == y && client.right == width && client.bottom == height {
             return true;
         }
         SetWindowPos(
@@ -405,9 +404,7 @@ unsafe extern "system" fn flyout_frame_proc(
     _data: usize,
 ) -> isize {
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        WM_NCACTIVATE, WM_NCDESTROY, WM_NCPAINT,
-    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_NCACTIVATE, WM_NCDESTROY, WM_NCPAINT};
     match message {
         // Forward activation to Winit, but tell DefWindowProc to skip the
         // native frame repaint. Slint paints the flyout's border itself.
@@ -948,9 +945,7 @@ unsafe extern "system" fn guard_proc(code: i32, wp: usize, lp: isize) -> isize {
         WM_KEYDOWN, WM_SYSKEYDOWN,
     };
     unsafe {
-        if code == HC_ACTION as i32
-            && (wp == WM_KEYDOWN as usize || wp == WM_SYSKEYDOWN as usize)
-        {
+        if code == HC_ACTION as i32 && (wp == WM_KEYDOWN as usize || wp == WM_SYSKEYDOWN as usize) {
             let kb = &*(lp as *const KBDLLHOOKSTRUCT);
             let down = |vk: u16| GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0;
             if kb.vkCode == VK_V as u32
@@ -996,8 +991,7 @@ pub fn is_foreground(window: isize) -> bool {
 /// Press Ctrl+V for the window in front (marked as injected, so the guard lets it by).
 pub fn send_paste() {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL,
-        VK_V,
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
     };
     let key = |vk: u16, up: bool| INPUT {
         r#type: INPUT_KEYBOARD,
