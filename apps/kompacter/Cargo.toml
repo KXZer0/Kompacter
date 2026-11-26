@@ -30,6 +30,15 @@ slint = { version = "1.19", default-features = false, features = [
 # Native "choose file / folder" dialogs.
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+clipboard-rs = { version = "0.3.5", default-features = false, features = ["wayland"] }
+libc = "0.2"
+url = "2"
+wayland-client = { version = "0.31", features = ["system", "dlopen"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+# Share the D-Bus dependency used by the Slint tray backend.
+zbus = "5"
+
 [target.'cfg(not(windows))'.dependencies]
 slint = { version = "1.19", default-features = false, features = [
   "renderer-femtovg",
@@ -40,6 +49,11 @@ slint = { version = "1.19", default-features = false, features = [
 
 [target.'cfg(windows)'.dependencies]
 slint = { version = "1.19", default-features = false, features = ["renderer-skia"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSPasteboard", "NSResponder"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSPathUtilities"] }
 
 # Same Windows bindings Slint already uses (no extra copy).
 [target.'cfg(windows)'.dependencies.windows-sys]
