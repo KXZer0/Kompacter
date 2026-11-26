@@ -45,6 +45,29 @@ chmod 644 "$deb/usr/share/icons/hicolor/256x256/apps/$app_id.png"
 install -Dm644 "$here/$app_id.metainfo.xml" "$deb/usr/share/metainfo/$app_id.metainfo.xml"
 install -Dm644 LICENSE "$deb/usr/share/doc/kompacter/copyright"
 
+# Ship the same current FFmpeg build as the AppImage and the other platforms, next to
+# Kompacter (where the app looks first), instead of relying on the distribution's
+# version, which can be years old (Debian 12 has 5.1). Local builds without it keep
+# depending on the system package.
+ffmpeg_dep="ffmpeg, "
+ffmpeg_license=
+if [ -n "${KOMPACTER_FFMPEG_DIR:-}" ]; then
+    for name in LICENSE LICENSE.txt; do
+        if [ -f "$KOMPACTER_FFMPEG_DIR/$name" ]; then
+            ffmpeg_license="$KOMPACTER_FFMPEG_DIR/$name"
+            break
+        fi
+    done
+    if [ -z "$ffmpeg_license" ]; then
+        echo "KOMPACTER_FFMPEG_DIR has no FFmpeg LICENSE file" >&2
+        exit 1
+    fi
+    install -m755 "$KOMPACTER_FFMPEG_DIR/ffmpeg" "$KOMPACTER_FFMPEG_DIR/ffprobe" \
+        "$deb/usr/lib/kompacter/"
+    install -Dm644 "$ffmpeg_license" "$deb/usr/share/doc/kompacter/FFmpeg-LICENSE"
+    ffmpeg_dep=
+fi
+
 # Let dpkg-shlibdeps derive the actual libc floor of the build machine.
 mkdir -p "$stage/debian" "$deb/DEBIAN"
 printf 'Source: kompacter\n\nPackage: kompacter\nArchitecture: amd64\n' > "$stage/debian/control"
@@ -59,7 +82,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: Kompacter contributors <https://github.com/KXZer0/Kompacter/issues>
 Installed-Size: $installed_size
-Depends: $depends, ffmpeg, libegl1, libgl1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, xdg-utils
+Depends: $depends, ${ffmpeg_dep}libegl1, libgl1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, xdg-utils
 Recommends: xdg-desktop-portal, xdg-desktop-portal-gtk | xdg-desktop-portal-kde | xdg-desktop-portal-gnome, zenity
 Homepage: https://github.com/KXZer0/Kompacter
 Description: Shrink files to fit an upload limit
@@ -73,14 +96,9 @@ install -Dm644 "$here/PORTABLE.md" "$bundle/README.md"
 install -Dm755 "$here/install-launcher.sh" "$bundle/install-launcher.sh"
 install -Dm644 "$here/$app_id.desktop" "$bundle/$app_id.desktop"
 install -Dm644 "$icon" "$bundle/$app_id.png"
-if [ -n "${KOMPACTER_FFMPEG_DIR:-}" ]; then
+if [ -n "$ffmpeg_license" ]; then
     install -m755 "$KOMPACTER_FFMPEG_DIR/ffmpeg" "$KOMPACTER_FFMPEG_DIR/ffprobe" "$bundle/"
-    for name in LICENSE LICENSE.txt; do
-        if [ -f "$KOMPACTER_FFMPEG_DIR/$name" ]; then
-            install -Dm644 "$KOMPACTER_FFMPEG_DIR/$name" "$bundle/FFmpeg-LICENSE"
-            break
-        fi
-    done
+    install -Dm644 "$ffmpeg_license" "$bundle/FFmpeg-LICENSE"
 fi
 tar -C "$stage" -czf "$out/$bundle_name.tar.gz" "$bundle_name"
 (cd "$out" && sha256sum "kompacter_${version}_amd64.deb" "$bundle_name.tar.gz" > SHA256SUMS)

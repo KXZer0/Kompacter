@@ -6,7 +6,7 @@ and newer):
 | File | Script | ffmpeg |
 |---|---|---|
 | `Kompacter-<version>-x86_64.AppImage` | `appimage.sh` | bundled (static BtbN linux64 GPL build) |
-| `kompacter_<version>_amd64.deb` | `build.sh` | `Depends: ffmpeg` from the distribution |
+| `kompacter_<version>_amd64.deb` | `build.sh` | FFmpeg included in `/usr/lib/kompacter/` (release builds; a local build without `KOMPACTER_FFMPEG_DIR` depends on the distribution's `ffmpeg`) |
 | `Kompacter-<version>-linux-x86_64.tar.gz` | `build.sh` | bundled when `KOMPACTER_FFMPEG_DIR` is set |
 
 Kompacter uses the `ffmpeg` and `ffprobe` next to its own binary when both are there, otherwise
