@@ -733,7 +733,14 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
                     .with_undecorated_shadow(false)
                     .with_corner_preference(CornerPreference::DoNotRound)
             }
-            #[cfg(not(windows))]
+            // The rounded card and its shadow are drawn by the UI on a clear window,
+            // as on Windows and Linux, so AppKit's square window shadow stays off.
+            #[cfg(target_os = "macos")]
+            {
+                use winit::platform::macos::WindowAttributesExtMacOS;
+                attrs.with_transparent(true).with_has_shadow(false)
+            }
+            #[cfg(not(any(windows, target_os = "macos")))]
             attrs
         })
         .select()?;
@@ -745,9 +752,8 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     // would disable its partial redraws, even if the callback does nothing.
     #[cfg(windows)]
     let glass = true;
-    #[cfg(target_os = "macos")]
-    let glass = false;
-    #[cfg(not(any(windows, target_os = "macos")))]
+    // FemtoVG draws the translucent card on macOS and Linux alike.
+    #[cfg(not(windows))]
     let glass = ui.window().set_rendering_notifier(|_, _| {}).is_ok();
     let rich = glass && sys::animations_enabled();
     ui.global::<Fx>().set_glass(glass);
