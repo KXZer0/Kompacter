@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.KXZer0.Kompacter</id>
+  <name>Kompacter</name>
+  <summary>Shrink files to fit an upload limit</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+  <developer id="io.github.kxzer0">
+    <name>Kompacter contributors</name>
+  </developer>
+  <description>
+    <p>
+      Kompacter compresses videos, images, audio and other files from a compact
+      desktop panel so they fit the upload limit of chat apps and websites.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.KXZer0.Kompacter.desktop</launchable>
+  <url type="homepage">https://github.com/KXZer0/Kompacter</url>
+  <url type="bugtracker">https://github.com/KXZer0/Kompacter/issues</url>
+  <categories>
+    <category>AudioVideo</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>

@@ -34,11 +34,20 @@ jobs:
           review="$RUNNER_TEMP/Kompacter review"
           ditto -x -k target/macos/Kompacter-*.zip "$review"
           packaging/macos/smoke.sh "$review/Kompacter.app" target/debug/kompacter
+      - name: Build the review DMG
+        run: |
+          packaging/macos/make-dmg.sh target/macos/Kompacter.app target/macos/Kompacter-review-macos-arm64.dmg
+          mount="$RUNNER_TEMP/Kompacter DMG"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" target/macos/Kompacter-review-macos-arm64.dmg
+          test -L "$mount/Applications"
+          codesign --verify --deep --strict "$mount/Kompacter.app"
+          hdiutil detach "$mount"
       - name: Keep the review bundle
         uses: actions/upload-artifact@v7
         with:
           name: kompacter-macos-review
           path: |
             target/macos/Kompacter-*.zip
+            target/macos/Kompacter-*.dmg
             target/macos/SHA256SUMS
           if-no-files-found: error

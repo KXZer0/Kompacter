@@ -1,6 +1,6 @@
 # Releasing
 
-Installers are built by GitHub Actions; nobody has to build from source.
+Every download is built by GitHub Actions; nobody has to build from source.
 
 ## Make a release
 
@@ -8,37 +8,83 @@ Installers are built by GitHub Actions; nobody has to build from source.
    entry means no What's new screen).
 1. Tag a commit and push the tag (GitHub Desktop: History → right-click → Create Tag → Push).
    The version comes from the tag: `v0.0.3-test` builds version 0.0.3, marked as a pre-release.
-2. The **Release** workflow builds `Kompacter-0.0.3-setup.exe` (ffmpeg included, NSIS script in
-   `packaging/windows/`) and creates a **draft** release. Check it, then press **Publish**.
+2. The **Release** workflow builds every download in parallel, then its `publish` job creates
+   one **draft** release with all of them. Check it, then press **Publish**.
+
+   | Job | Files (each with a `.sha256`) | Built from |
+   |---|---|---|
+   | `windows` | `Kompacter-0.0.3-setup.exe` | NSIS script in `packaging/windows/`, ffmpeg included |
+   | `linux` (Ubuntu 22.04) | `Kompacter-0.0.3-x86_64.AppImage`, `kompacter_0.0.3_amd64.deb`, `Kompacter-0.0.3-linux-x86_64.tar.gz` | `packaging/linux/appimage.sh` and `build.sh`; ffmpeg in the AppImage and tarball, the .deb depends on the distribution's `ffmpeg` |
+   | `macos` (macOS 15, arm64 and Intel runners) | `Kompacter-0.0.3-macos-arm64.dmg`, `Kompacter-0.0.3-macos-x86_64.dmg` | `packaging/macos/build-app.sh`, `make-dmg.sh` and, with the signing secrets, `notarize.sh`; Homebrew ffmpeg included |
 
 3. Once it's published (pre-releases count; drafts don't), installed copies find it within a
-   day, download it in the background, check its `.sha256` and install it on their next restart.
+   day:
+   - Windows downloads the installer in the background, checks its `.sha256` and installs it on
+     the next restart.
+   - The Linux AppImage downloads the new `.AppImage`, checks its `.sha256` and replaces itself
+     (same file name) on the next restart.
+   - The .deb, the tarball and macOS offer the update and open the release page.
 
-You can also start it by hand: Actions → Release → Run workflow (the installer is attached to the run).
+   (The app only starts these checks on Windows for now: `start_update_checks` in
+   `apps/kompacter/src/app/mod.rs` is gated on `cfg!(windows)`. `update.rs` already handles
+   Linux and macOS, so lifting that gate turns them on.)
 
-The installer is per-user (no admin), into `%LOCALAPPDATA%\Programs\Kompacter`, with a Start menu
-entry and an uninstaller in Settings → Apps. ffmpeg's GPL license is installed next to the app as
-`FFMPEG-LICENSE.txt`.
+   A release only counts as an update for a system when it has that system's file, so keep the
+   file names above (the updater matches them).
+
+You can also start it by hand: Actions → Release → Run workflow. Manual runs build version 0.0.0
+(an app that never updates itself) and attach the files to the run as artifacts instead of making
+a release.
+
+The Windows installer is per-user (no admin), into `%LOCALAPPDATA%\Programs\Kompacter`, with a
+Start menu entry and an uninstaller in Settings → Apps. ffmpeg's GPL license is installed next to
+the app as `FFMPEG-LICENSE.txt`; the AppImage has it in `usr/share/doc/kompacter/FFmpeg-LICENSE`,
+the tarball as `FFmpeg-LICENSE` and the macOS app in `Contents/Resources/FFmpeg-LICENSE.txt`.
 
 Before a release meant for everyone, go through [TESTING.md](TESTING.md) on a real PC.
 
-The installer bundles the newest *stable* ffmpeg from BtbN's builds (the highest `nX.Y`
-version; never the nightly), picked when the workflow runs.
+Windows and Linux bundle the newest *stable* ffmpeg from BtbN's builds (the highest `nX.Y`
+version; never the nightly), picked when the workflow runs: the win64 and the static linux64
+GPL builds. macOS bundles Homebrew's ffmpeg for the runner's architecture.
+
+The AppImage is built with a pinned `appimagetool` (`APPIMAGETOOL_URL` in `release.yml`). It
+contains Kompacter, ffmpeg and ffprobe only; OpenGL/EGL, xkbcommon, Wayland/X11 and fontconfig come
+from the user's system.
+
+## macOS signing and notarization
+
+Without secrets the DMGs are ad-hoc signed, and users have to right-click → **Open** the first time
+(see [macOS packaging](../packaging/macos/README.md)). To sign and notarize, add these repository
+secrets (Settings → Secrets and variables → Actions):
+
+| Secret | What |
+|---|---|
+| `APPLE_CERTIFICATE_P12` | A **Developer ID Application** certificate with its private key, exported as `.p12` and base64-encoded (`base64 -i cert.p12 \| pbcopy`) |
+| `APPLE_CERTIFICATE_PASSWORD` | The `.p12` export password |
+| `APPLE_ID` | The Apple ID of the developer account |
+| `APPLE_TEAM_ID` | The 10-character team ID |
+| `APPLE_APP_PASSWORD` | An app-specific password for that Apple ID (appleid.apple.com) |
+
+With the certificate, ffmpeg, ffprobe, their libraries and the app are signed with the hardened
+runtime; with the other three as well, the DMG is notarized (`xcrun notarytool submit --wait`) and
+stapled.
 
 ## Before calling it "official"
 
 | Step | Why | How |
 |---|---|---|
 | Code signing | Without it, Windows SmartScreen warns "unknown publisher" | Free for open source via [SignPath Foundation](https://signpath.org), or Azure Trusted Signing (~$10/month) |
+| Apple notarization | Without it, macOS blocks the first start | Apple Developer Program, then the secrets above |
 | winget | `winget install Kompacter` | Submit a manifest to `microsoft/winget-pkgs` after the first signed release |
-| macOS / Linux | More users | Add jobs to `release.yml` (needs Mac/Linux ffmpeg and clipboard support) |
+| Flathub | Linux app stores | The AppStream file is in `packaging/linux/` |
 
 ## Desktop review builds
 
-- Linux builds an amd64 Debian package and a portable archive with checksums. Run
-  `packaging/linux/build.sh` on an x86-64 Linux build machine with Debian packaging
-  tools and `desktop-file-validate` installed.
+- Linux: `packaging/linux/build.sh` builds the amd64 Debian package and the portable archive
+  (with ffmpeg when `KOMPACTER_FFMPEG_DIR` is set), and `packaging/linux/appimage.sh` the
+  AppImage. Run them on an x86-64 Linux machine with Debian packaging tools,
+  `desktop-file-validate` and (for the AppImage) `appimagetool`. See
+  [Linux packaging](../packaging/linux/README.md).
 - The macOS review workflow builds an application bundle with FFmpeg and ffprobe,
-  runs a compression fixture, and uploads the bundle archive and checksum. The
-  review bundle is ad-hoc signed. Distribution signing and notarization require
-  a Developer ID release. See [macOS packaging](../packaging/macos/README.md).
+  runs a compression fixture, builds a DMG and uploads the bundle archive, DMG and checksum.
+  See [macOS packaging](../packaging/macos/README.md).

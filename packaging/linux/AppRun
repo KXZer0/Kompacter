@@ -1,0 +1,11 @@
+#!/bin/sh
+# AppImage entry point: run Kompacter with the ffmpeg and ffprobe bundled next to it.
+# System libraries (OpenGL/EGL, xkbcommon, Wayland, X11, fontconfig) come from the host.
+set -eu
+here=$(dirname -- "$(readlink -f -- "$0")")
+# Always point at this mount: a value inherited from an older AppImage (started again
+# after an update) would name a mount that is gone.
+KOMPACTER_FFMPEG="$here/usr/bin/ffmpeg"
+KOMPACTER_FFPROBE="$here/usr/bin/ffprobe"
+export KOMPACTER_FFMPEG KOMPACTER_FFPROBE
+exec "$here/usr/bin/Kompacter" "$@"
