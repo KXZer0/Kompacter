@@ -65,6 +65,29 @@ fn place(ui: &AppWindow, motion: &Motion, glass: bool, resize: bool) {
         }
         return;
     };
+    // macOS sizes and moves the window by its own scale factor, which can differ from
+    // the screen's backing scale the anchor was measured in: convert the anchor to it.
+    #[cfg(target_os = "macos")]
+    let anchor = {
+        let window = f64::from(ui.window().scale_factor());
+        let k = if anchor.scale > 0.0 {
+            window / anchor.scale
+        } else {
+            1.0
+        };
+        let px = |v: i32| (f64::from(v) * k).round() as i32;
+        let (l, t, r, b) = anchor.free;
+        sys::Anchor {
+            free: (px(l), px(t), px(r), px(b)),
+            scale: window,
+            at: match anchor.at {
+                sys::At::Above(x) => sys::At::Above(px(x)),
+                sys::At::RightOf(y) => sys::At::RightOf(px(y)),
+                sys::At::LeftOf(y) => sys::At::LeftOf(px(y)),
+                at => at,
+            },
+        }
+    };
     let scale = anchor.scale;
     let w = (width * scale).round() as i32;
     let h = (height * scale).round() as i32;
