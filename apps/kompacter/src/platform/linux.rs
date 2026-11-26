@@ -14,8 +14,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 mod activation;
+mod shortcut;
 mod trash;
 pub use activation::activate_window;
+pub use shortcut::{set_shortcut, start_input};
 pub use trash::recycle;
 
 pub const APP_ID: &str = "io.github.KXZer0.Kompacter";

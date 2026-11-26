@@ -964,7 +964,7 @@ unsafe extern "system" fn guard_proc(code: i32, wp: usize, lp: isize) -> isize {
                     if !files.is_empty() {
                         emit(InputEvent::Guard {
                             files,
-                            window: front as isize,
+                            target: super::PasteTarget::Window(front as isize),
                             app,
                         });
                         return 1; // The chat app never sees this paste.
@@ -982,10 +982,10 @@ pub fn focus_window(window: isize) {
     unsafe { SetForegroundWindow(window as _) };
 }
 
-/// `window` is the one in front.
-pub fn is_foreground(window: isize) -> bool {
+/// The window in front.
+pub fn foreground_window() -> isize {
     use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-    unsafe { GetForegroundWindow() as isize == window }
+    unsafe { GetForegroundWindow() as isize }
 }
 
 /// Press Ctrl+V for the window in front (marked as injected, so the guard lets it by).

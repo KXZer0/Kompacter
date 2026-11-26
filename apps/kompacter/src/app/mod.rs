@@ -7,7 +7,7 @@ mod linux_desktop;
 mod news;
 mod output;
 mod quick;
-mod settings;
+pub(crate) mod settings;
 mod trim;
 mod trim_cache;
 mod update;
@@ -180,8 +180,8 @@ pub struct App {
     /// The quick bar is showing (see quick.rs); `quick_real` is the flow's screen.
     pub quick: Cell<bool>,
     pub quick_real: Cell<View>,
-    /// Paste guard: the chat window whose Ctrl+V was held back.
-    pub guard: Cell<Option<isize>>,
+    /// Paste guard: the chat app whose paste was held back.
+    pub guard: Cell<Option<sys::PasteTarget>>,
     /// Paste guard: which chat app that was (its preset id); its limit is the target
     /// while the guard's bar is open.
     pub guard_app: Cell<Option<&'static str>>,
@@ -776,7 +776,6 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     if !sys::install_activation(|files| with_app(move |app| app.activate(files))) {
         eprintln!("Kompacter could not register all macOS activation events");
     }
-    #[cfg(windows)]
     sys::start_input(|e| with_app(move |a| a.on_input(e)));
     // A tray app is only useful if it's running, so it starts with the system unless the
     // user says otherwise: switched on once here, and theirs to switch off from then on.
@@ -1263,7 +1262,9 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     // Dev builds only: the quick bar (or the paste guard's) for this file.
     #[cfg(debug_assertions)]
     if let Ok(p) = std::env::var("KOMPACTER_QUICK") {
-        let guard = std::env::var("KOMPACTER_GUARD").is_ok().then_some(0);
+        let guard = std::env::var("KOMPACTER_GUARD")
+            .is_ok()
+            .then_some(sys::PasteTarget::Window(0));
         if guard.is_some() {
             app.guard_app.set(Some(demo_guard_app()));
         }
@@ -1484,7 +1485,8 @@ fn demo(app: &Rc<App>, which: &str) {
         "quick" | "quick-busy" | "quick-done" | "guard" | "quick-empty" => {
             app.quick.set(true);
             ui.set_guard(which == "guard");
-            app.guard.set((which == "guard").then_some(1));
+            app.guard
+                .set((which == "guard").then_some(sys::PasteTarget::Window(1)));
             ui.set_sum_after("≤ 20 MB".into());
             if which == "guard" {
                 let id = demo_guard_app();
