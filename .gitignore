@@ -2,6 +2,9 @@
 *.log
 *.log.mbtree
 /out
-/apps/kompacter/installer/dist
-/apps/kompacter/installer/*.exe
+# Local release builds (packaging/*/ scripts); never committed.
+/dist
+/packaging/windows/dist
+/packaging/windows/*.exe
+/packaging/windows/*.exe.sha256
 __pycache__/

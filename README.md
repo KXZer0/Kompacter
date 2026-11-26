@@ -83,6 +83,7 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 ```
 crates/
   kompacter-core/   compression engine (Rust library): probe, plan, video/audio/image/folder jobs
+    tests/          engine tests (run by `cargo test`, not part of the app)
   kompacter-cli/    `kompacter` command-line tool on top of the engine
 apps/
   kompacter/        desktop app: Slint UI (frontend/*.slint) + Rust logic
