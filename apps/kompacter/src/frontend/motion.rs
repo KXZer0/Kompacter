@@ -110,6 +110,19 @@ fn hwnd(_ui: &AppWindow) -> Option<isize> {
     None
 }
 
+/// Rounded corners and the system shadow for the panel on macOS.
+#[cfg(target_os = "macos")]
+fn style_mac_panel(ui: &AppWindow) {
+    use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    ui.window().with_winit_window(|w| {
+        if let Ok(handle) = w.window_handle() {
+            if let RawWindowHandle::AppKit(h) = handle.as_raw() {
+                sys::style_panel(h.ns_view);
+            }
+        }
+    });
+}
+
 fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
@@ -258,6 +271,8 @@ impl App {
             if let Some(h) = hwnd(&ui) {
                 sys::style_plain_window(h);
             }
+            #[cfg(target_os = "macos")]
+            style_mac_panel(&ui);
         }
         place(&ui, &self.motion, self.glass, was_hidden);
         if self.glass && cfg!(windows) {

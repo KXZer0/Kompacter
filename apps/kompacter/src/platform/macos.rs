@@ -214,6 +214,64 @@ pub fn install_activation(callback: impl Fn(Vec<PathBuf>) + 'static) -> bool {
     installed.iter().all(|result| result.as_bool())
 }
 
+/// The top right of the free area (below the menu bar, beside the Dock) of the screen
+/// under the mouse, in winit's physical pixels: the panel hangs below the menu-bar icon.
+pub fn anchor() -> Option<super::Anchor> {
+    use objc2_app_kit::{NSEvent, NSScreen};
+    let mtm = MainThreadMarker::new()?;
+    let screens = NSScreen::screens(mtm);
+    // Window coordinates count down from the top of the screen with the menu bar.
+    let main = screens.firstObject()?;
+    let mouse = NSEvent::mouseLocation();
+    let screen = screens
+        .iter()
+        .find(|s| {
+            let f = s.frame();
+            (f.origin.x..f.origin.x + f.size.width).contains(&mouse.x)
+                && (f.origin.y..f.origin.y + f.size.height).contains(&mouse.y)
+        })
+        .unwrap_or_else(|| main.clone());
+    let free = screen.visibleFrame();
+    let scale = screen.backingScaleFactor();
+    if free.size.width <= 0.0 || free.size.height <= 0.0 || scale <= 0.0 {
+        return None;
+    }
+    let top = main.frame().size.height - (free.origin.y + free.size.height);
+    let right = free.origin.x + free.size.width;
+    Some(super::Anchor {
+        right: (right * scale).round() as i32,
+        edge: (top * scale).round() as i32,
+        scale,
+        from_top: true,
+    })
+}
+
+/// Give the frameless panel the system's rounded corners and shadow: a titled window
+/// whose content fills it, with the title bar and its buttons hidden.
+pub fn style_panel(view: NonNull<std::ffi::c_void>) {
+    use objc2_app_kit::{NSView, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility};
+    // SAFETY: winit hands out the panel's live NSView, used here on the main thread.
+    let view: &NSView = unsafe { view.cast().as_ref() };
+    let Some(window) = view.window() else { return };
+    let mask = NSWindowStyleMask::Titled | NSWindowStyleMask::FullSizeContentView;
+    if !window.styleMask().contains(mask) {
+        window.setStyleMask(window.styleMask() | mask);
+    }
+    window.setTitlebarAppearsTransparent(true);
+    window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
+    for button in [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ] {
+        if let Some(button) = window.standardWindowButton(button) {
+            button.setHidden(true);
+        }
+    }
+    window.setHasShadow(true);
+    window.invalidateShadow();
+}
+
 pub fn focus_application() {
     if let Some(mtm) = MainThreadMarker::new() {
         let app = NSApplication::sharedApplication(mtm);

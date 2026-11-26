@@ -17,6 +17,7 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{
     clipboard_files, clipboard_seq, copy_files, focus_application, install_activation, recycle,
+    style_panel,
 };
 
 #[cfg(windows)]
@@ -46,7 +47,9 @@ pub struct Anchor {
 pub fn anchor() -> Option<Anchor> {
     #[cfg(target_os = "linux")]
     return linux::anchor();
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    return macos::anchor();
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     return corner().map(|(right, edge, scale)| Anchor {
         right,
         edge,
@@ -334,7 +337,7 @@ mod imp {
         }
         Err("not supported on this system yet".into())
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub fn corner() -> Option<(i32, i32, f64)> {
         None
     }
