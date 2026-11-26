@@ -60,6 +60,29 @@ const IMAGE_OVERRIDES: [Option<ImageFormat>; 4] = [
 const ARCHIVE_OVERRIDES: [Option<ArchiveFormat>; 3] =
     [None, Some(ArchiveFormat::Zip), Some(ArchiveFormat::SevenZ)];
 
+fn audio_label(format: AudioFormat) -> &'static str {
+    match format {
+        AudioFormat::Auto => "Auto",
+        AudioFormat::Mp3 => "MP3",
+        AudioFormat::Opus => "Opus",
+    }
+}
+
+fn image_label(format: ImageFormat) -> &'static str {
+    match format {
+        ImageFormat::Auto => "Auto",
+        ImageFormat::Jpeg => "JPEG",
+        ImageFormat::Webp => "WebP",
+    }
+}
+
+fn archive_label(format: ArchiveFormat) -> &'static str {
+    match format {
+        ArchiveFormat::Zip => "Zip",
+        ArchiveFormat::SevenZ => "7z",
+    }
+}
+
 fn choice_index<T: PartialEq>(choices: &[T], value: T) -> i32 {
     choices
         .iter()
@@ -330,11 +353,13 @@ impl App {
         prefs.set_output_index(match s.output.as_str() {
             "beside" => 1,
             "custom" => 2,
-            "replace" if cfg!(windows) => 3,
+            "replace" if sys::CAPABILITIES.trash => 3,
             _ => 0,
         });
         prefs.set_output_dir(s.output_dir.as_str().into());
         prefs.set_windows_integration(cfg!(windows));
+        prefs.set_replace_available(sys::CAPABILITIES.trash);
+        prefs.set_trash_name(sys::TRASH_NAME.into());
         prefs.set_gpu(s.gpu);
         prefs.set_auto_update(s.auto_update);
         prefs.set_auto_hide(s.auto_hide);
@@ -348,6 +373,11 @@ impl App {
         prefs.set_audio_index(choice_index(&AUDIO_OVERRIDES, s.audio_format));
         prefs.set_image_index(choice_index(&IMAGE_OVERRIDES, s.image_format));
         prefs.set_archive_index(choice_index(&ARCHIVE_OVERRIDES, s.archive_format));
+        let auto = s.compression_preference.options(0);
+        prefs.set_video_auto(auto.video_codec.label().into());
+        prefs.set_audio_auto(audio_label(auto.audio_format).into());
+        prefs.set_image_auto(image_label(auto.image_format).into());
+        prefs.set_archive_auto(archive_label(auto.archive).into());
         prefs.set_custom_mb((s.custom_bytes / (1024 * 1024)) as i32);
         drop(s);
         self.sync_automatic();
@@ -1119,6 +1149,18 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         prefs.on_set_archive(move |i| {
             a.settings.borrow_mut().archive_format =
                 ARCHIVE_OVERRIDES.get(i as usize).copied().flatten();
+            a.save();
+            a.sync_settings();
+        });
+        let a = app.clone();
+        prefs.on_reset_formats(move || {
+            {
+                let mut s = a.settings.borrow_mut();
+                s.video_codec = None;
+                s.audio_format = None;
+                s.image_format = None;
+                s.archive_format = None;
+            }
             a.save();
             a.sync_settings();
         });

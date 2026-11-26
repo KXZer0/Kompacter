@@ -1,10 +1,10 @@
 //! Native file clipboard and Launch Services events for the winit application.
 
-use objc2::rc::autoreleasepool;
+use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, ProtocolObject, Sel};
 use objc2::{ffi, sel, ClassType, MainThreadMarker};
 use objc2_app_kit::{NSApplication, NSApplicationDelegateReply, NSPasteboard};
-use objc2_foundation::{NSArray, NSObjectProtocol, NSString, NSURL};
+use objc2_foundation::{NSArray, NSFileManager, NSObjectProtocol, NSString, NSURL};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -64,20 +64,7 @@ pub fn copy_files(paths: &[PathBuf]) -> Result<(), String> {
     autoreleasepool(|_| {
         let urls = paths
             .iter()
-            .map(|path| {
-                let absolute = std::path::absolute(path).map_err(|e| e.to_string())?;
-                let bytes =
-                    CString::new(absolute.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
-                // SAFETY: The initializer takes a valid, terminated path string.
-                let url = unsafe {
-                    NSURL::fileURLWithFileSystemRepresentation_isDirectory_relativeToURL(
-                        NonNull::from(bytes.as_c_str()).cast(),
-                        absolute.is_dir(),
-                        None,
-                    )
-                };
-                Ok(ProtocolObject::from_retained(url))
-            })
+            .map(|path| file_url(path).map(ProtocolObject::from_retained))
             .collect::<Result<Vec<_>, String>>()?;
         let board = NSPasteboard::generalPasteboard();
         board.clearContents();
@@ -86,6 +73,29 @@ pub fn copy_files(paths: &[PathBuf]) -> Result<(), String> {
         } else {
             Err("couldn't put the files on the clipboard".into())
         }
+    })
+}
+
+fn file_url(path: &Path) -> Result<Retained<NSURL>, String> {
+    let absolute = std::path::absolute(path).map_err(|e| e.to_string())?;
+    let bytes = CString::new(absolute.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+    // SAFETY: The initializer takes a valid, terminated path string.
+    Ok(unsafe {
+        NSURL::fileURLWithFileSystemRepresentation_isDirectory_relativeToURL(
+            NonNull::from(bytes.as_c_str()).cast(),
+            absolute.is_dir(),
+            None,
+        )
+    })
+}
+
+/// Move a file to the Trash (Finder's "Put Back" works), never delete it outright.
+pub fn recycle(path: &Path) -> Result<(), String> {
+    autoreleasepool(|_| {
+        let url = file_url(path)?;
+        NSFileManager::defaultManager()
+            .trashItemAtURL_resultingItemURL_error(&url, None)
+            .map_err(|e| e.localizedDescription().to_string())
     })
 }
 

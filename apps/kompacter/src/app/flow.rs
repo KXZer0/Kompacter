@@ -486,7 +486,7 @@ impl App {
                 let mut out = engine
                     .compress(&path, &opts, &mut on_progress, &cancel)
                     .map_err(|e| e.to_string())?;
-                if cfg!(windows) && !out.untouched && prefs.output == "replace" {
+                if !out.untouched && prefs.output == "replace" {
                     out.path = output::replace_original(&out.path, &path)?;
                 }
                 // All parts go on the clipboard together: one paste attaches them all.

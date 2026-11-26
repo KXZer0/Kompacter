@@ -21,6 +21,9 @@ export global Prefs {
     in property <string> output-dir;
     in property <bool> gpu;
     in property <bool> windows-integration;
+    /// "Replace the original" (needs a Recycle Bin / Trash) and what it's called here.
+    in property <bool> replace-available;
+    in property <string> trash-name: "Recycle Bin";
     in property <bool> auto-update;
     in property <bool> auto-hide;
     in property <string> auto-hide-error;
@@ -34,6 +37,11 @@ export global Prefs {
     in property <int> audio-index;
     in property <int> image-index;
     in property <int> archive-index;
+    /// What each format is under the current preference (shown while it is followed).
+    in property <string> video-auto: "H.264";
+    in property <string> audio-auto: "MP3";
+    in property <string> image-auto: "Auto";
+    in property <string> archive-auto: "Zip";
     in property <[string]> shortcut-options: ["Off", "Ctrl+Alt+K", "Ctrl+Shift+K", "Ctrl+Shift+Space"];
     in property <int> shortcut-index;
     in property <bool> shortcut-taken;
@@ -63,6 +71,8 @@ export global Prefs {
     callback set-audio(int);
     callback set-image(int);
     callback set-archive(int);
+    /// Every format back to "Follow preference".
+    callback reset-formats();
     callback set-shortcut(int);
     callback set-paste-guard(bool);
     callback set-watch-copies(bool);
@@ -204,6 +214,9 @@ export component SettingsView inherits Rectangle {
         : paste-cell.hovered || paste-switch.hovered ? 1
         : clip-cell.hovered || clip-switch.hovered ? 2 : -1;
     property <bool> preview-on;
+    // Formats set to something other than "Follow preference".
+    property <int> overrides: (Prefs.video-index != 0 ? 1 : 0) + (Prefs.audio-index != 0 ? 1 : 0)
+        + (Prefs.image-index != 0 ? 1 : 0) + (Prefs.archive-index != 0 ? 1 : 0);
     // Which row the card is for; kept while it fades out.
     property <int> preview-row;
     // How long the pointer has rested, in 110 ms steps; the card shows after five. A new
@@ -400,9 +413,9 @@ export component SettingsView inherits Rectangle {
                     }
                     Check { on: Prefs.output-index == 2; }
                 }
-                if Prefs.windows-integration: Cell {
+                if Prefs.replace-available: Cell {
                     label: "Replace the original";
-                    small: "Original goes to the Recycle Bin";
+                    small: "Original goes to the \{Prefs.trash-name}";
                     clickable: true;
                     clicked => { Prefs.set-output(3); }
                     Check { on: Prefs.output-index == 3; }
@@ -427,18 +440,22 @@ export component SettingsView inherits Rectangle {
                 }
             }
 
-            GroupTitle { text: "FORMAT OVERRIDES"; }
+            // An override ignores the preference above, so each row and the title say so.
+            GroupTitle {
+                text: root.overrides == 0 ? "FORMATS" : root.overrides == 1 ? "FORMATS · 1 OVERRIDE"
+                    : "FORMATS · \{root.overrides} OVERRIDES";
+            }
             Group {
                 Cell {
                     label: "Video";
-                    small: Prefs.video-index == 0 ? "H.264"
-                        : Prefs.video-index == 1 ? "Plays on more devices"
-                        : Prefs.video-index == 2 ? "Smaller files"
-                        : "More detail at the same size";
+                    small: Prefs.video-index == 0 ? "From preference: \{Prefs.video-auto}"
+                        : Prefs.video-index == 1 ? "Override · Plays on more devices"
+                        : Prefs.video-index == 2 ? "Override · Smaller files"
+                        : "Override · More detail at the same size";
                     first: true;
                     Dropdown {
-                        options: ["Use preference", "H.264", "H.265", "AV1"];
-                        notes: ["H.264", "Plays on more devices", "Check recipient support", "Check recipient support"];
+                        options: ["Follow preference", "H.264", "H.265", "AV1"];
+                        notes: [Prefs.video-auto, "Plays on more devices", "Check recipient support", "Check recipient support"];
                         index: Prefs.video-index;
                         y: (parent.height - self.height) / 2;
                         picked(i) => { Prefs.set-video(i); }
@@ -446,14 +463,12 @@ export component SettingsView inherits Rectangle {
                 }
                 Cell {
                     label: "Audio";
-                    small: Prefs.audio-index == 0
-                        ? (Prefs.compression-preference == 0 ? "MP3"
-                        : Prefs.compression-preference == 2 ? "Opus" : "Auto")
-                        : Prefs.audio-index == 1 ? "MP3, or Opus for tight limits"
-                        : Prefs.audio-index == 2 ? "Plays on more devices"
-                        : "Better sound at the same size";
+                    small: Prefs.audio-index == 0 ? "From preference: \{Prefs.audio-auto}"
+                        : Prefs.audio-index == 1 ? "Override · MP3, or Opus for tight limits"
+                        : Prefs.audio-index == 2 ? "Override · Plays on more devices"
+                        : "Override · Better sound at the same size";
                     Dropdown {
-                        options: ["Use preference", "Auto", "MP3", "Opus"];
+                        options: ["Follow preference", "Auto", "MP3", "Opus"];
                         index: Prefs.audio-index;
                         y: (parent.height - self.height) / 2;
                         picked(i) => { Prefs.set-audio(i); }
@@ -461,13 +476,12 @@ export component SettingsView inherits Rectangle {
                 }
                 Cell {
                     label: "Images";
-                    small: Prefs.image-index == 0
-                        ? (Prefs.compression-preference == 2 ? "WebP" : "Auto")
-                        : Prefs.image-index == 1 ? "Lossless first"
-                        : Prefs.image-index == 2 ? "Opens on more devices"
-                        : "Keeps transparency";
+                    small: Prefs.image-index == 0 ? "From preference: \{Prefs.image-auto}"
+                        : Prefs.image-index == 1 ? "Override · Lossless first"
+                        : Prefs.image-index == 2 ? "Override · Opens on more devices"
+                        : "Override · Keeps transparency";
                     Dropdown {
-                        options: ["Use preference", "Auto", "JPEG", "WebP"];
+                        options: ["Follow preference", "Auto", "JPEG", "WebP"];
                         index: Prefs.image-index;
                         y: (parent.height - self.height) / 2;
                         picked(i) => { Prefs.set-image(i); }
@@ -475,14 +489,21 @@ export component SettingsView inherits Rectangle {
                 }
                 Cell {
                     label: "Folders & files";
-                    small: Prefs.archive-index == 0 ? "Zip" : Prefs.archive-index == 1
-                        ? "Opens on more devices" : "Needs Windows 11 or 7-Zip";
+                    small: Prefs.archive-index == 0 ? "From preference: \{Prefs.archive-auto}"
+                        : Prefs.archive-index == 1 ? "Override · Opens on more devices"
+                        : "Override · Needs Windows 11 or 7-Zip";
                     Dropdown {
-                        options: ["Use preference", "Zip", "7z"];
+                        options: ["Follow preference", "Zip", "7z"];
                         index: Prefs.archive-index;
                         y: (parent.height - self.height) / 2;
                         picked(i) => { Prefs.set-archive(i); }
                     }
+                }
+                if root.overrides > 0: Cell {
+                    label: "Follow preference for all";
+                    small: "Clear the overrides above";
+                    clickable: true;
+                    clicked => { Prefs.reset-formats(); }
                 }
             }
 

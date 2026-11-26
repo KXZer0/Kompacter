@@ -39,8 +39,8 @@ pub struct Settings {
     /// The one-time "keep the tray icon visible" tip was answered or dismissed.
     pub tray_tip_seen: bool,
     pub compression_preference: CompressionPreference,
-    // Existing JSON format values are explicit overrides. New installations use the
-    // preference for a format until the user sets a specific override.
+    // Per-format overrides; `None` follows the preference. Files written before the
+    // preference existed are migrated once by `parse` (old defaults become `None`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_codec: Option<VideoCodec>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -139,10 +139,36 @@ fn file() -> Option<PathBuf> {
 }
 
 pub fn load() -> Settings {
-    file()
+    let Some((settings, migrated)) = file()
         .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+        .and_then(|b| parse(&b))
+    else {
+        return Settings::default();
+    };
+    if migrated {
+        // Persist once, so a later run sees the preference key and keeps the result.
+        let _ = save(&settings);
+    }
+    settings
+}
+
+/// Reads saved settings. Builds from before the compression preference wrote every
+/// format field, so their old defaults (H.264, Auto, Auto, Zip) were never a choice:
+/// those become "follow the preference", other values stay as overrides. The flag says
+/// the file was migrated and should be saved again.
+fn parse(bytes: &[u8]) -> Option<(Settings, bool)> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let legacy = value
+        .as_object()
+        .is_some_and(|o| !o.contains_key("compressionPreference"));
+    let mut settings: Settings = serde_json::from_value(value).ok()?;
+    if legacy {
+        settings.video_codec = settings.video_codec.filter(|v| *v != VideoCodec::H264);
+        settings.audio_format = settings.audio_format.filter(|v| *v != AudioFormat::Auto);
+        settings.image_format = settings.image_format.filter(|v| *v != ImageFormat::Auto);
+        settings.archive_format = settings.archive_format.filter(|v| *v != ArchiveFormat::Zip);
+    }
+    Some((settings, legacy))
 }
 
 pub fn save(s: &Settings) -> io::Result<()> {
@@ -192,8 +218,8 @@ mod tests {
 
     #[test]
     fn upgrade_preserves_completed_onboarding_and_each_legacy_format() {
-        let mut settings: Settings = serde_json::from_str(
-            r#"{
+        let (mut settings, migrated) = parse(
+            br#"{
             "welcomed": true,
             "videoCodec": "h265",
             "audioFormat": "mp3",
@@ -202,6 +228,7 @@ mod tests {
         }"#,
         )
         .unwrap();
+        assert!(migrated);
         assert!(settings.welcomed);
         assert_eq!(
             settings.compression_preference,
@@ -210,12 +237,59 @@ mod tests {
 
         settings.compression_preference = CompressionPreference::Efficiency;
         let saved = serde_json::to_vec(&settings).unwrap();
-        let reloaded: Settings = serde_json::from_slice(&saved).unwrap();
+        let (reloaded, migrated) = parse(&saved).unwrap();
+        assert!(!migrated);
         let options = reloaded.options(10);
         assert!(reloaded.welcomed);
         assert_eq!(options.video_codec, VideoCodec::H265);
         assert_eq!(options.audio_format, AudioFormat::Mp3);
         assert_eq!(options.image_format, ImageFormat::Jpeg);
         assert_eq!(options.archive, ArchiveFormat::SevenZ);
+    }
+
+    #[test]
+    fn legacy_defaults_follow_the_preference_after_upgrade() {
+        // What every earlier build wrote for a user who never touched the formats.
+        let (mut settings, migrated) = parse(
+            br#"{
+            "welcomed": true,
+            "videoCodec": "h264",
+            "audioFormat": "auto",
+            "imageFormat": "auto",
+            "archiveFormat": "zip"
+        }"#,
+        )
+        .unwrap();
+        assert!(migrated);
+        assert_eq!(settings.video_codec, None);
+        assert_eq!(settings.audio_format, None);
+        assert_eq!(settings.image_format, None);
+        assert_eq!(settings.archive_format, None);
+
+        // So the preference now decides.
+        settings.compression_preference = CompressionPreference::Efficiency;
+        assert_eq!(settings.options(10).audio_format, AudioFormat::Opus);
+        assert_eq!(settings.options(10).image_format, ImageFormat::Webp);
+        settings.compression_preference = CompressionPreference::Compatibility;
+        assert_eq!(settings.options(10).image_format, ImageFormat::Jpeg);
+
+        // Mixed: defaults drop, real choices stay.
+        let (settings, _) = parse(
+            br#"{"videoCodec": "av1", "audioFormat": "auto", "imageFormat": "webp", "archiveFormat": "zip"}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.video_codec, Some(VideoCodec::Av1));
+        assert_eq!(settings.audio_format, None);
+        assert_eq!(settings.image_format, Some(ImageFormat::Webp));
+        assert_eq!(settings.archive_format, None);
+
+        // After the migration, an explicit default chosen in Settings is kept.
+        let (settings, migrated) = parse(
+            br#"{"compressionPreference": "efficiency", "videoCodec": "h264", "audioFormat": "auto"}"#,
+        )
+        .unwrap();
+        assert!(!migrated);
+        assert_eq!(settings.video_codec, Some(VideoCodec::H264));
+        assert_eq!(settings.audio_format, Some(AudioFormat::Auto));
     }
 }

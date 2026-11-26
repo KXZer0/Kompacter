@@ -53,7 +53,13 @@ slint = { version = "1.19", default-features = false, features = ["renderer-skia
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSPasteboard", "NSResponder"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSPathUtilities"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "NSError",
+  "NSFileManager",
+  "NSPathUtilities",
+  "NSString",
+  "NSURL",
+] }
 
 # Same Windows bindings Slint already uses (no extra copy).
 [target.'cfg(windows)'.dependencies.windows-sys]

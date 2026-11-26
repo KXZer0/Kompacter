@@ -14,7 +14,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 mod activation;
+mod trash;
 pub use activation::activate_window;
+pub use trash::recycle;
 
 pub const APP_ID: &str = "io.github.KXZer0.Kompacter";
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
@@ -90,13 +92,18 @@ impl Activation {
 }
 
 pub struct Primary {
-    listener: UnixListener,
+    /// None: another user holds our socket names, so this launch runs on its own
+    /// (no single instance) rather than not at all.
+    listener: Option<UnixListener>,
     initial: Activation,
 }
 
 impl Primary {
     pub fn listen(self, on_activation: impl Fn(Activation) + Send + 'static) -> Activation {
         let Self { listener, initial } = self;
+        let Some(listener) = listener else {
+            return initial;
+        };
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
@@ -136,41 +143,93 @@ fn same_user(stream: &UnixStream) -> bool {
     }
 }
 
-fn socket_address() -> io::Result<SocketAddr> {
+/// Socket name for this user and graphical login.
+fn socket_name() -> String {
     // Keep each graphical login independent, including multiple sessions
     // sharing /run/user/<uid>. Use the Wayland socket in a Wayland session.
     let mut session = DefaultHasher::new();
     let display = std::env::var_os("WAYLAND_DISPLAY").or_else(|| std::env::var_os("DISPLAY"));
     display.hash(&mut session);
     std::env::var_os("XDG_RUNTIME_DIR").hash(&mut session);
-    let name = format!(
+    format!(
         "{APP_ID}.{}.{:016x}",
         unsafe { libc::geteuid() },
         session.finish()
-    );
-    SocketAddr::from_abstract_name(name.as_bytes())
+    )
+}
+
+/// A socket file in `$XDG_RUNTIME_DIR`, used when the abstract name is taken by another
+/// user. Only when that folder is ours and private (0700), so nobody else can take it.
+fn private_socket() -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
+    let meta = std::fs::symlink_metadata(&dir).ok()?;
+    let ours =
+        meta.is_dir() && meta.uid() == unsafe { libc::geteuid() } && meta.mode() & 0o077 == 0;
+    ours.then(|| dir.join(format!("{}.sock", socket_name())))
+}
+
+enum Elected {
+    /// This launch is the resident (None: it only wanted to quit the resident).
+    Resident(Option<Primary>),
+    /// Delivered to the running Kompacter.
+    Delivered,
+    /// The socket belongs to another user.
+    Taken(Activation),
 }
 
 /// Elect a resident before initializing the GUI, or deliver this launch to it.
 pub fn launch() -> io::Result<Option<Primary>> {
     let initial = Activation::from_args();
-    let address = socket_address()?;
+    let abstract_name = SocketAddr::from_abstract_name(socket_name().as_bytes())?;
+    let initial = match elect(&abstract_name, None, initial)? {
+        Elected::Resident(primary) => return Ok(primary),
+        Elected::Delivered => return Ok(None),
+        Elected::Taken(initial) => initial,
+    };
+    // Someone else (another local user) holds the name: never fail to start because of
+    // that. Use a private socket file instead, or else run without single instance.
+    eprintln!("Kompacter: activation socket is held by another user, using a fallback");
+    let initial = match private_socket() {
+        Some(path) => match SocketAddr::from_pathname(&path) {
+            Ok(address) => match elect(&address, Some(&path), initial)? {
+                Elected::Resident(primary) => return Ok(primary),
+                Elected::Delivered => return Ok(None),
+                Elected::Taken(initial) => initial,
+            },
+            Err(_) => initial,
+        },
+        None => initial,
+    };
+    if matches!(initial.action, Action::Quit) {
+        return Ok(None);
+    }
+    Ok(Some(Primary {
+        listener: None,
+        initial,
+    }))
+}
+
+/// `file`: the address is a socket file, removed when nothing listens on it any more.
+fn elect(address: &SocketAddr, file: Option<&Path>, initial: Activation) -> io::Result<Elected> {
     let deadline = std::time::Instant::now() + IO_TIMEOUT;
     loop {
-        match UnixListener::bind_addr(&address) {
-            Ok(_) if matches!(initial.action, Action::Quit) => return Ok(None),
-            Ok(listener) => return Ok(Some(Primary { listener, initial })),
+        match UnixListener::bind_addr(address) {
+            Ok(_) if matches!(initial.action, Action::Quit) => return Ok(Elected::Resident(None)),
+            Ok(listener) => {
+                return Ok(Elected::Resident(Some(Primary {
+                    listener: Some(listener),
+                    initial,
+                })))
+            }
             Err(error) if error.kind() == io::ErrorKind::AddrInUse => {}
             Err(error) => return Err(error),
         }
 
-        match UnixStream::connect_addr(&address) {
+        match UnixStream::connect_addr(address) {
             Ok(mut stream) => {
                 if !same_user(&stream) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "Kompacter socket owner differs",
-                    ));
+                    return Ok(Elected::Taken(initial));
                 }
                 stream.set_write_timeout(Some(IO_TIMEOUT))?;
                 stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -183,13 +242,17 @@ pub fn launch() -> io::Result<Option<Primary>> {
                 }
                 stream.write_all(&message)?;
                 stream.shutdown(Shutdown::Write)?;
-                return stream.read_exact(&mut [0]).map(|()| None);
+                return stream.read_exact(&mut [0]).map(|()| Elected::Delivered);
             }
-            // The previous resident may have exited between bind and connect.
+            // The previous resident may have exited between bind and connect. A socket
+            // file outlives its resident, so remove it before binding again.
             Err(error)
                 if error.kind() == io::ErrorKind::ConnectionRefused
                     && std::time::Instant::now() < deadline =>
             {
+                if let Some(file) = file {
+                    let _ = std::fs::remove_file(file);
+                }
                 std::thread::sleep(Duration::from_millis(20));
             }
             Err(error) => return Err(error),
@@ -325,4 +388,50 @@ fn tray_host_available() -> bool {
         })
         .and_then(|watcher| watcher.get_property::<bool>("IsStatusNotifierHostRegistered"))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn activation(action: Action) -> Activation {
+        Activation {
+            action,
+            paths: Vec::new(),
+            token: None,
+        }
+    }
+
+    #[test]
+    fn a_socket_file_left_by_an_old_resident_is_taken_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kompacter.sock");
+        // A resident that exited: its socket file stays, nobody listens.
+        drop(UnixListener::bind(&path).unwrap());
+        assert!(path.exists());
+        let address = SocketAddr::from_pathname(&path).unwrap();
+        let Elected::Resident(Some(primary)) =
+            elect(&address, Some(&path), activation(Action::Open)).unwrap()
+        else {
+            panic!("expected to become the resident");
+        };
+
+        // The next launch is delivered to it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        primary.listen(move |a| {
+            let _ = tx.send(matches!(a.action, Action::Choose));
+        });
+        let delivered = elect(&address, Some(&path), activation(Action::Choose)).unwrap();
+        assert!(matches!(delivered, Elected::Delivered));
+        assert!(rx.recv_timeout(IO_TIMEOUT).unwrap());
+    }
+
+    #[test]
+    fn without_a_listener_the_launch_still_runs() {
+        let primary = Primary {
+            listener: None,
+            initial: activation(Action::Open),
+        };
+        assert!(matches!(primary.listen(|_| {}).action, Action::Open));
+    }
 }

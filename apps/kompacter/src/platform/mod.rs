@@ -5,18 +5,18 @@
 use std::path::{Path, PathBuf};
 
 mod capabilities;
-pub use capabilities::CAPABILITIES;
+pub use capabilities::{CAPABILITIES, TRASH_NAME};
 
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::{clipboard_files, copy_files};
+pub use linux::{clipboard_files, copy_files, recycle};
 
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    clipboard_files, clipboard_seq, copy_files, focus_application, install_activation,
+    clipboard_files, clipboard_seq, copy_files, focus_application, install_activation, recycle,
 };
 
 #[cfg(windows)]
@@ -322,6 +322,7 @@ mod imp {
     pub fn animations_enabled() -> bool {
         true
     }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     pub fn recycle(_path: &Path) -> Result<(), String> {
         Err("not supported on this system yet".into())
     }
