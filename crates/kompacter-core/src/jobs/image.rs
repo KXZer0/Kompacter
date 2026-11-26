@@ -1,12 +1,11 @@
-//! Images: lossless first when the picture isn't already a JPEG (WebP lossless keeps every
-//! pixel and is ~25% smaller than PNG), then JPEG (or WebP when there's transparency, or
-//! when the user picked WebP), stepping quality and size down until the result fits. Huge photos are capped at 4096 px on the long side first.
-//! Phone photos are often stored sideways with an EXIF "orientation" tag; ffmpeg doesn't
-//! apply it to stills, so we read it ourselves and turn the picture upright.
-//! iPhone HEIC/HEIF and AVIF photos are decoded to a lossless PNG first (ffmpeg puts a
-//! HEIC's tiles together and turns it upright there), then go the JPEG way like any photo.
+//! Fit a still image by preserving native dimensions where possible, then trying
+//! smaller resolutions. HEIC/HEIF and AVIF are first decoded to PNG so ffmpeg can
+//! assemble the tiles and apply the container orientation.
 
+use std::fs::File;
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 
 use super::{file_size, name_of, with_ext, Ctx};
 use crate::error::{Error, Result};
@@ -28,8 +27,19 @@ pub(crate) fn fit(
     out_base: &Path,
     progress: Progress,
 ) -> Result<PathBuf> {
+    let source = image_features(&info.path)?;
+    if source.animated {
+        return Err(Error::Unsupported(
+            "this animated image cannot be compressed without dropping frames".into(),
+        ));
+    }
+    if info.video.as_ref().is_some_and(|v| v.hdr.is_some()) {
+        return Err(Error::Unsupported(
+            "this image's HDR colors cannot be preserved in the selected format".into(),
+        ));
+    }
     if !is_heif_like(&info.path) {
-        return fit_still(ctx, info, true, target, out_base, progress);
+        return fit_still(ctx, info, source, true, target, out_base, progress);
     }
     let tmp = tempfile::tempdir()?;
     let png = tmp.path().join("photo.png");
@@ -39,7 +49,15 @@ pub(crate) fn fit(
     ctx.ff.run(&a, 0.0, &mut |_| {}, ctx.cancel)?;
     let decoded = probe(ctx.ff, &png)?;
     // Already a lossy photo: a lossless copy would only be bigger.
-    match fit_still(ctx, &decoded, false, target, out_base, progress) {
+    match fit_still(
+        ctx,
+        &decoded,
+        image_features(&png)?,
+        false,
+        target,
+        out_base,
+        progress,
+    ) {
         Err(Error::DoesNotFit { target, best, .. }) => Err(Error::DoesNotFit {
             what: name_of(&info.path),
             target,
@@ -52,7 +70,8 @@ pub(crate) fn fit(
 fn fit_still(
     ctx: &Ctx,
     info: &MediaInfo,
-    try_lossless: bool,
+    source: ImageFeatures,
+    try_webp_native: bool,
     target: u64,
     out_base: &Path,
     progress: Progress,
@@ -61,92 +80,114 @@ fn fit_still(
         .video
         .as_ref()
         .ok_or_else(|| Error::Unsupported("unreadable image".into()))?;
-    let orient = orientation(&info.path);
+    let orient = source.orientation.unwrap_or(1);
     let turn = orient_filter(orient);
-    // A quarter turn swaps width and height.
-    let (w, h) = if orient >= 5 {
-        (v.height.max(1) as f64, v.width.max(1) as f64)
+    // ffprobe already applies the display matrix when reporting the dimensions.
+    // Use our EXIF transform instead of ffmpeg's autorotation when both exist.
+    let (w, h) = if orient >= 5 && !v.rotated {
+        (v.height.max(1), v.width.max(1))
     } else {
-        (v.width.max(1) as f64, v.height.max(1) as f64)
+        (v.width.max(1), v.height.max(1))
     };
-    let base_scale = (MAX_SIDE / w.max(h)).min(1.0);
-    // Transparency never becomes JPEG (JPEG can't hold it).
+    let base_scale = (MAX_SIDE / f64::from(w.max(h))).min(1.0);
+
+    // WebP's ffmpeg encoder does not write ICC profiles. The JPEG encoder can
+    // copy ICC side data, but it cannot carry PNG gamma/chromaticity or alpha.
+    if source.png_color
+        || v.hdr.is_some()
+        || (source.icc && (info.has_alpha || ctx.image_format == ImageFormat::Webp))
+    {
+        return Err(Error::Unsupported(
+            "this image's color metadata cannot be preserved in the selected format".into(),
+        ));
+    }
+
     let webp = info.has_alpha || ctx.image_format == ImageFormat::Webp;
     let out = with_ext(out_base, if webp { "webp" } else { "jpg" });
+    let tmp = tempfile::tempdir_in(out.parent().unwrap_or_else(|| Path::new(".")))?;
+    let mut smallest = info.size_bytes;
 
-    // Lossless first (Auto), unless it's already a JPEG: identical pixels, often enough.
-    if try_lossless && ctx.image_format == ImageFormat::Auto && v.codec != "mjpeg" {
-        let lossless = with_ext(out_base, "webp");
-        let (tw, th) = even(w * base_scale, h * base_scale);
-        let mut a = still_args(info, turn, tw, th);
+    // Native-sized, unprofiled 8-bit RGB can pass through WebP's lossless mode
+    // without a size change or chroma subsampling.
+    if try_webp_native
+        && ctx.image_format == ImageFormat::Auto
+        && !source.icc
+        && !info.has_alpha
+        && v.pix_fmt == "rgb24"
+        && base_scale == 1.0
+    {
+        let candidate = tmp.path().join("native.webp");
+        let mut a = still_args(info, turn, None);
         a.extend(args([
             "-c:v",
             "libwebp",
+            "-pix_fmt",
+            "bgra",
             "-lossless",
             "1",
             "-compression_level",
             "6",
         ]));
-        a.push(lossless.clone().into());
+        a.push(candidate.clone().into());
         ctx.ff.run(&a, 0.0, &mut |_| {}, ctx.cancel)?;
-        if file_size(&lossless)? <= target {
+        let size = file_size(&candidate)?;
+        if size <= target {
+            let lossless = with_ext(out_base, "webp");
+            if ctx.cancel.load(Ordering::Relaxed) {
+                return Err(Error::Cancelled);
+            }
+            std::fs::rename(&candidate, &lossless)?;
             progress(1.0);
             return Ok(lossless);
         }
-        let _ = std::fs::remove_file(&lossless);
-    }
-
-    // Every (scale, quality) pair, best-looking first. Size shrinks (roughly) along this
-    // ladder, so a binary search finds the best one that fits in ~5 encodes instead of 20.
-    let ladder: Vec<(f64, usize)> = SCALES
-        .iter()
-        .flat_map(|&s| (0..JPEG_Q.len()).map(move |q| (s, q)))
-        .collect();
-    let encode = |i: usize, dest: &Path| -> Result<u64> {
-        let (s, qi) = ladder[i];
-        let (tw, th) = even(w * base_scale * s, h * base_scale * s);
-        let mut a = still_args(info, turn, tw, th);
-        if webp {
-            a.extend(args(["-c:v", "libwebp", "-quality"]));
-            a.push(WEBP_Q[qi].to_string().into());
-        } else {
-            a.extend(args(["-c:v", "mjpeg", "-pix_fmt", "yuvj420p", "-q:v"]));
-            a.push(JPEG_Q[qi].to_string().into());
-        }
-        a.push(dest.into());
-        ctx.ff.run(&a, 0.0, &mut |_| {}, ctx.cancel)?;
-        file_size(dest)
-    };
-
-    let tmp = tempfile::tempdir()?;
-    let probe_out = tmp.path().join(out.file_name().unwrap_or_default());
-    let steps = (ladder.len() as f32).log2().ceil() + 1.0;
-    let (mut lo, mut hi) = (0usize, ladder.len() - 1);
-    let mut best_fit: Option<usize> = None;
-    let mut smallest = u64::MAX;
-    let mut done = 0.0;
-    while lo <= hi {
-        let mid = (lo + hi) / 2;
-        let size = encode(mid, &probe_out)?;
-        done += 1.0;
-        progress((done / steps).min(0.95));
         smallest = smallest.min(size);
-        if size <= target {
-            best_fit = Some(mid);
-            std::fs::copy(&probe_out, &out)?;
-            if mid == 0 {
-                break;
+    }
+
+    let candidate = tmp.path().join(out.file_name().unwrap_or_default());
+    let mut attempted = 0;
+    let mut previous = None;
+    let qualities = if webp { WEBP_Q } else { JPEG_Q };
+
+    // Resolution takes priority so detail such as small text remains legible.
+    // The first fitting quality within a resolution is its best. A smaller
+    // resolution's high-quality encode can be larger than a bigger one's
+    // low-quality encode, so never use a miss to skip another resolution.
+    for scale in SCALES {
+        let size = dimensions(w, h, base_scale * scale);
+        if previous == Some(size) {
+            continue;
+        }
+        previous = Some(size);
+        for quality in qualities {
+            let mut a = still_args(info, turn, Some(size));
+            if webp {
+                a.extend(args(["-c:v", "libwebp", "-quality"]));
+            } else {
+                a.extend(args(["-c:v", "mjpeg", "-pix_fmt", "yuvj420p", "-q:v"]));
             }
-            hi = mid - 1;
-        } else {
-            lo = mid + 1;
+            a.push(quality.to_string().into());
+            a.push(candidate.clone().into());
+            ctx.ff.run(&a, 0.0, &mut |_| {}, ctx.cancel)?;
+            let bytes = file_size(&candidate)?;
+            if bytes <= target {
+                if source.icc && !image_features(&candidate)?.icc {
+                    return Err(Error::Unsupported(
+                        "the image's color profile was not retained by the encoder".into(),
+                    ));
+                }
+                if ctx.cancel.load(Ordering::Relaxed) {
+                    return Err(Error::Cancelled);
+                }
+                std::fs::rename(&candidate, &out)?;
+                progress(1.0);
+                return Ok(out);
+            }
+            smallest = smallest.min(bytes);
+            attempted += 1;
+            progress(attempted as f32 / (SCALES.len() * qualities.len() + 1) as f32);
         }
     }
-    if best_fit.is_some() {
-        progress(1.0);
-        return Ok(out);
-    }
-    let _ = std::fs::remove_file(&out);
+
     Err(Error::DoesNotFit {
         what: name_of(&info.path),
         target,
@@ -154,94 +195,184 @@ fn fit_still(
     })
 }
 
-fn even(w: f64, h: f64) -> (u32, u32) {
-    let e = |v: f64| ((v.round() as u32) / 2 * 2).max(2);
-    (e(w), e(h))
+fn dimensions(w: u32, h: u32, scale: f64) -> (u32, u32) {
+    if scale == 1.0 {
+        return (w, h);
+    }
+    let scaled = |side: u32| {
+        let pixels = (f64::from(side) * scale).round() as u32;
+        (pixels / 2 * 2).clamp(1, side)
+    };
+    (scaled(w), scaled(h))
 }
 
-/// One still frame of the picture, turned upright (`turn`) and scaled to `tw`×`th`.
-/// `-noautorotate`: ffmpeg never turns it on its own (newer builds might), we do it once.
-fn still_args(info: &MediaInfo, turn: Option<&str>, tw: u32, th: u32) -> Vec<std::ffi::OsString> {
-    let mut a = args([
-        "-noautorotate".into(),
-        "-i".into(),
-        info.path.clone().into_os_string(),
-    ]);
-    a.extend(args(["-frames:v", "1", "-vf"]));
-    let scale = format!("scale={tw}:{th}:flags=lanczos");
-    a.push(match turn {
-        Some(t) => format!("{t},{scale}").into(),
-        None => scale.into(),
-    });
+fn still_args(
+    info: &MediaInfo,
+    turn: Option<&str>,
+    size: Option<(u32, u32)>,
+) -> Vec<std::ffi::OsString> {
+    let mut a = Vec::new();
+    if turn.is_some() {
+        a.push("-noautorotate".into());
+    }
+    a.extend(args(["-i".into(), info.path.clone().into_os_string()]));
+    a.extend(args(["-frames:v", "1"]));
+    let mut filters = Vec::new();
+    if let Some(t) = turn {
+        filters.push(t.to_owned());
+    }
+    if let Some((w, h)) = size {
+        filters.push(format!("scale={w}:{h}:flags=lanczos"));
+    }
+    if !filters.is_empty() {
+        a.push("-vf".into());
+        a.push(filters.join(",").into());
+    }
     a
 }
 
-/// EXIF orientation (1–8) of a JPEG photo; 1 (upright) when there is none.
-fn orientation(path: &Path) -> u8 {
-    use std::io::Read;
-    let mut head = Vec::new();
-    let ok = std::fs::File::open(path)
-        .and_then(|f| f.take(256 * 1024).read_to_end(&mut head))
-        .is_ok();
-    if ok {
-        exif_orientation(&head).unwrap_or(1)
-    } else {
-        1
-    }
+#[derive(Default)]
+struct ImageFeatures {
+    animated: bool,
+    icc: bool,
+    png_color: bool,
+    orientation: Option<u8>,
 }
 
-/// Finds the Orientation tag (0x0112) in a JPEG's EXIF block.
-fn exif_orientation(d: &[u8]) -> Option<u8> {
-    if d.get(0..2)? != [0xFF, 0xD8] {
-        return None;
+fn image_features(path: &Path) -> Result<ImageFeatures> {
+    let mut f = BufReader::new(File::open(path)?);
+    let mut features = ImageFeatures::default();
+    let mut signature = [0; 12];
+    if f.read_exact(&mut signature).is_err() {
+        return Ok(features);
     }
-    let mut i = 2;
-    while i + 4 <= d.len() {
-        if d[i] != 0xFF {
-            return None;
+    if signature.starts_with(b"\x89PNG\r\n\x1a\n") {
+        f.seek(SeekFrom::Start(8))?;
+        let (mut srgb, mut custom_color) = (false, false);
+        let mut chunk = [0; 8];
+        while f.read_exact(&mut chunk).is_ok() {
+            let len = u32::from_be_bytes(chunk[..4].try_into().unwrap());
+            match &chunk[4..] {
+                b"IDAT" | b"IEND" => break,
+                b"acTL" => features.animated = true,
+                b"iCCP" => features.icc = true,
+                b"sRGB" => srgb = true,
+                b"gAMA" | b"cHRM" => custom_color = true,
+                b"eXIf" => {
+                    features.orientation = read_orientation(&mut f, len)?;
+                    f.seek(SeekFrom::Current(4))?;
+                    continue;
+                }
+                b"cICP" => features.png_color = true,
+                _ => {}
+            }
+            f.seek(SeekFrom::Current(i64::from(len) + 4))?;
         }
-        let marker = d[i + 1];
-        let len = u16::from_be_bytes([d[i + 2], d[i + 3]]) as usize;
-        if marker == 0xDA {
-            return None; // image data starts; no EXIF before it
-        }
-        if marker == 0xE1 && d.get(i + 4..i + 10)? == b"Exif\0\0" {
-            let t = d.get(i + 10..(i + 2 + len).min(d.len()))?;
-            let le = match t.get(0..2)? {
-                b"II" => true,
-                b"MM" => false,
-                _ => return None,
-            };
-            let u16_at = |o: usize| {
-                t.get(o..o + 2).map(|b| {
-                    if le {
-                        u16::from_le_bytes([b[0], b[1]])
-                    } else {
-                        u16::from_be_bytes([b[0], b[1]])
+        features.png_color |= custom_color && !srgb && !features.icc;
+    } else if &signature[..4] == b"RIFF" && &signature[8..] == b"WEBP" {
+        // VP8X is the first chunk of extended WebP. Its flags describe the
+        // animation and ICC chunks regardless of the decoder's frame support.
+        let mut chunk = [0; 8];
+        while f.read_exact(&mut chunk).is_ok() {
+            let len = u32::from_le_bytes(chunk[4..].try_into().unwrap());
+            match &chunk[..4] {
+                b"VP8X" if len >= 1 => {
+                    let mut flags = [0; 1];
+                    f.read_exact(&mut flags)?;
+                    features.animated = flags[0] & 0x02 != 0;
+                    features.icc = flags[0] & 0x20 != 0;
+                    if features.animated || flags[0] & 0x08 == 0 {
+                        break;
                     }
-                })
-            };
-            let u32_at = |o: usize| {
-                t.get(o..o + 4).map(|b| {
-                    let a = [b[0], b[1], b[2], b[3]];
-                    if le {
-                        u32::from_le_bytes(a)
-                    } else {
-                        u32::from_be_bytes(a)
-                    }
-                })
-            };
-            let ifd = u32_at(4)? as usize;
-            for k in 0..u16_at(ifd)? as usize {
-                let e = ifd + 2 + k * 12;
-                if u16_at(e)? == 0x0112 {
-                    let v = u16_at(e + 8)?;
-                    return (1..=8).contains(&v).then_some(v as u8);
+                    f.seek(SeekFrom::Current(i64::from(len - 1) + i64::from(len % 2)))?;
+                }
+                b"EXIF" => {
+                    features.orientation = read_orientation(&mut f, len)?;
+                    break;
+                }
+                _ => {
+                    f.seek(SeekFrom::Current(i64::from(len) + i64::from(len % 2)))?;
                 }
             }
-            return None;
         }
-        i += 2 + len;
+    } else if signature.starts_with(&[0xff, 0xd8]) {
+        f.seek(SeekFrom::Start(2))?;
+        let mut marker = [0; 2];
+        while f.read_exact(&mut marker).is_ok() && marker[0] == 0xff {
+            if marker[1] == 0xff {
+                // JPEG allows padding with an extra 0xff between markers.
+                f.seek(SeekFrom::Current(-1))?;
+                continue;
+            }
+            if matches!(marker[1], 0xda | 0xd9) {
+                break;
+            }
+            let mut len = [0; 2];
+            f.read_exact(&mut len)?;
+            let Some(len) = u16::from_be_bytes(len).checked_sub(2) else {
+                break;
+            };
+            if marker[1] == 0xe2 && len >= 12 {
+                let mut id = [0; 12];
+                f.read_exact(&mut id)?;
+                if &id == b"ICC_PROFILE\0" {
+                    features.icc = true;
+                }
+                f.seek(SeekFrom::Current(i64::from(len - 12)))?;
+            } else if marker[1] == 0xe1 {
+                features.orientation =
+                    read_orientation(&mut f, u32::from(len))?.or(features.orientation);
+            } else {
+                f.seek(SeekFrom::Current(i64::from(len)))?;
+            }
+        }
+    }
+    Ok(features)
+}
+
+/// EXIF orientation (1–8) from the first TIFF directory in an EXIF block.
+fn read_orientation(f: &mut (impl Read + Seek), len: u32) -> Result<Option<u8>> {
+    let prefix_len = len.min(64 * 1024);
+    let mut prefix = vec![0; prefix_len as usize];
+    f.read_exact(&mut prefix)?;
+    f.seek(SeekFrom::Current(i64::from(len - prefix_len)))?;
+    let tiff = prefix.strip_prefix(b"Exif\0\0").unwrap_or(&prefix);
+    Ok(exif_orientation(tiff))
+}
+
+fn exif_orientation(t: &[u8]) -> Option<u8> {
+    let le = match t.get(..4)? {
+        b"II\x2a\0" => true,
+        b"MM\0\x2a" => false,
+        _ => return None,
+    };
+    let u16_at = |offset| {
+        let bytes: [u8; 2] = t.get(offset..offset + 2)?.try_into().ok()?;
+        Some(if le {
+            u16::from_le_bytes(bytes)
+        } else {
+            u16::from_be_bytes(bytes)
+        })
+    };
+    let offset = t.get(4..8)?.try_into().ok()?;
+    let ifd = if le {
+        u32::from_le_bytes(offset)
+    } else {
+        u32::from_be_bytes(offset)
+    };
+    let ifd = usize::try_from(ifd).ok()?;
+    let entries = t.get(ifd..)?;
+    let count = u16_at(ifd)?;
+    let (entries, _) = entries.get(2..)?.as_chunks::<12>();
+    for entry in entries.iter().take(count as usize) {
+        let (tag, short, value) = if le {
+            ([0x12, 0x01], [3, 0], entry[8])
+        } else {
+            ([0x01, 0x12], [0, 3], entry[9])
+        };
+        if entry[..2] == tag && entry[2..4] == short {
+            return (1..=8).contains(&value).then_some(value);
+        }
     }
     None
 }
@@ -264,8 +395,8 @@ fn orient_filter(o: u8) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    /// A minimal JPEG start with an EXIF block holding just the orientation tag.
-    fn jpeg_with(orient: u16, little: bool) -> Vec<u8> {
+    /// A TIFF directory holding just the EXIF orientation tag.
+    fn tiff_with(orient: u16, little: bool) -> Vec<u8> {
         let mut tiff: Vec<u8> = Vec::new();
         let w16 = |v: u16| {
             if little {
@@ -291,20 +422,14 @@ mod tests {
         tiff.extend(w16(orient));
         tiff.extend([0, 0]);
         tiff.extend(w32(0));
-        let mut app1 = b"Exif\0\0".to_vec();
-        app1.extend(&tiff);
-        let mut d = vec![0xFF, 0xD8, 0xFF, 0xE1];
-        d.extend(((app1.len() + 2) as u16).to_be_bytes());
-        d.extend(app1);
-        d.extend([0xFF, 0xDA, 0, 2]);
-        d
+        tiff
     }
 
     #[test]
     fn reads_orientation_both_byte_orders() {
-        assert_eq!(exif_orientation(&jpeg_with(6, true)), Some(6));
-        assert_eq!(exif_orientation(&jpeg_with(8, false)), Some(8));
-        assert_eq!(exif_orientation(&jpeg_with(1, true)), Some(1));
+        assert_eq!(exif_orientation(&tiff_with(6, true)), Some(6));
+        assert_eq!(exif_orientation(&tiff_with(8, false)), Some(8));
+        assert_eq!(exif_orientation(&tiff_with(1, true)), Some(1));
         assert_eq!(exif_orientation(b"not a jpeg"), None);
         assert_eq!(orient_filter(6), Some("transpose=1"));
         assert_eq!(orient_filter(1), None);

@@ -147,15 +147,16 @@ pub(crate) fn classify(path: &Path, size_bytes: u64, json: &Value) -> Option<Med
     });
 
     // HEIC/HEIF/AVIF photos come through the MP4 demuxer, with no duration and one frame.
+    // APNG remains an image so the still-image job can reject frame-dropping conversions.
     let one_frame = video_json
         .and_then(|s| s["nb_frames"].as_str())
         .and_then(|n| n.parse::<u64>().ok())
         .is_none_or(|n| n <= 1);
-    let is_still_image = format_name == "image2"
+    let is_image = matches!(format_name, "image2" | "apng")
         || format_name.ends_with("_pipe")
         || (is_heif_like(path) && (duration <= 0.0 || one_frame));
     let kind = match (&video, &audio) {
-        (Some(_), _) if is_still_image => MediaKind::Image,
+        (Some(_), _) if is_image => MediaKind::Image,
         (Some(_), _) if duration > 0.0 => MediaKind::Video,
         (None, Some(_)) if duration > 0.0 => MediaKind::Audio,
         _ => return None,
