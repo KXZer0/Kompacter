@@ -2683,6 +2683,7 @@ name = "kompacter"
 version = "0.1.0"
 dependencies = [
  "embed-resource",
+ "i-slint-backend-testing",
  "kompacter-core",
  "rfd",
  "serde",

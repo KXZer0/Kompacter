@@ -76,6 +76,14 @@ impl App {
 
     /// One file opens normally; several get the list screen ("Compress all").
     pub fn open_many(self: &Rc<Self>, files: Vec<PathBuf>) {
+        self.open_files(files, false);
+    }
+
+    pub fn open_dropped(self: &Rc<Self>, files: Vec<PathBuf>) {
+        self.open_files(files, true);
+    }
+
+    fn open_files(self: &Rc<Self>, files: Vec<PathBuf>, dropped: bool) {
         if self.started.get().is_some() || matches!(self.view(), View::Busy | View::Reading) {
             return;
         }
@@ -83,6 +91,9 @@ impl App {
             .into_iter()
             .filter_map(|path| std::fs::metadata(&path).ok().map(|m| (path, m)))
             .collect();
+        if dropped && !files.is_empty() && (self.quick.get() || self.view() != View::Idle) {
+            self.another();
+        }
         match files.len() {
             0 => {}
             1 => self.open(files.remove(0).0),

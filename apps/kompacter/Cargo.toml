@@ -64,6 +64,9 @@ features = [
   "Win32_UI_WindowsAndMessaging",
 ]
 
+[dev-dependencies]
+i-slint-backend-testing = "1.19"
+
 [build-dependencies]
 slint-build = "1.19"
 embed-resource = "3"

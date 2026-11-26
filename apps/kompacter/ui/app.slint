@@ -378,8 +378,8 @@ export component AppWindow inherits Window {
         transform-scale-x: 0.94 + 0.06 * self.reveal;
         border-radius: Fx.glass ? 22px : 0;
         background: Fx.glass ? Theme.card : Theme.bg;
-        border-width: Fx.glass ? 1px : 0;
-        border-color: Theme.hair;
+        border-width: root.dragging && !root.stage-lg && !root.stage-md ? 2px : Fx.glass ? 1px : 0;
+        border-color: root.dragging && !root.stage-lg && !root.stage-md ? Theme.accent : Theme.hair;
     }
     Rectangle {
         x: card.x;

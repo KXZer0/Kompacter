@@ -145,6 +145,45 @@ pub struct App {
 }
 
 impl App {
+    fn new(
+        ui: &AppWindow,
+        tray: slint::Weak<Tray>,
+        prefs: Settings,
+        rich: bool,
+        glass: bool,
+    ) -> Rc<Self> {
+        let prefs_auto_update = prefs.auto_update;
+        Rc::new(Self {
+            ui: ui.as_weak(),
+            engine: Arc::new(Engine::new(sys::ffmpeg())),
+            cancel: Arc::new(AtomicBool::new(false)),
+            settings: RefCell::new(prefs),
+            current: RefCell::new(None),
+            result: RefCell::new(None),
+            last_range: Cell::new(None),
+            batch: RefCell::new(Vec::new()),
+            dropped: RefCell::new(Vec::new()),
+            started: Cell::new(None),
+            modal: Cell::new(false),
+            auto_hidden: Cell::new(None),
+            rich,
+            glass,
+            motion: motion::Motion::default(),
+            trim: trim::Trim::default(),
+            tray,
+            quick: Cell::new(false),
+            quick_real: Cell::new(View::Idle),
+            guard: Cell::new(None),
+            guard_app: Cell::new(None),
+            shortcut_set: RefCell::new(String::from("unset")),
+            watch: watch::Watch::new(|e| with_app(move |a| a.on_watch(e))),
+            auto_queue: RefCell::new(Default::default()),
+            auto_busy: Cell::new(false),
+            update_on: Arc::new(AtomicBool::new(prefs_auto_update)),
+            update_ready: RefCell::new(None),
+        })
+    }
+
     pub fn ui(&self) -> AppWindow {
         self.ui.upgrade().expect("window")
     }
@@ -425,6 +464,11 @@ impl App {
         }
     }
 
+    fn file_hover(&self, active: bool) {
+        let ui = self.ui();
+        ui.set_dragging(active && self.view() != View::Busy);
+    }
+
     pub fn another(&self) {
         *self.current.borrow_mut() = None;
         self.batch.borrow_mut().clear();
@@ -581,36 +625,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_opened(false);
 
     let tray = Tray::new()?;
-    let prefs_auto_update = prefs.auto_update;
-    let app = Rc::new(App {
-        ui: ui.as_weak(),
-        engine: Arc::new(Engine::new(sys::ffmpeg())),
-        cancel: Arc::new(AtomicBool::new(false)),
-        settings: RefCell::new(prefs),
-        current: RefCell::new(None),
-        result: RefCell::new(None),
-        last_range: Cell::new(None),
-        batch: RefCell::new(Vec::new()),
-        dropped: RefCell::new(Vec::new()),
-        started: Cell::new(None),
-        modal: Cell::new(false),
-        auto_hidden: Cell::new(None),
-        rich,
-        glass,
-        motion: motion::Motion::default(),
-        trim: trim::Trim::default(),
-        tray: tray.as_weak(),
-        quick: Cell::new(false),
-        quick_real: Cell::new(View::Idle),
-        guard: Cell::new(None),
-        guard_app: Cell::new(None),
-        shortcut_set: RefCell::new(String::from("unset")),
-        watch: watch::Watch::new(|e| with_app(move |a| a.on_watch(e))),
-        auto_queue: RefCell::new(Default::default()),
-        auto_busy: Cell::new(false),
-        update_on: Arc::new(AtomicBool::new(prefs_auto_update)),
-        update_ready: RefCell::new(None),
-    });
+    let app = App::new(&ui, tray.as_weak(), prefs, rich, glass);
     APP.with(|a| *a.borrow_mut() = Rc::downgrade(&app));
     sys::start_input(|e| with_app(move |a| a.on_input(e)));
     // A tray app is only useful if it's running, so it starts with Windows unless the
@@ -672,20 +687,12 @@ fn main() -> Result<(), slint::PlatformError> {
         });
         let a = app.clone();
         ui.window().on_winit_window_event(move |_, event| {
-            let ui = a.ui();
             match event {
                 winit::event::WindowEvent::Focused(false) => a.away(),
-                winit::event::WindowEvent::HoveredFile(_) => {
-                    if a.view() != View::Busy && !ui.get_dragging() {
-                        if a.quick.get() || !matches!(a.view(), View::Idle | View::Reading) {
-                            a.another();
-                        }
-                        ui.set_dragging(true);
-                    }
-                }
-                winit::event::WindowEvent::HoveredFileCancelled => ui.set_dragging(false),
+                winit::event::WindowEvent::HoveredFile(_) => a.file_hover(true),
+                winit::event::WindowEvent::HoveredFileCancelled => a.file_hover(false),
                 winit::event::WindowEvent::DroppedFile(p) => {
-                    ui.set_dragging(false);
+                    a.file_hover(false);
                     // One event per file: collect them for a moment, then open them all.
                     let first = a.dropped.borrow().is_empty();
                     a.dropped.borrow_mut().push(p.clone());
@@ -694,7 +701,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         slint::Timer::single_shot(Duration::from_millis(120), move || {
                             if let Some(a) = weak.upgrade() {
                                 let files = std::mem::take(&mut *a.dropped.borrow_mut());
-                                a.open_many(files);
+                                a.open_dropped(files);
                             }
                         });
                     }
@@ -1344,5 +1351,43 @@ fn demo(app: &Rc<App>, which: &str) {
             app.sync_settings();
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod drag_tests {
+    use super::*;
+
+    #[test]
+    fn hover_cancel_preserves_trim_and_drop_replaces_it() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = AppWindow::new().unwrap();
+        let app = App::new(&ui, Default::default(), Settings::default(), false, false);
+        ui.set_view(View::Trim);
+        ui.set_trim_a(0.25);
+        ui.set_trim_b(0.75);
+        ui.set_trim_pos(0.5);
+
+        for active in [true, false] {
+            app.file_hover(active);
+            assert_eq!(ui.get_dragging(), active);
+            assert_eq!(ui.get_view(), View::Trim);
+            assert_eq!(
+                (ui.get_trim_a(), ui.get_trim_b(), ui.get_trim_pos()),
+                (0.25, 0.75, 0.5)
+            );
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        app.open_dropped(vec![dir.path().join("missing.mp4")]);
+        assert_eq!(ui.get_view(), View::Trim);
+
+        let replacements = vec![dir.path().join("a.mp4"), dir.path().join("b.mp4")];
+        for path in &replacements {
+            std::fs::write(path, []).unwrap();
+        }
+        app.open_dropped(replacements.clone());
+        assert_eq!(ui.get_view(), View::Big);
+        assert_eq!(*app.batch.borrow(), replacements);
     }
 }
