@@ -62,9 +62,12 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
   "NSEvent",
   "NSPasteboard",
   "NSResponder",
+  "NSRunningApplication",
   "NSScreen",
   "NSView",
   "NSWindow",
+  "NSWorkspace",
+  "libc",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
   "NSError",

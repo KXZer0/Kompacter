@@ -10,9 +10,13 @@ pub struct Capabilities {
 
 pub const CAPABILITIES: Capabilities = Capabilities {
     watch_copies: cfg!(windows),
-    paste_guard: cfg!(windows),
+    // macOS: only once Accessibility is allowed (Settings says so). Wayland has no way to
+    // see or hold back a paste in another app.
+    paste_guard: cfg!(any(windows, target_os = "macos")),
     watch_folders: cfg!(any(windows, target_os = "linux", target_os = "macos")),
-    global_shortcut: cfg!(windows),
+    // Linux: through the desktop's global shortcuts portal, checked when the app starts;
+    // without it `InputEvent::ShortcutUnsupported` makes Settings explain the alternative.
+    global_shortcut: cfg!(any(windows, target_os = "macos", target_os = "linux")),
     trash: cfg!(any(windows, target_os = "linux", target_os = "macos")),
 };
 
