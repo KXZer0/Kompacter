@@ -557,10 +557,13 @@ impl Job<'_, '_> {
         progress: Progress,
     ) -> Result<()> {
         let mut last = 0;
-        // Without a peak cap SVT-AV1 can overshoot more: start a bit lower, allow a third try.
+        let mut previous: Option<(u32, u64)> = None;
+        // Without a peak cap SVT-AV1 can overshoot more: start a bit lower, allow more tries.
+        // SVT-AV1 2.x also shrinks much less than the bitrate it is given on short clips,
+        // so later tries follow the measured size curve rather than a straight ratio.
         let tries = if codec == VideoCodec::Av1 {
             plan.video_kbps = (plan.video_kbps as f64 * 0.9) as u32;
-            3
+            4
         } else {
             2
         };
@@ -608,7 +611,16 @@ impl Job<'_, '_> {
             )?;
             match self.check(&mut plan, progress)? {
                 None => return Ok(()),
-                Some(size) => last = best_size(last, size),
+                Some(size) => {
+                    last = best_size(last, size);
+                    if let Some(next) = plan::secant_video_kbps(self.target, previous, (kbps, size))
+                    {
+                        if plan.video_kbps > 0 {
+                            plan.video_kbps = plan.video_kbps.min(next);
+                        }
+                    }
+                    previous = Some((kbps, size));
+                }
             }
             if plan.video_kbps == 0 {
                 break;

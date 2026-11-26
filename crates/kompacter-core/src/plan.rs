@@ -138,6 +138,26 @@ pub(crate) fn retry_video_kbps(
     next as u32
 }
 
+/// Extrapolate the next video bitrate from two measured encodes (kbps, total bytes).
+/// Encoders whose size responds less than linearly to the bitrate (SVT-AV1 on short
+/// clips) are under-corrected by a plain ratio; the line through the last two results
+/// aims at the target instead. `None` without a usable earlier result.
+pub(crate) fn secant_video_kbps(
+    target: u64,
+    previous: Option<(u32, u64)>,
+    latest: (u32, u64),
+) -> Option<u32> {
+    let (k0, s0) = previous?;
+    let (k1, s1) = latest;
+    if k0 <= k1 || s0 <= s1 {
+        return None;
+    }
+    let bytes_per_kbps = (s0 - s1) as f64 / f64::from(k0 - k1);
+    let excess = s1 as f64 - target as f64 * SAFETY;
+    let next = (f64::from(k1) - excess / bytes_per_kbps).floor();
+    (next >= MIN_VIDEO_KBPS && next < f64::from(k1)).then_some(next as u32)
+}
+
 /// Pick resolution, frame rate and bitrates so a clip of `seconds` lands under `target_bytes`.
 /// Tries the source size first, then a short edge of 1080, 720, 480, or 360 pixels.
 /// Each size tries the source cadence before dropping high rates to half cadence.
@@ -254,6 +274,20 @@ mod tests {
         assert_eq!(
             (portrait.width, portrait.height, portrait.fps),
             (1080, 1920, 30.0)
+        );
+    }
+
+    #[test]
+    fn secant_follows_an_encoder_that_shrinks_less_than_its_bitrate() {
+        // Measured with SVT-AV1 2.3: 628 kbps -> 240 925 B, 494 kbps -> 210 877 B.
+        let next = secant_video_kbps(200_000, Some((628, 240_925)), (494, 210_877)).unwrap();
+        assert!((400..430).contains(&next), "{next}");
+        // The plain ratio from the same result stays near 450, which still overshoots.
+        assert!(next < retry_video_kbps(200_000, 210_877, 2.0, 494, 78));
+        assert_eq!(secant_video_kbps(200_000, None, (494, 210_877)), None);
+        assert_eq!(
+            secant_video_kbps(200_000, Some((400, 220_000)), (494, 210_877)),
+            None
         );
     }
 
