@@ -1495,6 +1495,7 @@ mod tests {
                 .dispatch_event(WindowEvent::KeyPressed { text: key.into() });
             ui.window()
                 .dispatch_event(WindowEvent::KeyReleased { text: key.into() });
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(400));
         };
 
         assert_eq!(ui.get_welcome_preference(), 1);
