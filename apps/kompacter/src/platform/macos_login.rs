@@ -1,11 +1,15 @@
-//! Open at login on macOS. On macOS 13 and later Kompacter registers itself as a login
-//! item (`SMAppService.mainAppService`), listed under System Settings → General → Login
-//! Items. Older systems get a per-user LaunchAgent that starts the app with `--tray`.
-//! Only the app bundle registers; a bare `cargo run` binary never does.
+//! Open at login on macOS. On macOS 13 and later Kompacter registers the agent bundled in
+//! `Contents/Library/LaunchAgents` with SMAppService (listed under System Settings →
+//! General → Login Items), which starts the app with `--tray` so a login start stays
+//! quiet. A bundle without that agent falls back to the plain login item
+//! (`mainAppService`, which can't pass arguments). Older systems get a per-user
+//! LaunchAgent that starts the app with `--tray`. Only the app bundle registers; a bare
+//! `cargo run` binary never does.
 
 use std::path::{Path, PathBuf};
 
 use objc2::runtime::AnyClass;
+use objc2_foundation::NSString;
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 
 use super::StartEntry;
@@ -28,11 +32,24 @@ pub fn supported() -> bool {
     bundled_exe().is_some()
 }
 
-/// The login item service, on systems that have it (macOS 13+).
+/// The agent the bundle ships for Open at login (see packaging/macos/build-app.sh).
+const LOGIN_AGENT: &str = "io.github.KXZer0.Kompacter.login.plist";
+
+/// The login item service, on systems that have it (macOS 13+): the bundled agent,
+/// which passes `--tray`, or the plain login item when the bundle has no agent.
 fn service() -> Option<objc2::rc::Retained<SMAppService>> {
     AnyClass::get(c"SMAppService")?;
-    // SAFETY: The class exists (checked above); this is a plain class getter.
-    Some(unsafe { SMAppService::mainAppService() })
+    let bundled_agent = bundled_exe()
+        .and_then(|exe| Some(exe.parent()?.parent()?.join("Library/LaunchAgents")))
+        .is_some_and(|dir| dir.join(LOGIN_AGENT).is_file());
+    // SAFETY: The class exists (checked above); these are plain class constructors.
+    Some(unsafe {
+        if bundled_agent {
+            SMAppService::agentServiceWithPlistName(&NSString::from_str(LOGIN_AGENT))
+        } else {
+            SMAppService::mainAppService()
+        }
+    })
 }
 
 fn agent_file() -> Option<PathBuf> {
