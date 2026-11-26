@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::settings::Settings;
+use crate::platform;
+
+use super::settings::Settings;
 
 /// Compressed files in Kompacter's own folder are kept this long, then deleted.
 const KEEP: Duration = Duration::from_secs(7 * 24 * 3600);
@@ -42,12 +44,12 @@ pub fn app_dir() -> Result<PathBuf, String> {
         .and_then(|p| p.parent().map(|d| d.join("Kompacted")))
         .filter(|d| writable(d))
         .or_else(|| {
-            crate::sys::videos_dir()
+            platform::videos_dir()
                 .map(|d| d.join("Kompacter"))
                 .filter(|d| writable(d))
         })
         .or_else(|| {
-            crate::sys::local_data_dir()
+            platform::local_data_dir()
                 .map(|d| d.join("Kompacter").join("Kompacted"))
                 .filter(|d| writable(d))
         })
@@ -82,7 +84,7 @@ pub fn replace_original(made: &Path, original: &Path) -> Result<PathBuf, String>
         dest = original.with_file_name(format!("{stem} ({n}){ext}"));
         n += 1;
     }
-    crate::sys::recycle(original)
+    platform::recycle(original)
         .map_err(|e| format!("Couldn't move the original to the Recycle Bin: {e}"))?;
     // rename fails across drives, so fall back to copy.
     if std::fs::rename(made, &dest).is_err() {

@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 TMP = os.environ.get("KOMPACTER_MEDIA_TMP", "/tmp/kompacter-media")
-UI = os.path.join(ROOT, "apps", "kompacter", "ui")
+UI = os.path.join(ROOT, "apps", "kompacter", "frontend")
 OUT = os.path.join(ROOT, "docs", "media")
 FPS = 20
 LAPSE_SECONDS = 2.6      # however long the job took, it plays in this long

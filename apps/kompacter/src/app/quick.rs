@@ -14,11 +14,13 @@ use std::time::Duration;
 use slint::winit_030::WinitWindowAccessor;
 use slint::ComponentHandle;
 
-use crate::format::{bytes, file_name};
-use crate::settings::{shortcut_keys, SHORTCUTS};
-use crate::sys::{self, InputEvent};
-use crate::watch::{self, WatchEvent};
-use crate::{output, run, App, Prefs, View};
+use crate::frontend::{Prefs, View};
+use crate::platform::{self as sys, InputEvent};
+
+use super::format::{bytes, file_name};
+use super::settings::{shortcut_keys, SHORTCUTS};
+use super::watch::{self, WatchEvent};
+use super::{output, run, same_rows, App};
 
 impl App {
     /// The screen the flow is on (behind the quick bar, when it's showing).
@@ -280,7 +282,7 @@ impl App {
             .iter()
             .map(|f| short_folder(f).into())
             .collect();
-        if !crate::same_rows(&prefs.get_clip_folders(), &shown) {
+        if !same_rows(&prefs.get_clip_folders(), &shown) {
             prefs.set_clip_folders(slint::ModelRc::new(slint::VecModel::from(shown)));
         }
 

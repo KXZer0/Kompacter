@@ -8,10 +8,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kompacter_core::{MediaKind, Mode, Outcome, Trim};
-
-use crate::format::{bytes, file_name};
-use crate::{format, kind_name, output, run, sys, App, AppWindow, Current, DiffRow, View};
 use slint::{ComponentHandle, ModelRc, VecModel};
+
+use crate::frontend::{AppWindow, DiffRow, View};
+use crate::platform as sys;
+
+use super::format::{bytes, file_name};
+use super::{format, kind_name, output, run, App, Current};
 
 impl App {
     /// A file arrived (drop, paste, choose). Read it, then compress right away if that's

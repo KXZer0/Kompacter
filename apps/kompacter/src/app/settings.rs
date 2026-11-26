@@ -113,7 +113,7 @@ impl Default for Settings {
 }
 
 fn file() -> Option<PathBuf> {
-    let dir = crate::sys::config_dir()?.join("app.kompacter.desktop");
+    let dir = crate::platform::config_dir()?.join("app.kompacter.desktop");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join("settings.json"))
 }

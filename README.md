@@ -58,7 +58,7 @@ crates/
   kompacter-core/   compression engine (Rust library): probe, plan, video/audio/image/folder jobs
   kompacter-cli/    `kompacter` command-line tool on top of the engine
 apps/
-  kompacter/        tray app: Slint UI (ui/*.slint) + Rust logic (src/), Windows first
+  kompacter/        tray app: Slint UI (frontend/*.slint) + Rust logic (src/), Windows first
 docs/
   ARCHITECTURE.md   how the pieces fit together
   ROADMAP.md        phases, hooks/triggers plan, open decisions

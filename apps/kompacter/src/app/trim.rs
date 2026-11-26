@@ -13,9 +13,12 @@ use std::time::Duration;
 use kompacter_core::{MediaInfo, MediaKind, Mode, Quality};
 use slint::{Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel};
 
-use crate::format::{bytes, clock_ms, parse_time, rate};
-use crate::trim_cache::FrameCache;
-use crate::{run, sys, with_app, App, DetailRow, View};
+use crate::frontend::{DetailRow, View};
+use crate::platform as sys;
+
+use super::format::{bytes, clock_ms, parse_time, rate};
+use super::trim_cache::FrameCache;
+use super::{run, with_app, App};
 
 #[derive(Default)]
 pub struct Trim {

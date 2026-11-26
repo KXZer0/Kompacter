@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 use slint::winit_030::WinitWindowAccessor;
 use slint::ComponentHandle;
 
-use crate::{format, sys, App, AppWindow, View};
+use crate::app::{format, App};
+use crate::platform as sys;
+
+use super::{AppWindow, View};
 
 const FLYOUT_HEIGHT: f32 = 624.0;
 

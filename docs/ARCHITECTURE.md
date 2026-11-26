@@ -2,11 +2,11 @@
 
 ```
  ┌──────────────── tray app (apps/kompacter) ─────────────────────┐
- │  UI: Slint (ui/*.slint), CPU-rendered, no web view              │
+ │  UI: Slint (frontend/*.slint)                                   │
  │        ▲ properties (progress, estimates)  │ callbacks          │
  │        │                                   ▼                    │
- │  Rust: src/main.rs (flow) · sys.rs (clipboard, tray corner,     │
- │        Recycle Bin, start with Windows) · output.rs · settings  │
+ │  Rust: src/app (state, jobs, settings)                          │
+ │        src/frontend (Slint bindings, motion) · src/platform    │
  └────────────────────────────┬────────────────────────────────────┘
                               │ calls (worker threads)
                      ┌────────▼─────────┐        ┌──────────────┐
@@ -24,36 +24,36 @@
 - The Windows UI uses Skia raster. Other platforms use FemtoVG/OpenGL. The flyout
   keeps its translucent fold and reuses a shadow image.
 - The blob body, its gloss and the press heads use pre-drawn images
-  (`tools/art.py` makes `ui/*.png`).
-- UI files: `ui/app.slint` (window, screens), `ui/settings.slint` (Settings screen and the
-  `Prefs` global it reads and calls), `ui/stage.slint` (blob, press), `ui/theme.slint`
-  (colors, buttons, dropdown, switch), `ui/demo.slint` (the small looping scenes that show
+  (`tools/art.py` makes `frontend/*.png`).
+- UI files: `frontend/app.slint` (window, screens), `frontend/settings.slint` (Settings screen and the
+  `Prefs` global it reads and calls), `frontend/stage.slint` (blob, press), `frontend/theme.slint`
+  (colors, buttons, dropdown, switch), `frontend/demo.slint` (the small looping scenes that show
   the three automatic features, in the first-run steps and Settings' hover previews).
 - App logos (Discord, Slack, WhatsApp, Telegram, Signal) are the official marks from Simple
-  Icons, as SVG path data in `ui/icons.slint`, drawn in each brand's colours by `AppLogo`
-  (`ui/theme.slint`): Slack in its four colours, Telegram as its circle with a white plane.
-- `src/flow.rs` (file → compress → clipboard), `src/trim.rs` (trimmer, live estimates,
-  playhead, GIF), `src/motion.rs` (open/close, eyes, press, marching dashes),
-  `src/quick.rs` (the quick bar, paste guard, clips that shrink on their own),
-  `src/watch.rs` (background look at the clipboard and clip folders), `src/sys.rs`
-  (Windows bits, including the global shortcut and the paste guard's keyboard hook).
+  Icons, as SVG path data in `frontend/icons.slint`, drawn in each brand's colours by `AppLogo`
+  (`frontend/theme.slint`): Slack in its four colours, Telegram as its circle with a white plane.
+- `src/app/mod.rs` coordinates startup, application state, and event routing.
+  `src/app/flow.rs` handles file ingestion and compression, `src/app/trim.rs` handles the
+  trimmer and live estimates, and `src/app/quick.rs` and `src/app/watch.rs` handle the quick bar
+  and background watches. `src/frontend/motion.rs` owns flyout and stage animation.
 - Quick bar: a 136 px view on top of the normal flow. While it shows, `set_view` turns
   Reading / Big / Busy / Done / Error into its states, so the flow code is the same.
 - Paste guard: a low-level keyboard hook (only while the setting is on) sees Ctrl+V in a
   chat app: Discord, Slack, WhatsApp, Telegram or Signal, found by the program in front
-  or, in a browser, by the tab's title (`sys::chat_app`). If a copied file is over *that
+  or, in a browser, by the tab's title (`platform::chat_app`). If a copied file is over *that
   app's* limit (Discord follows the user's Discord tier), it holds the paste back and opens
   the quick bar with the app's logo; while the bar is open, `App::target_bytes` is that
   app's limit. After Compress & paste, Kompacter brings the chat back and presses Ctrl+V,
   only if it really is in front.
-- Updates: `src/update.rs` checks GitHub's release list once a day (release builds on
+- Updates: `src/app/update.rs` checks GitHub's release list once a day (release builds on
   Windows only; the release workflow stamps `KOMPACTER_VERSION`), downloads the newest
   published installer with curl.exe, checks it against the `.sha256` the release publishes,
   and runs it silently (`/S`) when Kompacter quits or the user presses Restart; the
   installer reopens the app. Settings → General → "Install updates" turns it off.
-- What's new: `src/news.rs` holds a few lines per version, shown once on the first start
+- What's new: `src/app/news.rs` holds a few lines per version, shown once on the first start
   of a new version (`seen_version` in settings). A version with no entry shows nothing.
-- Platform code lives in `src/sys.rs` (Windows now; macOS/Linux get their own part later).
+- `src/platform/` provides OS integration. `src/platform/windows/` holds the native Windows
+  shell, window, audio, global shortcut, and paste guard code.
 - ffmpeg runs as a hidden child process at below-normal priority, so games stay smooth.
 - Dev builds: `KOMPACTER_DEMO=big|details|trim|trim-gif|busy|done|error|settings|auto|drag|discord|quick|quick-busy|quick-done|quick-empty|guard`
   shows a screen with sample data. `KOMPACTER_OPEN=<file>` opens a file at start;

@@ -4,7 +4,7 @@ Installers are built by GitHub Actions; nobody has to build from source.
 
 ## Make a release
 
-0. Add the version's "What's new" lines to `apps/kompacter/src/news.rs` (3–4 short lines; no
+0. Add the version's "What's new" lines to `apps/kompacter/src/app/news.rs` (3–4 short lines; no
    entry means no What's new screen).
 1. Tag a commit and push the tag (GitHub Desktop: History → right-click → Create Tag → Push).
    The version comes from the tag: `v0.0.3-test` builds version 0.0.3, marked as a pre-release.
