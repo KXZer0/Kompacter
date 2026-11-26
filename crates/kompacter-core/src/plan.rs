@@ -109,9 +109,38 @@ pub fn copy_audio_kbps(target_bytes: u64, seconds: f64, video_kbps: u32) -> Opti
     (kbps >= MIN_AUDIO_KBPS).then_some(kbps as u32)
 }
 
+/// Recalculate how much audio a copied video can afford after measuring an overshoot.
+pub(crate) fn retry_audio_kbps(target: u64, measured: u64, seconds: f64, kbps: u32) -> Option<u32> {
+    let excess = measured.saturating_sub(target) as f64 * 8.0 / seconds / 1000.0;
+    let next = (kbps as f64 - excess - 2.0).min(MAX_AUDIO_KBPS).floor();
+    (next >= MIN_AUDIO_KBPS).then_some(next as u32)
+}
+
+/// Recover the overshoot from the video budget after reserving audio and mux overhead.
+/// Return zero when another attempt would go below the minimum video bitrate.
+pub(crate) fn retry_video_kbps(
+    target: u64,
+    measured: u64,
+    seconds: f64,
+    video_kbps: u32,
+    audio_kbps: u32,
+) -> u32 {
+    let audio = audio_kbps as f64 * seconds * 1000.0 / 8.0;
+    let old_video = measured as f64 - audio;
+    let new_video = target as f64 * SAFETY - audio;
+    if old_video <= 0.0 || new_video <= 0.0 {
+        return 0;
+    }
+    let next = (video_kbps as f64 * (new_video / old_video).min(0.95)).floor();
+    if next < MIN_VIDEO_KBPS {
+        return 0;
+    }
+    next as u32
+}
+
 /// Pick resolution, frame rate and bitrates so a clip of `seconds` lands under `target_bytes`.
-/// Tries the source resolution first, then 1080p, 720p, 480p, 360p, and picks the first
-/// that still looks "okay".
+/// Tries the source size first, then a short edge of 1080, 720, 480, or 360 pixels.
+/// Each size tries the source cadence before dropping high rates to half cadence.
 pub fn plan_video(
     target_bytes: u64,
     seconds: f64,
@@ -128,26 +157,37 @@ pub fn plan_video(
     let fps = src_fps.clamp(1.0, 60.0);
 
     let (sw, sh) = (src_w.max(2), src_h.max(2));
-    let mut rungs: Vec<u32> = vec![sh];
-    rungs.extend([1080, 720, 480, 360].into_iter().filter(|&h| h < sh));
+    let short_side = sw.min(sh);
+    let mut rungs = vec![short_side];
+    rungs.extend(
+        [1080, 720, 480, 360]
+            .into_iter()
+            .filter(|&side| side < short_side),
+    );
 
-    let size_for = |h: u32| -> (u32, u32) {
-        let w = (sw as f64 * h as f64 / sh as f64).round() as u32;
-        (even(w), even(h))
+    let size_for = |side: u32| -> (u32, u32) {
+        let scale = side as f64 / short_side as f64;
+        let dimension = |src| even((src as f64 * scale).round() as u32);
+        (dimension(sw), dimension(sh))
     };
     // Judged as if it were H.264, so a more efficient codec earns a better grade.
     let bpp = |w: u32, h: u32, f: f64| video * 1000.0 / (w as f64 * h as f64 * f) / efficiency;
 
-    for &h in &rungs {
-        let (w, h) = size_for(h);
-        let q = Quality::from_bpp(bpp(w, h, fps));
-        if q != Quality::Low {
-            return plan(w, h, fps, video, audio, q);
+    // For high-frame-rate clips, compare full cadence and half cadence before
+    // discarding resolution. Halving 50/59.94/60 fps keeps even frame intervals.
+    let lower_fps = if fps >= 48.0 { fps / 2.0 } else { fps };
+    for &side in &rungs {
+        let (w, h) = size_for(side);
+        for candidate_fps in [fps, lower_fps] {
+            let q = Quality::from_bpp(bpp(w, h, candidate_fps));
+            if q != Quality::Low {
+                return plan(w, h, candidate_fps, video, audio, q);
+            }
         }
     }
     // Nothing looked okay: smallest rung, and drop to 30 fps to help a bit.
     let (w, h) = size_for(*rungs.last().unwrap());
-    let fps = fps.min(30.0);
+    let fps = lower_fps.min(30.0);
     let q = Quality::from_bpp(bpp(w, h, fps));
     plan(w, h, fps, video, audio, q)
 }
@@ -201,6 +241,20 @@ mod tests {
         let p = plan_video(20 * MB, 180.0, 1920, 1080, 30.0, true, 1.0);
         assert!(p.height < 1080, "got {}p", p.height);
         assert!(p.fits);
+    }
+
+    #[test]
+    fn tries_half_cadence_before_losing_detail_and_treats_portrait_the_same() {
+        let landscape = plan_video(MB, 2.0, 1920, 1080, 60.0, false, 1.0);
+        let portrait = plan_video(MB, 2.0, 1080, 1920, 60.0, false, 1.0);
+        assert_eq!(
+            (landscape.width, landscape.height, landscape.fps),
+            (1920, 1080, 30.0)
+        );
+        assert_eq!(
+            (portrait.width, portrait.height, portrait.fps),
+            (1080, 1920, 30.0)
+        );
     }
 
     #[test]

@@ -1,11 +1,11 @@
 //! Hardware video encoders (H.264, H.265, AV1). ffmpeg builds often *list* NVENC/QSV/AMF even when the PC has
 //! no such GPU, so each candidate is checked with a tiny real encode before it's trusted.
 
-use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 
-use crate::ffmpeg::Ffmpeg;
+use crate::ffmpeg::{args, Ffmpeg};
 use crate::VideoCodec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -60,6 +60,7 @@ impl Encoder {
 
     /// Rate-control args for a single-pass encode aimed at `kbps`.
     pub(crate) fn rate_args(self, kbps: u32) -> Vec<String> {
+        let kbps = u64::from(kbps);
         let (b, max, buf) = (
             format!("{kbps}k"),
             format!("{}k", kbps * 3 / 2),
@@ -133,29 +134,44 @@ fn candidates() -> &'static [Encoder] {
 /// ~0.5 s per candidate, so callers should cache it (`Engine` does). Older GPUs often have
 /// H.264 but no AV1; the test encode finds out.
 pub fn detect(ff: &Ffmpeg, codec: VideoCodec) -> Vec<Encoder> {
-    candidates()
+    detect_cancellable(ff, codec, &AtomicBool::new(false)).unwrap_or_default()
+}
+
+pub(crate) fn detect_cancellable(
+    ff: &Ffmpeg,
+    codec: VideoCodec,
+    cancel: &AtomicBool,
+) -> Option<Vec<Encoder>> {
+    let encoders = candidates()
         .iter()
         .copied()
-        .filter(|e| e.ffmpeg_name(codec).is_some_and(|name| works(ff, *e, name)))
-        .collect()
+        .filter(|e| {
+            e.ffmpeg_name(codec)
+                .is_some_and(|name| works(ff, *e, name, cancel))
+        })
+        .collect();
+    (!cancel.load(Ordering::Relaxed)).then_some(encoders)
 }
 
 /// The test encode uses only the plain settings, never `quality_args`: an older card that
 /// refuses AQ or lookahead can still encode fine without them. Testing them here would
 /// drop such a GPU to the much slower CPU path for every video; instead the real encode
 /// retries once without them, which costs one quick failed start.
-fn works(ff: &Ffmpeg, enc: Encoder, name: &str) -> bool {
-    crate::ffmpeg::command(&ff.ffmpeg)
-        .args(["-hide_banner", "-loglevel", "error", "-nostdin"])
-        .args(["-f", "lavfi", "-i", "color=black:s=256x256:r=30:d=0.2"])
-        .args(["-c:v", name, "-pix_fmt", enc.pix_fmt()])
-        .args(["-f", "null", "-"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+fn works(ff: &Ffmpeg, enc: Encoder, name: &str, cancel: &AtomicBool) -> bool {
+    let a = args([
+        "-f",
+        "lavfi",
+        "-i",
+        "color=black:s=256x256:r=30:d=0.2",
+        "-c:v",
+        name,
+        "-pix_fmt",
+        enc.pix_fmt(),
+        "-f",
+        "null",
+        "-",
+    ]);
+    ff.run(&a, 0.2, &mut |_| {}, cancel).is_ok()
 }
 
 #[cfg(test)]

@@ -1,12 +1,12 @@
 //! Video: MP4 (H.264, H.265 or AV1 video + AAC audio) aimed at an exact size.
-//! Uses a hardware encoder for the chosen codec when one works (single pass, fast);
-//! otherwise the CPU: two-pass x264, or x265 / SVT-AV1. If the GPU encode fails for any
-//! reason, the CPU path takes over automatically. When only the audio makes a file too
-//! big, the video is copied untouched and just the audio is re-encoded. HDR sources are
-//! tone-mapped to SDR when ffmpeg can.
+//! Compatible streams are copied when they fit. A video encode uses a hardware encoder
+//! when available, with two-pass x264 or single-pass x265/SVT-AV1 as the CPU fallback.
+//! A candidate is decoded and measured before publication. HDR sources are tone-mapped
+//! to SDR when ffmpeg can.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{file_size, input_args, name_of, with_ext, Ctx};
 use crate::error::{Error, Result};
@@ -18,6 +18,56 @@ use crate::{hdr, Speed, VideoCodec};
 
 /// Hardware encoders tend to overshoot a bit more, so they aim lower at first.
 const HW_HEADROOM: f64 = 0.92;
+const VERIFY_START: f32 = 0.92;
+const VERIFY_END: f32 = 0.99;
+
+pub(crate) fn can_keep_original(info: &MediaInfo, codec: VideoCodec) -> bool {
+    let has_ext = |ext| {
+        info.path
+            .extension()
+            .is_some_and(|value| value.eq_ignore_ascii_case(ext))
+    };
+    if super::is_gif(info) {
+        return has_ext("gif") && info.playback.stream_count == 1;
+    }
+    let expected_streams = 1 + usize::from(info.audio.is_some());
+    has_ext("mp4")
+        && info.playback.mp4
+        && info.playback.stream_count == expected_streams
+        && can_copy_video(info, codec)
+        && can_copy_audio(info)
+        && info.playback.video_tag
+            == match codec {
+                VideoCodec::H264 => "avc1",
+                VideoCodec::H265 => "hvc1",
+                VideoCodec::Av1 => "av01",
+            }
+}
+
+pub(crate) fn verify(
+    ff: &crate::Ffmpeg,
+    path: &Path,
+    duration: f64,
+    has_audio: bool,
+    progress: Progress,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    let mut a = args([
+        "-xerror",
+        "-abort_on",
+        "empty_output_stream",
+        "-threads",
+        "4",
+        "-i",
+    ]);
+    a.push(path.into());
+    a.extend(args(["-map", "0:V:0"]));
+    if has_audio {
+        a.extend(args(["-map", "0:a:0"]));
+    }
+    a.extend(args(["-f", "null", "-"]));
+    ff.run(&a, duration, progress, cancel)
+}
 
 pub(crate) fn fit(
     ctx: &Ctx,
@@ -27,23 +77,80 @@ pub(crate) fn fit(
     out_base: &Path,
     progress: Progress,
 ) -> Result<PathBuf> {
-    let out = with_ext(out_base, "mp4");
-    if let Some(audio_kbps) = copy_plan(info, trim, ctx.codec, target) {
-        match copy_video(ctx, info, audio_kbps, target, &out, progress) {
-            Err(Error::Cancelled) => return Err(Error::Cancelled),
-            // Bigger than the guess, or a stream MP4 won't take as-is: re-encode it all.
-            Err(_) => progress(0.0),
-            ok => return ok,
+    let dest = with_ext(out_base, "mp4");
+    let tmp = tempfile::tempdir_in(dest.parent().unwrap_or_else(|| Path::new(".")))?;
+    let out = tmp.path().join("video.mp4");
+    let mut maximum = 0.0_f32;
+    let mut update = |p: f32| {
+        maximum = maximum.max(p.min(VERIFY_END));
+        progress(maximum);
+    };
+    fit_attempts(ctx, info, trim, target, &out, &mut update)?;
+    if ctx.cancel.load(Ordering::Relaxed) {
+        return Err(Error::Cancelled);
+    }
+    std::fs::rename(out, &dest)?;
+    progress(1.0);
+    Ok(dest)
+}
+
+fn fit_attempts(
+    ctx: &Ctx,
+    info: &MediaInfo,
+    trim: Option<Trim>,
+    target: u64,
+    out: &Path,
+    progress: Progress,
+) -> Result<()> {
+    if trim.is_none() && can_copy_video(info, ctx.codec) && video_may_fit(info, target) {
+        let mut audio_kbps = copy_plan(info, trim, ctx.codec, target);
+        if can_copy_audio(info) {
+            match copy_video(ctx, info, None, target, out, progress) {
+                Err(Error::DoesNotFit { best, .. }) => {
+                    if let Some(source_kbps) = info.audio.as_ref().and_then(|a| a.bitrate_kbps) {
+                        audio_kbps =
+                            plan::retry_audio_kbps(target, best, info.duration, source_kbps);
+                    }
+                }
+                Err(err) if can_retry(&err) => (),
+                result => return result,
+            }
+        }
+        for _ in 0..2 {
+            let Some(kbps) = audio_kbps else { break };
+            audio_kbps = match copy_video(ctx, info, Some(kbps), target, out, progress) {
+                Err(Error::DoesNotFit { best, .. }) => {
+                    plan::retry_audio_kbps(target, best, info.duration, kbps)
+                }
+                Err(err) if can_retry(&err) => break,
+                result => return result,
+            }
         }
     }
     let tonemap = super::tonemap(ctx, info);
-    match encode(ctx, info, trim, target, &out, tonemap, progress) {
+    match encode(ctx, info, trim, target, out, tonemap, progress) {
         // The tone-map filters can still refuse an oddly tagged file: encode it as before.
-        Err(Error::Ffmpeg(_)) if tonemap => {
-            progress(0.0);
-            encode(ctx, info, trim, target, &out, false, progress)
+        Err(err @ Error::Ffmpeg(_)) if tonemap && can_retry(&err) => {
+            encode(ctx, info, trim, target, out, false, progress)
         }
         result => result,
+    }
+}
+
+pub(crate) fn can_retry(err: &Error) -> bool {
+    match err {
+        Error::Ffmpeg(message) => {
+            let message = message.to_ascii_lowercase();
+            ![
+                "no space left on device",
+                "disk quota exceeded",
+                "read-only file system",
+            ]
+            .iter()
+            .any(|reason| message.contains(reason))
+        }
+        Error::DoesNotFit { .. } => true,
+        _ => false,
     }
 }
 
@@ -56,7 +163,7 @@ fn encode(
     out: &Path,
     tonemap: bool,
     progress: Progress,
-) -> Result<PathBuf> {
+) -> Result<()> {
     let v = info
         .video
         .as_ref()
@@ -88,15 +195,15 @@ fn encode(
         decode_threads: cpus.min(12).to_string(),
         filter_threads: cpus.min(8).to_string(),
         x264_threads: (cpus * 3 / 2).min(x264_limit).to_string(),
-        out: out.to_path_buf(),
+        out,
     };
 
     if let Some(&enc) = (ctx.encoders)().first() {
         match job.run_hw(enc, plan.clone(), progress) {
-            Ok(p) => return Ok(p),
-            Err(Error::Cancelled) => return Err(Error::Cancelled),
+            Ok(()) => return Ok(()),
             // Driver hiccup or still too big: the CPU path below is the safe fallback.
-            Err(_) => progress(0.0),
+            Err(err) if can_retry(&err) => (),
+            Err(err) => return Err(err),
         }
     }
     match ctx.codec {
@@ -141,52 +248,95 @@ fn filters(v: &VideoStream, plan: &VideoPlan, trim: Option<Trim>, tonemap: bool)
 /// planner only scales to save bits, so a video that fits needs no scaling. `None` when
 /// the normal re-encode is the way.
 fn copy_plan(info: &MediaInfo, trim: Option<Trim>, codec: VideoCodec, target: u64) -> Option<u32> {
-    let v = info.video.as_ref()?;
-    let plain = v.codec == codec.probe_name()
-        && matches!(v.pix_fmt.as_str(), "yuv420p" | "yuvj420p")
-        && v.hdr.is_none()
-        && !v.rotated
-        && v.fps <= 60.01;
-    if trim.is_some() || info.audio.is_none() || !plain {
+    if trim.is_some() || info.audio.is_none() || !can_copy_video(info, codec) {
         return None;
     }
-    plan::copy_audio_kbps(target, info.duration, v.bitrate_kbps?)
+    match info.video.as_ref()?.bitrate_kbps {
+        Some(bitrate) => plan::copy_audio_kbps(target, info.duration, bitrate),
+        None => Some(plan::audio_kbps_for(plan::budget_kbps(
+            target,
+            info.duration,
+        ))),
+    }
 }
 
-/// Only the audio makes it too big: copy the video stream untouched (fast, and the picture
-/// keeps every bit) and re-encode just the audio. Errors when it doesn't fit after all.
-fn copy_video(
-    ctx: &Ctx,
-    info: &MediaInfo,
-    audio_kbps: u32,
-    target: u64,
-    out: &Path,
-    progress: Progress,
-) -> Result<PathBuf> {
-    let mut a = input_args(&info.path, None);
-    a.extend(args(["-map", "0:v:0", "-c:v", "copy"]));
-    audio_args(&mut a, info, audio_kbps);
-    finish(&mut a, ctx.codec, out);
-    ctx.ff.run(&a, info.duration, progress, ctx.cancel)?;
-    let size = file_size(out)?;
-    if size <= target {
-        return Ok(out.to_path_buf());
-    }
-    let _ = std::fs::remove_file(out);
-    Err(Error::DoesNotFit {
-        what: name_of(&info.path),
-        target,
-        best: size,
+fn can_copy_video(info: &MediaInfo, codec: VideoCodec) -> bool {
+    info.video.as_ref().is_some_and(|v| {
+        v.codec == codec.probe_name()
+            && matches!(v.pix_fmt.as_str(), "yuv420p" | "yuvj420p")
+            && v.hdr.is_none()
+            && !v.rotated
+            && v.width > 0
+            && v.height > 0
+            && v.fps <= 60.01
     })
 }
 
+fn can_copy_audio(info: &MediaInfo) -> bool {
+    info.audio.as_ref().is_none_or(|audio| {
+        audio.codec == "aac"
+            && info.playback.audio_profile == "LC"
+            && (1..=2).contains(&audio.channels)
+    })
+}
+
+fn video_may_fit(info: &MediaInfo, target: u64) -> bool {
+    let bitrate = info.video.as_ref().and_then(|v| v.bitrate_kbps);
+    bitrate.is_none_or(|kbps| kbps as f64 * 1000.0 * info.duration / 8.0 <= target as f64 * 1.05)
+}
+
+/// Remux compatible packets, optionally replacing the audio with AAC at the chosen rate.
+fn copy_video(
+    ctx: &Ctx,
+    info: &MediaInfo,
+    audio_kbps: Option<u32>,
+    target: u64,
+    out: &Path,
+    progress: Progress,
+) -> Result<()> {
+    let mut a = input_args(&info.path, None);
+    a.extend(args(["-map", "0:V:0", "-c:v", "copy"]));
+    audio_args(&mut a, info, audio_kbps);
+    finish(&mut a, ctx.codec, out);
+    ctx.ff.run(
+        &a,
+        info.duration,
+        &mut scaled(&mut *progress, 0.0, VERIFY_START),
+        ctx.cancel,
+    )?;
+    let size = file_size(out)?;
+    if size > target {
+        return Err(Error::DoesNotFit {
+            what: name_of(&info.path),
+            target,
+            best: size,
+        });
+    }
+    verify(
+        ctx.ff,
+        out,
+        info.duration,
+        info.audio.is_some(),
+        &mut scaled(progress, VERIFY_START, VERIFY_END),
+        ctx.cancel,
+    )?;
+    Ok(())
+}
+
 /// AAC for the first audio track; mono when the bitrate is too low for stereo.
-fn audio_args(a: &mut Vec<OsString>, info: &MediaInfo, kbps: u32) {
+fn audio_args(a: &mut Vec<OsString>, info: &MediaInfo, kbps: Option<u32>) {
     if let Some(audio) = &info.audio {
-        a.extend(args(["-map", "0:a:0", "-c:a", "aac", "-b:a"]));
-        a.push(format!("{kbps}k").into());
-        if plan::mono(kbps, audio.channels) {
-            a.extend(args(["-ac", "1"]));
+        a.extend(args(["-map", "0:a:0", "-c:a"]));
+        if let Some(kbps) = kbps {
+            a.extend(args(["aac", "-b:a"]));
+            a.push(format!("{kbps}k").into());
+            if plan::mono(kbps, audio.channels) {
+                a.extend(args(["-ac", "1"]));
+            } else if audio.channels > 2 {
+                a.extend(args(["-ac", "2"]));
+            }
+        } else {
+            a.push("copy".into());
         }
     }
 }
@@ -213,30 +363,35 @@ struct Job<'a, 'ctx> {
     decode_threads: String,
     filter_threads: String,
     x264_threads: String,
-    out: PathBuf,
+    out: &'a Path,
 }
 
 impl Job<'_, '_> {
     /// Single pass on the GPU, with one retry at a lower bitrate if it overshoots.
-    fn run_hw(&self, enc: Encoder, mut plan: VideoPlan, progress: Progress) -> Result<PathBuf> {
+    fn run_hw(&self, enc: Encoder, mut plan: VideoPlan, progress: Progress) -> Result<()> {
         plan.video_kbps = (plan.video_kbps as f64 * HW_HEADROOM) as u32;
         let mut extras = enc.quality_args(self.ctx.codec);
         let mut last = 0;
         for attempt in 0..2 {
-            let (from, to) = if attempt == 0 { (0.0, 1.0) } else { (0.5, 1.0) };
-            let mut p = scaled(&mut *progress, from, to);
-            match self.hw_pass(enc, extras, &plan, &mut p) {
-                // An older card or driver that refuses AQ or lookahead: the same encode
-                // without them, still on the GPU (see `gpu::works` for why).
-                Err(Error::Ffmpeg(_)) if !extras.is_empty() => {
-                    extras = &[];
-                    self.hw_pass(enc, extras, &plan, &mut p)?;
+            let from = if attempt == 0 { 0.0 } else { 0.5 };
+            {
+                let mut p = scaled(&mut *progress, from * VERIFY_START, VERIFY_START);
+                match self.hw_pass(enc, extras, &plan, &mut p) {
+                    // An older card or driver that refuses AQ or lookahead: the same encode
+                    // without them, still on the GPU (see `gpu::works` for why).
+                    Err(err @ Error::Ffmpeg(_)) if !extras.is_empty() && can_retry(&err) => {
+                        extras = &[];
+                        self.hw_pass(enc, extras, &plan, &mut p)?;
+                    }
+                    result => result?,
                 }
-                result => result?,
             }
-            match self.check(&mut plan)? {
-                Ok(p) => return Ok(p),
-                Err(size) => last = size,
+            match self.check(&mut plan, progress)? {
+                None => return Ok(()),
+                Some(size) => last = best_size(last, size),
+            }
+            if plan.video_kbps == 0 {
+                break;
             }
         }
         Err(self.too_big(last))
@@ -262,9 +417,8 @@ impl Job<'_, '_> {
     }
 
     /// Two-pass x264 on the CPU, with one retry at a lower bitrate if it overshoots.
-    fn run_x264(&self, mut plan: VideoPlan, progress: Progress) -> Result<PathBuf> {
-        let tmp = tempfile::tempdir()?;
-        let passlog = tmp.path().join("x264");
+    fn run_x264(&self, mut plan: VideoPlan, progress: Progress) -> Result<()> {
+        let passlog = self.out.with_file_name("x264");
         let preset = match self.ctx.speed {
             Speed::Fast => "veryfast",
             Speed::Balanced => "fast",
@@ -301,7 +455,7 @@ impl Job<'_, '_> {
             self.ctx.ff.run(
                 &first,
                 self.secs,
-                &mut scaled(&mut *progress, p1.0, p1.1),
+                &mut scaled(&mut *progress, p1.0 * VERIFY_START, p1.1 * VERIFY_START),
                 self.ctx.cancel,
             )?;
 
@@ -310,13 +464,16 @@ impl Job<'_, '_> {
             self.ctx.ff.run(
                 &second,
                 self.secs,
-                &mut scaled(&mut *progress, p2.0, p2.1),
+                &mut scaled(&mut *progress, p2.0 * VERIFY_START, p2.1 * VERIFY_START),
                 self.ctx.cancel,
             )?;
 
-            match self.check(&mut plan)? {
-                Ok(p) => return Ok(p),
-                Err(size) => last = size,
+            match self.check(&mut plan, progress)? {
+                None => return Ok(()),
+                Some(size) => last = best_size(last, size),
+            }
+            if plan.video_kbps == 0 {
+                break;
             }
         }
         Err(self.too_big(last))
@@ -329,7 +486,7 @@ impl Job<'_, '_> {
         codec: VideoCodec,
         mut plan: VideoPlan,
         progress: Progress,
-    ) -> Result<PathBuf> {
+    ) -> Result<()> {
         let mut last = 0;
         // Without a peak cap SVT-AV1 can overshoot more: start a bit lower, allow a third try.
         let tries = if codec == VideoCodec::Av1 {
@@ -368,21 +525,24 @@ impl Job<'_, '_> {
             // fail to start), so AV1 relies on its own rate control plus the retry below.
             if codec != VideoCodec::Av1 {
                 a.extend(args(["-maxrate"]));
-                a.push(format!("{}k", kbps * 3 / 2).into());
+                a.push(format!("{}k", u64::from(kbps) * 3 / 2).into());
                 a.extend(args(["-bufsize"]));
-                a.push(format!("{}k", kbps * 2).into());
+                a.push(format!("{}k", u64::from(kbps) * 2).into());
             }
             self.tail(&mut a, &plan);
-            let (from, to) = if attempt == 0 { (0.0, 1.0) } else { (0.6, 1.0) };
+            let from = if attempt == 0 { 0.0 } else { 0.6 };
             self.ctx.ff.run(
                 &a,
                 self.secs,
-                &mut scaled(&mut *progress, from, to),
+                &mut scaled(&mut *progress, from * VERIFY_START, VERIFY_START),
                 self.ctx.cancel,
             )?;
-            match self.check(&mut plan)? {
-                Ok(p) => return Ok(p),
-                Err(size) => last = size,
+            match self.check(&mut plan, progress)? {
+                None => return Ok(()),
+                Some(size) => last = best_size(last, size),
+            }
+            if plan.video_kbps == 0 {
+                break;
             }
         }
         Err(self.too_big(last))
@@ -399,7 +559,7 @@ impl Job<'_, '_> {
             &self.filter_threads,
         ]);
         a.extend(input_args(&self.info.path, self.trim));
-        a.extend(args(["-map", "0:v:0"]));
+        a.extend(args(["-map", "0:V:0"]));
         if self.trim.is_some() {
             // The default encoder time base rounds to a whole frame interval. This can
             // shift video against audio and make -t discard the last selected frame.
@@ -418,7 +578,15 @@ impl Job<'_, '_> {
 
     /// Audio, colour tags, container flags and output path.
     fn tail(&self, a: &mut Vec<OsString>, plan: &VideoPlan) {
-        audio_args(a, self.info, plan.audio_kbps);
+        let preserve_audio = self.trim.is_none()
+            && can_copy_audio(self.info)
+            && self
+                .info
+                .audio
+                .as_ref()
+                .and_then(|a| a.bitrate_kbps)
+                .is_some_and(|kbps| kbps < plan.audio_kbps);
+        audio_args(a, self.info, (!preserve_audio).then_some(plan.audio_kbps));
         if self.tonemap {
             a.extend(hdr::sdr_tags());
         }
@@ -435,22 +603,34 @@ impl Job<'_, '_> {
                 .into(),
             );
         }
-        finish(a, self.ctx.codec, &self.out);
+        finish(a, self.ctx.codec, self.out);
     }
 
-    /// `Ok(Ok(path))` if it fits; `Ok(Err(size))` after lowering the bitrate for a retry.
-    fn check(&self, plan: &mut VideoPlan) -> Result<std::result::Result<PathBuf, u64>> {
-        let size = file_size(&self.out)?;
+    /// Verify a fitting candidate or report its size and lower the bitrate for a retry.
+    fn check(&self, plan: &mut VideoPlan, progress: Progress) -> Result<Option<u64>> {
+        let size = file_size(self.out)?;
         if size <= self.target {
-            return Ok(Ok(self.out.clone()));
+            verify(
+                self.ctx.ff,
+                self.out,
+                self.secs,
+                self.info.audio.is_some(),
+                &mut scaled(progress, VERIFY_START, VERIFY_END),
+                self.ctx.cancel,
+            )?;
+            return Ok(None);
         }
-        let ratio = self.target as f64 / size as f64 * 0.95;
-        plan.video_kbps = (plan.video_kbps as f64 * ratio) as u32;
-        Ok(Err(size))
+        plan.video_kbps = plan::retry_video_kbps(
+            self.target,
+            size,
+            self.secs,
+            plan.video_kbps,
+            plan.audio_kbps,
+        );
+        Ok(Some(size))
     }
 
     fn too_big(&self, best: u64) -> Error {
-        let _ = std::fs::remove_file(&self.out);
         Error::DoesNotFit {
             what: name_of(&self.info.path),
             target: self.target,
@@ -459,10 +639,18 @@ impl Job<'_, '_> {
     }
 }
 
+fn best_size(previous: u64, next: u64) -> u64 {
+    if previous == 0 {
+        next
+    } else {
+        previous.min(next)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::probe::{AudioStream, Hdr, MediaKind};
+    use crate::probe::{AudioStream, Hdr, MediaKind, PlaybackInfo};
     use crate::size::MB;
 
     /// 10 s of 1080p30 H.264 at `video_kbps`, with stereo audio.
@@ -488,6 +676,7 @@ mod tests {
                 channels: 2,
             }),
             has_alpha: false,
+            playback: PlaybackInfo::default(),
         }
     }
 
@@ -502,9 +691,9 @@ mod tests {
             change(info.video.as_mut().unwrap());
             copy_plan(&info, None, VideoCodec::H264, target)
         };
-        // Too big on its own, size unknown, or no audio to blame.
+        // Try a measured copy if the stream size is unknown, but skip if clearly too big.
         assert_eq!(copy_plan(&clip(1700), None, VideoCodec::H264, target), None);
-        assert_eq!(with(|v| v.bitrate_kbps = None), None);
+        assert!(with(|v| v.bitrate_kbps = None).is_some());
         let mut silent = clip(1200);
         silent.audio = None;
         assert_eq!(copy_plan(&silent, None, VideoCodec::H264, target), None);

@@ -3,6 +3,40 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::{Options, Speed};
+
+/// How to trade format compatibility, detail and encoding time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompressionPreference {
+    Compatibility,
+    #[default]
+    Balanced,
+    Efficiency,
+}
+
+impl CompressionPreference {
+    /// Defaults for a preference. Explicit format choices can override these options.
+    pub fn options(self, target_bytes: u64) -> Options {
+        let mut options = Options::new(target_bytes);
+        match self {
+            Self::Compatibility => {
+                options.speed = Speed::Fast;
+                options.audio_format = AudioFormat::Mp3;
+                options.image_format = ImageFormat::Jpeg;
+            }
+            Self::Balanced => options.audio_format = AudioFormat::Mp3,
+            Self::Efficiency => {
+                options.speed = Speed::Quality;
+                options.gpu = false;
+                options.audio_format = AudioFormat::Opus;
+                options.image_format = ImageFormat::Webp;
+            }
+        }
+        options
+    }
+}
+
 /// Video codec. Same file size: AV1 looks best, then H.265, then H.264.
 /// Same look: AV1 is smallest. H.264 plays (and previews inline) everywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

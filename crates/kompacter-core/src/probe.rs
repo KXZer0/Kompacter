@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::ffmpeg::Ffmpeg;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -63,6 +63,17 @@ pub struct MediaInfo {
     pub audio: Option<AudioStream>,
     /// True when the image has transparency (so we keep a format that supports it).
     pub has_alpha: bool,
+    /// Container and stream details used to decide whether video can be copied.
+    #[serde(skip)]
+    pub playback: PlaybackInfo,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PlaybackInfo {
+    pub(crate) mp4: bool,
+    pub(crate) video_tag: String,
+    pub(crate) audio_profile: String,
+    pub(crate) stream_count: usize,
 }
 
 pub fn probe(ff: &Ffmpeg, path: &Path) -> Result<MediaInfo> {
@@ -76,6 +87,7 @@ pub fn probe(ff: &Ffmpeg, path: &Path) -> Result<MediaInfo> {
             video: None,
             audio: None,
             has_alpha: false,
+            playback: PlaybackInfo::default(),
         });
     }
     let size_bytes = meta.len();
@@ -87,11 +99,31 @@ pub fn probe(ff: &Ffmpeg, path: &Path) -> Result<MediaInfo> {
         video: None,
         audio: None,
         has_alpha: false,
+        playback: PlaybackInfo::default(),
     };
-    match ff.probe_json(path)? {
-        Some(json) => Ok(classify(path, size_bytes, &json).unwrap_or_else(other)),
+    let info = ff
+        .probe_json(path)?
+        .as_ref()
+        .and_then(|json| classify(path, size_bytes, json));
+    match info {
+        Some(info) => Ok(info),
+        None if video_extension(path) => Err(Error::Probe {
+            path: path.into(),
+            reason: "no readable video or audio stream".into(),
+        }),
         None => Ok(other()),
     }
+}
+
+fn video_extension(path: &Path) -> bool {
+    const EXTENSIONS: &[&str] = &[
+        "mp4", "m4v", "webm", "mkv", "mov", "avi", "mpeg", "mpg", "wmv", "flv", "mts", "m2ts",
+    ];
+    path.extension().is_some_and(|ext| {
+        EXTENSIONS
+            .iter()
+            .any(|video| ext.eq_ignore_ascii_case(video))
+    })
 }
 
 /// Turn ffprobe's JSON into a `MediaInfo`. Returns `None` when there is no usable stream.
@@ -106,6 +138,7 @@ pub(crate) fn classify(path: &Path, size_bytes: u64, json: &Value) -> Option<Med
         .and_then(|f| f.get("duration"))
         .and_then(Value::as_str)
         .and_then(|d| d.parse::<f64>().ok())
+        .filter(|d| d.is_finite())
         .unwrap_or(0.0);
 
     // Album art inside audio files shows up as a video stream; skip it.
@@ -170,6 +203,37 @@ pub(crate) fn classify(path: &Path, size_bytes: u64, json: &Value) -> Option<Med
         })
         .unwrap_or(false);
 
+    let playback = PlaybackInfo {
+        mp4: format_name.split(',').any(|name| name == "mp4")
+            && format
+                .and_then(|f| f["tags"]["major_brand"].as_str())
+                .is_some_and(|brand| {
+                    matches!(
+                        brand,
+                        "isom"
+                            | "mp41"
+                            | "mp42"
+                            | "avc1"
+                            | "M4V "
+                            | "MSNV"
+                            | "dash"
+                            | "av01"
+                            | "cmfc"
+                            | "cmfv"
+                    ) || brand.strip_prefix("iso").is_some_and(|suffix| {
+                        suffix.len() == 1 && suffix.as_bytes()[0].is_ascii_digit()
+                    })
+                }),
+        video_tag: video_json
+            .and_then(|s| s["codec_tag_string"].as_str())
+            .unwrap_or_default()
+            .into(),
+        audio_profile: audio_json
+            .and_then(|s| s["profile"].as_str())
+            .unwrap_or_default()
+            .into(),
+        stream_count: streams.len(),
+    };
     Some(MediaInfo {
         path: path.into(),
         size_bytes,
@@ -182,6 +246,7 @@ pub(crate) fn classify(path: &Path, size_bytes: u64, json: &Value) -> Option<Med
         video,
         audio,
         has_alpha,
+        playback,
     })
 }
 
@@ -231,7 +296,8 @@ fn video_kbps(video: &Value, streams: &[Value], format: Option<&Value>) -> Optio
 fn parse_rate(rate: Option<&str>) -> Option<f64> {
     let (n, d) = rate?.split_once('/')?;
     let (n, d): (f64, f64) = (n.parse().ok()?, d.parse().ok()?);
-    (d > 0.0 && n > 0.0).then(|| n / d)
+    let fps = n / d;
+    (d > 0.0 && fps > 0.0 && fps.is_finite()).then_some(fps)
 }
 
 pub(crate) fn dir_size(dir: &Path) -> Result<u64> {
