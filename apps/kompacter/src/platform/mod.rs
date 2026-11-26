@@ -12,8 +12,13 @@ pub mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::{clipboard_files, copy_files, recycle};
 
+#[cfg(target_os = "linux")]
+#[path = "linux/autostart.rs"]
+mod linux_autostart;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod macos_login;
 #[cfg(target_os = "macos")]
 pub use macos::{
     clipboard_files, clipboard_seq, copy_files, focus_application, install_activation, recycle,
@@ -69,6 +74,67 @@ pub fn anchor() -> Option<Anchor> {
         at: At::BottomRight,
     });
 }
+
+/// Kompacter's entry among the programs the system starts at login.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartEntry {
+    /// No entry.
+    Absent,
+    /// An entry the user switched off in the system's own settings: left that way.
+    Disabled,
+    /// An entry that starts another copy of Kompacter (or this one before it moved).
+    Elsewhere,
+    /// An entry that starts this copy.
+    Here,
+}
+
+/// Start Kompacter quietly (in the tray) when the user logs in, or stop doing so: the
+/// Run key on Windows, a login item on macOS, an XDG autostart entry on Linux.
+pub fn set_start_with_system(on: bool) {
+    #[cfg(windows)]
+    windows::set_start_with_windows(on);
+    #[cfg(target_os = "macos")]
+    macos_login::set(on);
+    #[cfg(target_os = "linux")]
+    linux_autostart::set(on);
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    let _ = on;
+}
+
+/// Kompacter's start-at-login entry as it is now (it can be changed in the system's
+/// settings: Task Manager, System Settings, the desktop's startup apps).
+pub fn start_entry() -> StartEntry {
+    #[cfg(windows)]
+    return if windows::starts_with_windows() {
+        StartEntry::Here
+    } else {
+        StartEntry::Absent
+    };
+    #[cfg(target_os = "macos")]
+    return macos_login::state();
+    #[cfg(target_os = "linux")]
+    return linux_autostart::state();
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    return StartEntry::Absent;
+}
+
+/// Whether this copy can start with the system: macOS only registers the app bundle.
+pub fn start_with_system_supported() -> bool {
+    #[cfg(target_os = "macos")]
+    return CAPABILITIES.start_with_system && macos_login::supported();
+    #[cfg(not(target_os = "macos"))]
+    return CAPABILITIES.start_with_system;
+}
+
+/// What the system calls starting with it, for the Settings switch.
+pub const START_WITH_SYSTEM_NAME: &str = if cfg!(windows) {
+    "Start with Windows"
+} else if cfg!(target_os = "macos") {
+    "Open at login"
+} else {
+    "Start with the system"
+};
 
 /// Play a preview against the sound device's sample clock. If audio is
 /// unavailable, start a monotonic clock when video has its first frame.
@@ -376,7 +442,6 @@ mod imp {
     pub fn clip_flyout_input(_hwnd: isize, _height: f32, _scale: f32) -> bool {
         false
     }
-    pub fn set_start_with_windows(_on: bool) {}
     pub fn set_explorer_menu(_on: bool) {}
     pub fn tray_pinned() -> Option<bool> {
         None
@@ -385,9 +450,6 @@ mod imp {
         false
     }
     pub fn open_taskbar_settings() {}
-    pub fn starts_with_windows() -> bool {
-        false
-    }
     pub fn system_dark() -> bool {
         false
     }

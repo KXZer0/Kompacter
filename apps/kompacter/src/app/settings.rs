@@ -28,9 +28,11 @@ pub struct Settings {
     pub output_dir: String,
     /// Hide the flyout when it loses focus (not while a file is dragged over it).
     pub auto_hide: bool,
+    /// Starts with the system (Windows, macOS login item, Linux autostart). The name
+    /// predates macOS and Linux and is kept so existing settings files still load.
     pub start_with_windows: bool,
-    /// Start with Windows has been switched on once by default. After that the choice is
-    /// the user's (Settings or Task Manager) and is never switched back on.
+    /// Start with the system has been switched on once by default. After that the choice is
+    /// the user's (Settings or the system's own) and is never switched back on.
     pub start_default_done: bool,
     /// The first-run screen (what Kompacter may do on its own) has been answered.
     pub welcomed: bool,

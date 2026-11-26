@@ -73,6 +73,13 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
   "NSString",
   "NSURL",
 ] }
+# Open at login (SMAppService, macOS 13+).
+objc2-service-management = { version = "0.3", default-features = false, features = [
+  "std",
+  "objc2",
+  "objc2-foundation",
+  "SMAppService",
+] }
 
 # Same Windows bindings Slint already uses (no extra copy).
 [target.'cfg(windows)'.dependencies.windows-sys]

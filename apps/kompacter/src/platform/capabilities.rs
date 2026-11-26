@@ -6,6 +6,8 @@ pub struct Capabilities {
     pub global_shortcut: bool,
     /// Files can go to the Recycle Bin or Trash ("Replace the original" needs it).
     pub trash: bool,
+    /// Start at login (Run key, login item, XDG autostart).
+    pub start_with_system: bool,
 }
 
 pub const CAPABILITIES: Capabilities = Capabilities {
@@ -14,6 +16,7 @@ pub const CAPABILITIES: Capabilities = Capabilities {
     watch_folders: cfg!(any(windows, target_os = "linux", target_os = "macos")),
     global_shortcut: cfg!(windows),
     trash: cfg!(any(windows, target_os = "linux", target_os = "macos")),
+    start_with_system: cfg!(any(windows, target_os = "linux", target_os = "macos")),
 };
 
 /// What the system calls the place deleted files go.

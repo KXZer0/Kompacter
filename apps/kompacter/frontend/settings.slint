@@ -27,6 +27,9 @@ export global Prefs {
     in property <bool> auto-update;
     in property <bool> auto-hide;
     in property <string> auto-hide-error;
+    /// Starting at login: whether this copy can, and what the system calls it.
+    in property <bool> start-available;
+    in property <string> start-label: "Start with Windows";
     in property <bool> start-with-windows;
     in property <bool> tray-pinned;
     in property <bool> explorer-menu;
@@ -601,8 +604,8 @@ export component SettingsView inherits Rectangle {
                         toggled(on) => { Prefs.set-auto-hide(on); }
                     }
                 }
-                if Prefs.windows-integration: Cell {
-                    label: "Start with Windows";
+                if Prefs.start-available: Cell {
+                    label: Prefs.start-label;
                     Switch {
                         checked: Prefs.start-with-windows;
                         y: (parent.height - self.height) / 2;

@@ -67,3 +67,29 @@ Ctrl+V. The paste should be held and the quick bar should show the app's logo an
 - [ ] Settings → Apps → Kompacter → Uninstall removes the app, the Start menu entry, the
       right-click menu, start-with-Windows, `%APPDATA%\app.kompacter.desktop` and the
       `Kompacted` folder.
+
+## Start with the system on Linux and macOS
+
+Use a release build (`cargo build --release`, a package or the AppImage): debug builds never
+switch it on by themselves.
+
+Linux (Settings → General → "Start with the system"):
+
+- [ ] The first start of a release build creates
+      `~/.config/autostart/io.github.KXZer0.Kompacter.desktop` (or under `$XDG_CONFIG_HOME`).
+      Its `Exec=` is `kompacter --tray` for the .deb, the `.AppImage` file's path for the
+      AppImage, and the `Kompacter` program's path for the tarball, each followed by `--tray`.
+- [ ] Log out and in: Kompacter is running in the tray with no window open.
+- [ ] Turning the switch off removes the file; it stays off after restarting Kompacter.
+- [ ] Move the AppImage or tarball folder and start it again: `Exec=` follows the new path.
+- [ ] Switching it off in the desktop's own startup settings (GNOME Tweaks, KDE
+      Autostart) shows the switch off in Kompacter, and Kompacter doesn't switch it back on.
+
+macOS (Settings → General → "Open at login"), with the `.app` from the DMG:
+
+- [ ] The first start adds Kompacter to System Settings → General → Login Items (macOS 13
+      and later; macOS 12 and earlier get `~/Library/LaunchAgents/io.github.KXZer0.Kompacter.plist`).
+- [ ] Log out and in: Kompacter is running.
+- [ ] Turning the switch off removes it from Login Items. Switching it off in Login Items
+      shows the switch off in Kompacter; switching it on again opens Login Items.
+- [ ] `cargo run` (not a bundle) shows no "Open at login" switch and registers nothing.
