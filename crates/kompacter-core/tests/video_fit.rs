@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use kompacter_core::{Engine, Error, Ffmpeg, Mode, Options};
+use kompacter_core::{Engine, Error, Ffmpeg, Mode, Options, VideoCodec};
 
 fn have_ffmpeg() -> bool {
     let ff = Ffmpeg::default();
@@ -86,22 +86,25 @@ fn corrupt_compatible_video_is_never_returned_untouched() {
 
     let engine = Engine::default();
     let info = engine.probe(&input).unwrap();
-    let mut opts = Options::new(200_000);
-    opts.gpu = false;
-    assert!(engine.estimate(&info, &opts).unwrap().fits_as_is);
-    match engine.compress(&input, &opts, &mut |_| {}, &AtomicBool::new(false)) {
-        Ok(result) => {
-            assert!(result.fits && !result.untouched);
-            let verified = Command::new(Ffmpeg::default().ffmpeg)
-                .args(["-v", "error", "-xerror", "-i"])
-                .arg(result.path)
-                .args(["-f", "null", "-"])
-                .status()
-                .unwrap();
-            assert!(verified.success());
+    for codec in [VideoCodec::H264, VideoCodec::Av1] {
+        let mut opts = Options::new(200_000);
+        opts.gpu = false;
+        opts.video_codec = codec;
+        assert!(engine.estimate(&info, &opts).unwrap().fits_as_is);
+        match engine.compress(&input, &opts, &mut |_| {}, &AtomicBool::new(false)) {
+            Ok(result) => {
+                assert!(result.fits && !result.untouched);
+                let verified = Command::new(Ffmpeg::default().ffmpeg)
+                    .args(["-v", "error", "-xerror", "-i"])
+                    .arg(result.path)
+                    .args(["-f", "null", "-"])
+                    .status()
+                    .unwrap();
+                assert!(verified.success());
+            }
+            Err(Error::Ffmpeg(_)) => (),
+            Err(err) => panic!("unexpected error: {err}"),
         }
-        Err(Error::Ffmpeg(_)) => (),
-        Err(err) => panic!("unexpected error: {err}"),
     }
 }
 
@@ -186,6 +189,111 @@ fn keeps_verified_mp4_at_exact_cap_and_remuxes_compatible_packets() {
     let result = engine.compress(&mkv, &opts, &mut |_| {}, &cancel).unwrap();
     assert!(result.untouched);
     assert_eq!(result.path, mkv);
+}
+
+fn copy_into(source: &Path, dest: &Path, extra: &[&str]) {
+    let status = Command::new(Ffmpeg::default().ffmpeg)
+        .args(["-v", "error", "-y", "-i"])
+        .arg(source)
+        .args(extra)
+        .arg(dest)
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn fitting_h264_mp4_stays_untouched_whatever_codec_is_chosen() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mp4 = dir.path().join("source.mp4");
+    generate(&mp4, "libx264");
+    let engine = Engine::default();
+    let info = engine.probe(&mp4).unwrap();
+    for codec in [VideoCodec::Av1, VideoCodec::H265] {
+        let mut opts = Options::new(200_000);
+        opts.gpu = false;
+        opts.video_codec = codec;
+        assert!(engine.estimate(&info, &opts).unwrap().fits_as_is);
+        let result = engine
+            .compress(&mp4, &opts, &mut |_| {}, &AtomicBool::new(false))
+            .unwrap();
+        assert!(result.untouched && result.fits, "{codec:?}");
+        assert_eq!(result.path, mp4);
+    }
+    // Nothing was written next to it.
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn fitting_h264_mov_and_mkv_are_remuxed_not_re_encoded() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mp4 = dir.path().join("source.mp4");
+    generate(&mp4, "libx264");
+    let engine = Engine::default();
+    for (name, codec) in [
+        ("clip.mov", VideoCodec::Av1),
+        ("clip.mkv", VideoCodec::H265),
+    ] {
+        let input = dir.path().join(name);
+        copy_into(&mp4, &input, &["-c", "copy"]);
+        let mut opts = Options::new(200_000);
+        opts.gpu = false;
+        opts.video_codec = codec;
+        let info = engine.probe(&input).unwrap();
+        assert!(!engine.estimate(&info, &opts).unwrap().fits_as_is);
+        let result = engine
+            .compress(&input, &opts, &mut |_| {}, &AtomicBool::new(false))
+            .unwrap();
+        assert!(result.fits && !result.untouched, "{name}");
+        assert_eq!(result.path.extension().unwrap(), "mp4");
+        let out = engine.probe(&result.path).unwrap();
+        let video = out.video.unwrap();
+        assert_eq!(video.codec, "h264", "{name} was re-encoded as {codec:?}");
+        assert_eq!((video.width, video.height), (320, 240));
+        for stream in ["v:0", "a:0"] {
+            assert_eq!(
+                packet_hashes(&input, stream),
+                packet_hashes(&result.path, stream),
+                "{name} {stream}"
+            );
+        }
+    }
+}
+
+#[test]
+fn fitting_h264_with_opus_in_mkv_copies_video_and_replaces_only_audio() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mp4 = dir.path().join("source.mp4");
+    generate(&mp4, "libx264");
+    let mkv = dir.path().join("opus.mkv");
+    copy_into(
+        &mp4,
+        &mkv,
+        &["-c:v", "copy", "-c:a", "libopus", "-b:a", "48k"],
+    );
+    let engine = Engine::default();
+    let mut opts = Options::new(200_000);
+    opts.gpu = false;
+    opts.video_codec = VideoCodec::Av1;
+    let result = engine
+        .compress(&mkv, &opts, &mut |_| {}, &AtomicBool::new(false))
+        .unwrap();
+    assert!(result.fits && !result.untouched);
+    let out = engine.probe(&result.path).unwrap();
+    assert_eq!(out.audio.unwrap().codec, "aac");
+    assert_eq!(
+        packet_hashes(&mkv, "v:0"),
+        packet_hashes(&result.path, "v:0")
+    );
 }
 
 #[test]
