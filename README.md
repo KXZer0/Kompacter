@@ -74,7 +74,7 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 | Replace the original (to the Recycle Bin / Trash) | ✓ | ✓ | ✓ |
 | Hotkey quick bar (Ctrl+Alt+K) for what you copied | ✓ | planned | planned |
 | Paste guard: a too-big paste into Discord, Slack, WhatsApp, Telegram or Signal is shrunk to that app's limit | ✓ | planned | planned |
-| Notice when a too-big file is copied | ✓ | planned | planned |
+| Notice when a too-big file is copied | ✓ | ✓ (Wayland on KDE, Sway and other wlroots desktops; not GNOME) | ✓ |
 | Start with the system | ✓ | planned | planned |
 | Updates | Installs itself on restart | AppImage replaces itself; .deb and tarball open the release page | Opens the release page |
 

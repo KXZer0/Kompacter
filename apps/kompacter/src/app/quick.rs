@@ -280,7 +280,9 @@ impl App {
         let capabilities = &sys::CAPABILITIES;
         prefs.set_global_shortcut_available(capabilities.global_shortcut);
         prefs.set_paste_guard_available(capabilities.paste_guard);
+        let copies = sys::watch_copies_support();
         prefs.set_watch_copies_available(capabilities.watch_copies);
+        prefs.set_watch_copies_note(copies.err().unwrap_or_default().into());
         prefs.set_watch_folders_available(capabilities.watch_folders);
         prefs.set_paste_guard(s.paste_guard);
         prefs.set_watch_copies(s.watch_copies);
@@ -303,7 +305,7 @@ impl App {
             sys::set_guard(s.paste_guard, self.chat_limit("discord"));
         }
         self.watch.set(watch::Config {
-            copies: capabilities.watch_copies && s.watch_copies,
+            copies: capabilities.watch_copies && copies.is_ok() && s.watch_copies,
             folders_on: capabilities.watch_folders && s.watch_folders,
             folders: s.clip_folders.iter().map(PathBuf::from).collect(),
             limit,

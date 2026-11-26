@@ -410,7 +410,10 @@ impl App {
         let ui = self.ui();
         let s = self.settings.borrow();
         let features: Vec<i32> = [
-            (sys::CAPABILITIES.watch_copies, 0),
+            (
+                sys::CAPABILITIES.watch_copies && sys::watch_copies_support().is_ok(),
+                0,
+            ),
             (sys::CAPABILITIES.paste_guard, 1),
             (sys::CAPABILITIES.watch_folders, 2),
         ]
@@ -495,7 +498,7 @@ impl App {
             s.welcomed = true;
             s.compression_preference =
                 COMPRESSION_PREFERENCES[ui.get_welcome_preference() as usize];
-            if sys::CAPABILITIES.watch_copies {
+            if sys::CAPABILITIES.watch_copies && sys::watch_copies_support().is_ok() {
                 s.watch_copies = ui.get_welcome_copies();
             }
             if sys::CAPABILITIES.paste_guard {
