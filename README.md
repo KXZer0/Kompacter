@@ -8,6 +8,9 @@ Copy a file that's too big for Discord (or email, or any app with an upload limi
 
 > Status: early development. One app and one compression engine on Windows, Linux and macOS. Windows draws with Skia, Linux and macOS with FemtoVG (OpenGL) or the software renderer. Media jobs run in FFmpeg, with hardware encoding on supported GPUs. The automatic features work on all three, within what each system allows (see the table under Features).
 
+> [!WARNING]
+> **Linux and macOS are untested on real machines.** Both versions build and pass the automated tests on every change (CI on Ubuntu and macOS), but nobody has used them day to day yet: expect rough edges, especially in the automatic features. Windows is the tested version. Please [report what you find](https://github.com/KXZer0/Kompacter/issues), and if you use Linux or a Mac and would like to help maintain those versions, say so in an issue.
+
 ## Download
 
 Get Kompacter from [Releases](https://github.com/KXZer0/Kompacter/releases). Every download has a `.sha256` checksum next to it.
@@ -24,6 +27,10 @@ Get Kompacter from [Releases](https://github.com/KXZer0/Kompacter/releases). Eve
 Until the macOS builds are notarized, macOS blocks the first start: right-click Kompacter in Applications → **Open** → **Open** (or run `xattr -dr com.apple.quarantine /Applications/Kompacter.app`).
 
 ## See it
+
+**Where it lives.** On Windows it sits in the tray above the clock. On Linux it opens right beside the tray icon. On macOS it opens right above its Dock icon, and you can drop files on that icon.
+
+<p align="center"><img src="docs/media/linux.gif" alt="Linux: clicking Kompacter's tray icon in the top bar opens the panel right below it" width="720"></p>
 
 **Drop a file, press Compress, paste.** It picks the resolution and bitrate that fit, and the result is already on your clipboard.
 
