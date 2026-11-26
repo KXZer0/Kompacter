@@ -439,8 +439,9 @@ impl App {
         self.set_view(View::News);
     }
 
-    /// Check GitHub for a newer version now and then, in the background (release builds
-    /// on Windows only). A checked download shows the "Update ready" line.
+    /// Check GitHub for a newer version now and then, in the background. A checked
+    /// download (or, where Kompacter can't update itself, a newer release) shows the
+    /// "Update ready" line.
     fn start_update_checks(&self, current: &'static str) {
         let on = self.update_on.clone();
         std::thread::spawn(move || {
@@ -1000,7 +1001,21 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         ui.on_news_done(move || a.set_view(View::Idle));
         // Restart: quit, and the installer runs on the way out (see the end of main).
         let a = app.clone();
-        ui.on_restart_to_update(move || a.trim_quit());
+        ui.on_restart_to_update(move || {
+            let page = a
+                .update_ready
+                .borrow()
+                .as_ref()
+                .filter(|ready| !ready.installs_on_quit())
+                .cloned();
+            match page {
+                // Kompacter can't replace itself here: open the release page and keep running.
+                Some(ready) => {
+                    let _ = update::install(&ready);
+                }
+                None => a.trim_quit(),
+            }
+        });
         let a = app.clone();
         ui.on_quick_expand(move || a.quick_expand());
         let a = app.clone();
@@ -1253,9 +1268,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
             app.settings.borrow_mut().seen_version = version.into();
             app.save();
         }
-        if cfg!(windows) {
-            app.start_update_checks(version);
-        }
+        app.start_update_checks(version);
     }
     // First run: ask once what Kompacter may do on its own (see `welcome_done`).
     if !app.settings.borrow().welcomed && app.view() == View::Idle && !app.quick.get() {
@@ -1278,7 +1291,12 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     app.tray.borrow_mut().take();
     // A checked update waits for Kompacter to close; the installer reopens it.
     if app.settings.borrow().auto_update {
-        if let Some(ready) = app.update_ready.borrow().as_ref() {
+        if let Some(ready) = app
+            .update_ready
+            .borrow()
+            .as_ref()
+            .filter(|ready| ready.installs_on_quit())
+        {
             let _ = update::install(ready);
         }
     }

@@ -59,7 +59,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: Kompacter contributors <https://github.com/KXZer0/Kompacter/issues>
 Installed-Size: $installed_size
-Depends: $depends, ffmpeg, libegl1, libgl1, libxkbcommon0, libwayland-client0, xdg-utils
+Depends: $depends, ffmpeg, libegl1, libgl1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, xdg-utils
 Recommends: xdg-desktop-portal, xdg-desktop-portal-gtk | xdg-desktop-portal-kde | xdg-desktop-portal-gnome, zenity
 Homepage: https://github.com/KXZer0/Kompacter
 Description: Shrink files to fit an upload limit

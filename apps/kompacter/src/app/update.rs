@@ -329,6 +329,14 @@ pub fn clear_downloads() {
     let _ = std::fs::remove_dir_all(download_dir());
 }
 
+impl Ready {
+    /// True when the update is applied as Kompacter quits (Windows installer, AppImage).
+    /// Otherwise the release page only opens when the user asks for it.
+    pub fn installs_on_quit(&self) -> bool {
+        !matches!(self.how, How::Page(_))
+    }
+}
+
 /// Install a checked update. Windows: run the installer silently; it closes Kompacter,
 /// replaces it and opens the new version. AppImage: swap the file in and start it again.
 /// Everywhere else: open the release page.

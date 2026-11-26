@@ -25,9 +25,7 @@ Every download is built by GitHub Actions; nobody has to build from source.
      (same file name) on the next restart.
    - The .deb, the tarball and macOS offer the update and open the release page.
 
-   (The app only starts these checks on Windows for now: `start_update_checks` in
-   `apps/kompacter/src/app/mod.rs` is gated on `cfg!(windows)`. `update.rs` already handles
-   Linux and macOS, so lifting that gate turns them on.)
+   The release page only opens when the user clicks the update pill, never on quit.
 
    A release only counts as an update for a system when it has that system's file, so keep the
    file names above (the updater matches them).
