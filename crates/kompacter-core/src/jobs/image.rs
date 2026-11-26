@@ -5,17 +5,19 @@
 //! Colour is kept rather than refused: ffmpeg's WebP encoder drops ICC profiles and
 //! its JPEG encoder doesn't always copy them, so the source's profile is read here and
 //! written back into the result. HDR stills are tone-mapped to SDR when this ffmpeg can.
-//! Animated PNG/WebP become animated WebP, or their first frame when that can't fit.
+//! Animated PNG/WebP become GIFs, which autoplay everywhere they're posted, through the
+//! same pipeline as clips; when no GIF fits, their first frame is compressed as a still.
 
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::Ordering;
 
 use super::video::can_retry;
 use super::{file_size, name_of, with_ext, Ctx};
 use crate::error::{Error, Result};
-use crate::ffmpeg::{args, Progress};
+use crate::ffmpeg::{args, command, Progress};
 use crate::hdr;
 use crate::probe::{is_heif_like, probe, MediaInfo, VideoStream};
 use crate::ImageFormat;
@@ -26,17 +28,6 @@ const SCALES: [f64; 5] = [1.0, 0.75, 0.5, 0.35, 0.25];
 const JPEG_Q: [u32; 4] = [3, 6, 10, 15];
 /// libwebp `-quality` (higher is better).
 const WEBP_Q: [u32; 4] = [85, 70, 55, 40];
-/// Animations: (scale, half the frame rate), best-looking first.
-const ANIM_STEPS: [(f64, bool); 6] = [
-    (1.0, false),
-    (0.75, false),
-    (0.5, false),
-    (0.5, true),
-    (0.35, true),
-    (0.25, true),
-];
-/// libwebp_anim `-quality` (higher is better).
-const ANIM_Q: [u32; 3] = [80, 60, 40];
 /// Largest ICC profile carried over. Real ones are a few KiB.
 const MAX_ICC: u64 = 4 << 20;
 /// ICC bytes per JPEG APP2 segment: 65535 minus the length, id and sequence bytes.
@@ -52,10 +43,19 @@ pub(crate) fn fit(
     let mut source = image_features(&info.path)?;
     source.hdr |= info.video.as_ref().is_some_and(|v| v.hdr.is_some());
     if source.animated {
-        // Keep it moving when we can. Without libwebp_anim, or when no animation
-        // fits, its first frame is compressed as a still instead.
-        match fit_animated(ctx, info, &source, target, out_base, &mut *progress) {
-            Err(err) if can_retry(&err) => {}
+        // Keep it moving when we can; when no GIF fits (or it's too long for one),
+        // its first frame is compressed as a still instead.
+        match fit_gif(ctx, info, target, out_base, &mut *progress) {
+            Err(err @ Error::Ffmpeg(_)) if source.webp && can_retry(&err) => {
+                // ffmpeg before 8.0 has no animated WebP decoder; its first frame
+                // can't be read either.
+                return Err(Error::Unsupported(
+                    "this ffmpeg can't read animated WebP".into(),
+                ));
+            }
+            Err(err)
+                if can_retry(&err)
+                    || matches!(err, Error::TooLong { .. } | Error::Unsupported(_)) => {}
             result => return result,
         }
     }
@@ -236,87 +236,51 @@ fn encode_still(
     })
 }
 
-/// An animated PNG or WebP as an animated WebP, stepping size, frame rate and quality
-/// down until it fits.
-fn fit_animated(
+/// An animated PNG or WebP as a GIF, through the clip pipeline (palette, then size and
+/// frame rate stepped down). ffprobe often reports no duration for these, so it is
+/// added up from the frames.
+fn fit_gif(
     ctx: &Ctx,
     info: &MediaInfo,
-    source: &ImageFeatures,
     target: u64,
     out_base: &Path,
     progress: Progress,
 ) -> Result<PathBuf> {
-    let v = info
-        .video
-        .as_ref()
-        .ok_or_else(|| Error::Unsupported("unreadable image".into()))?;
-    let orient = source.orientation.unwrap_or(1);
-    let turn = orient_filter(orient);
-    let (w, h) = upright_size(v, orient);
-    let base_scale = (MAX_SIDE / f64::from(w.max(h))).min(1.0);
-    let out = with_ext(out_base, "webp");
-    let tmp = tempfile::tempdir_in(out.parent().unwrap_or_else(|| Path::new(".")))?;
-    let candidate = tmp.path().join("animated.webp");
-    let mut smallest = info.size_bytes;
-    let mut attempted = 0;
-    let mut previous = None;
-    let total = (ANIM_STEPS.len() * ANIM_Q.len() + 1) as f32;
-
-    for (scale, half_rate) in ANIM_STEPS {
-        let size = dimensions(w, h, base_scale * scale);
-        let rate = (half_rate && v.fps.is_finite() && v.fps >= 2.0).then_some(v.fps / 2.0);
-        if previous == Some((size, rate)) {
-            continue;
-        }
-        previous = Some((size, rate));
-        for quality in ANIM_Q {
-            let mut a = Vec::new();
-            if turn.is_some() {
-                a.push("-noautorotate".into());
-            }
-            a.extend(args(["-i".into(), info.path.clone().into_os_string()]));
-            let mut filters: Vec<String> = turn.map(str::to_owned).into_iter().collect();
-            if let Some(rate) = rate {
-                filters.push(format!("fps={rate:.3}"));
-            }
-            if size != (w, h) {
-                filters.push(format!("scale={}:{}:flags=lanczos", size.0, size.1));
-            }
-            if !filters.is_empty() {
-                a.push("-vf".into());
-                a.push(filters.join(",").into());
-            }
-            a.extend(args([
-                "-an",
-                "-c:v",
-                "libwebp_anim",
-                "-loop",
-                "0",
-                "-quality",
-            ]));
-            a.push(quality.to_string().into());
-            a.push(candidate.clone().into());
-            ctx.ff.run(&a, 0.0, &mut |_| {}, ctx.cancel)?;
-            let bytes = finish(&candidate, source.icc.as_deref(), true)?;
-            if bytes <= target {
-                if ctx.cancel.load(Ordering::Relaxed) {
-                    return Err(Error::Cancelled);
-                }
-                std::fs::rename(&candidate, &out)?;
-                progress(1.0);
-                return Ok(out);
-            }
-            smallest = smallest.min(bytes);
-            attempted += 1;
-            progress(attempted as f32 / total);
-        }
+    let mut info = info.clone();
+    if info.duration.is_nan() || info.duration <= 0.0 {
+        info.duration = frames_duration(ctx, &info).unwrap_or(0.0);
     }
+    super::gif::fit(ctx, &info, None, target, out_base, progress)
+}
 
-    Err(Error::DoesNotFit {
-        what: name_of(&info.path),
-        target,
-        best: smallest,
-    })
+/// Seconds of an animation: its frames' durations added up, or frames / frame rate.
+fn frames_duration(ctx: &Ctx, info: &MediaInfo) -> Option<f64> {
+    let out = command(&ctx.ff.ffprobe)
+        .args(["-v", "error", "-select_streams", "v:0"])
+        .args(["-show_entries", "packet=duration_time", "-of", "csv=p=0"])
+        .arg(&info.path)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let frames: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let summed: f64 = frames
+        .iter()
+        .filter_map(|l| l.trim_end_matches(',').parse::<f64>().ok())
+        .sum();
+    if summed > 0.0 {
+        return Some(summed);
+    }
+    let fps = info.video.as_ref()?.fps;
+    (fps > 0.0 && !frames.is_empty()).then(|| frames.len() as f64 / fps)
 }
 
 /// Width and height once turned upright. ffprobe already applies the display matrix
@@ -575,6 +539,8 @@ fn read_payload(f: &mut (impl Read + Seek), len: u32) -> Result<Option<Vec<u8>>>
 #[derive(Default)]
 struct ImageFeatures {
     animated: bool,
+    /// A WebP file (animated ones need a newer ffmpeg to decode).
+    webp: bool,
     /// The embedded ICC profile, written back into the result.
     icc: Option<Vec<u8>>,
     /// PQ or HLG colours (a PNG's cICP chunk here, ffprobe's tags in `fit`).
@@ -621,6 +587,7 @@ fn image_features(path: &Path) -> Result<ImageFeatures> {
             f.seek(SeekFrom::Current(i64::from(len) + 4))?;
         }
     } else if &signature[..4] == b"RIFF" && &signature[8..] == b"WEBP" {
+        features.webp = true;
         let mut chunk = [0; 8];
         while f.read_exact(&mut chunk).is_ok() {
             let len = u32::from_le_bytes(chunk[4..].try_into().unwrap());

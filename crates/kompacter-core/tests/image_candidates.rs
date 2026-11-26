@@ -150,8 +150,20 @@ fn have_encoder(name: &str) -> bool {
         .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("Encoder {name}")))
 }
 
+fn frame_count(path: &Path) -> usize {
+    let out = checked(
+        Command::new(Ffmpeg::default().ffprobe)
+            .args(["-v", "error", "-count_frames", "-select_streams", "v:0"])
+            .args(["-show_entries", "stream=nb_read_frames", "-of", "csv=p=0"])
+            .arg(path)
+            .output()
+            .unwrap(),
+    );
+    String::from_utf8_lossy(&out).trim().parse().unwrap()
+}
+
 #[test]
-fn animated_png_becomes_animated_webp() {
+fn animated_png_becomes_a_gif() {
     if !have_ffmpeg() {
         return;
     }
@@ -162,7 +174,7 @@ fn animated_png_becomes_animated_webp() {
             "-f",
             "lavfi",
             "-i",
-            "testsrc=size=64x64:rate=3:duration=1",
+            "testsrc2=size=320x240:rate=10:duration=2",
             "-f",
             "apng",
         ],
@@ -174,15 +186,49 @@ fn animated_png_becomes_animated_webp() {
     assert!(out.untouched);
     assert_eq!(out.path, src);
 
-    let out = compress(&src, info.size_bytes - 1, ImageFormat::Auto).unwrap();
-    assert!(out.output_bytes < info.size_bytes);
-    let data = std::fs::read(&out.path).unwrap();
-    if have_encoder("libwebp_anim") {
-        assert_eq!(out.path.extension().unwrap(), "webp");
-        assert!(chunk(&data, b"ANIM").is_some(), "not an animated WebP");
-    } else {
-        // Its first frame, as a still.
-        assert!(Engine::default().probe(&out.path).unwrap().video.is_some());
+    let target = info.size_bytes / 2;
+    let out = compress(&src, target, ImageFormat::Auto).unwrap();
+    assert_eq!(out.path.extension().unwrap(), "gif");
+    assert!(out.output_bytes <= target);
+    assert!(frame_count(&out.path) > 1, "the GIF should still move");
+
+    // Nothing animated fits: its first frame as a still.
+    let out = compress(&src, 3_000, ImageFormat::Auto).unwrap();
+    assert_ne!(out.path.extension().unwrap(), "gif");
+    assert!(out.output_bytes <= 3_000);
+}
+
+#[test]
+fn animated_webp_becomes_a_gif_or_says_why_not() {
+    if !have_ffmpeg() || !have_encoder("libwebp_anim") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("animated.webp");
+    gen(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=160x120:rate=6:duration=2",
+            "-c:v",
+            "libwebp_anim",
+            "-lossless",
+            "1",
+            "-loop",
+            "0",
+        ],
+        &src,
+    );
+    let size = std::fs::metadata(&src).unwrap().len();
+    match compress(&src, size / 2, ImageFormat::Auto) {
+        // Newer ffmpeg decodes animated WebP.
+        Ok(out) => {
+            assert_eq!(out.path.extension().unwrap(), "gif");
+            assert!(frame_count(&out.path) > 1);
+        }
+        Err(Error::Unsupported(why)) => assert!(why.contains("animated WebP"), "{why}"),
+        Err(e) => panic!("{e:?}"),
     }
 }
 
