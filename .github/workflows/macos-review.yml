@@ -42,6 +42,38 @@ jobs:
           test -L "$mount/Applications"
           codesign --verify --deep --strict "$mount/Kompacter.app"
           hdiutil detach "$mount"
+      # Screenshots of the real app for review. Never fails the job: a runner without a
+      # usable screen just produces no pictures.
+      - name: Screenshot the app
+        continue-on-error: true
+        run: |
+          shots="$RUNNER_TEMP/screenshots"
+          mkdir -p "$shots"
+          app="$RUNNER_TEMP/Kompacter review/Kompacter.app"
+          ffmpeg -v error -y -f lavfi -i testsrc2=size=1920x1080:rate=60:duration=30 \
+            -f lavfi -i sine=duration=30 -c:v libx264 -b:v 12M -c:a aac "$shots/gameclip.mp4"
+          open "$app"
+          sleep 10
+          screencapture -x "$shots/1-launch.png"
+          screencapture -x -R 0,0,1920,40 "$shots/2-menu-bar.png" || true
+          open -a "$app" "$shots/gameclip.mp4"
+          sleep 8
+          screencapture -x "$shots/3-file-opened.png"
+          rm "$shots/gameclip.mp4"
+          for f in "$shots"/*.png; do
+            sips -Z 1600 -s format jpeg -s formatOptions 70 "$f" --out "${f%.png}.jpg" >/dev/null
+            echo "SHOT-BEGIN $(basename "${f%.png}")"
+            base64 -i "${f%.png}.jpg" | fold -w 900 | sed 's/^/SHOT:/'
+            echo "SHOT-END"
+          done
+          osascript -e 'quit app "Kompacter"' || pkill -x Kompacter || true
+      - name: Keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kompacter-macos-screenshots
+          path: ${{ runner.temp }}/screenshots/*.png
+          if-no-files-found: warn
       - name: Keep the review bundle
         uses: actions/upload-artifact@v7
         with:
