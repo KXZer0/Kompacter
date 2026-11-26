@@ -483,10 +483,13 @@ fn x11_anchor(conn: &impl x11rb::connection::Connection, screen: usize) -> Optio
         .unwrap_or(1.0);
 
     Some(super::Anchor {
-        right: free.2,
-        edge: if from_top { free.1 } else { free.3 },
+        free,
         scale,
-        from_top,
+        at: if from_top {
+            super::At::TopRight
+        } else {
+            super::At::BottomRight
+        },
     })
 }
 

@@ -68,17 +68,23 @@ fn place(ui: &AppWindow, motion: &Motion, glass: bool, resize: bool) {
     let scale = anchor.scale;
     let w = (width * scale).round() as i32;
     let h = (height * scale).round() as i32;
-    let x = anchor.right - w - (margin * scale).round() as i32;
+    let m = (margin * scale).round() as i32;
     let offset = if glass {
-        0.0
+        0
     } else {
-        f64::from(1.0 - motion.reveal.get()) * 24.0
+        (f64::from(1.0 - motion.reveal.get()) * 24.0 * scale).round() as i32
     };
-    // Rise from below a bottom taskbar, or drop down from a top bar.
-    let y = if anchor.from_top {
-        anchor.edge + ((margin - offset) * scale).round() as i32
-    } else {
-        anchor.edge - h + ((offset - margin) * scale).round() as i32
+    let (left, top, right, bottom) = anchor.free;
+    // Centred on the Dock icon, but never past the edges of the free area.
+    let centre =
+        |at: i32, size: i32, low: i32, high: i32| (at - size / 2).min(high - size - m).max(low + m);
+    // Each placement slides in from the taskbar, top bar or Dock it sits against.
+    let (x, y) = match anchor.at {
+        sys::At::BottomRight => (right - w - m, bottom - h - m + offset),
+        sys::At::TopRight => (right - w - m, top + m - offset),
+        sys::At::Above(cx) => (centre(cx, w, left, right), bottom - h - m + offset),
+        sys::At::RightOf(cy) => (left + m - offset, centre(cy, h, top, bottom)),
+        sys::At::LeftOf(cy) => (right - w - m + offset, centre(cy, h, top, bottom)),
     };
     let position = slint::PhysicalPosition::new(x, y);
     if resize {

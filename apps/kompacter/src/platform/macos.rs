@@ -214,8 +214,10 @@ pub fn install_activation(callback: impl Fn(Vec<PathBuf>) + 'static) -> bool {
     installed.iter().all(|result| result.as_bool())
 }
 
-/// The top right of the free area (below the menu bar, beside the Dock) of the screen
-/// under the mouse, in winit's physical pixels: the panel hangs below the menu-bar icon.
+/// Right above Kompacter's Dock icon, like the Windows flyout above the tray. macOS
+/// doesn't say where an icon sits in the Dock, but the panel opens from a click on it
+/// or a drop onto it, so the mouse is on the icon. The Dock's edge is the side of the
+/// screen the free area (`visibleFrame`) leaves out; a hidden Dock counts as bottom.
 pub fn anchor() -> Option<super::Anchor> {
     use objc2_app_kit::{NSEvent, NSScreen};
     let mtm = MainThreadMarker::new()?;
@@ -236,13 +238,31 @@ pub fn anchor() -> Option<super::Anchor> {
     if free.size.width <= 0.0 || free.size.height <= 0.0 || scale <= 0.0 {
         return None;
     }
-    let top = main.frame().size.height - (free.origin.y + free.size.height);
-    let right = free.origin.x + free.size.width;
+    // Window coordinates: physical pixels down from the top of the main screen.
+    let height = main.frame().size.height;
+    let px = |points: f64| (points * scale).round() as i32;
+    let (x, y) = (px(mouse.x), px(height - mouse.y));
+    let rect = (
+        px(free.origin.x),
+        px(height - (free.origin.y + free.size.height)),
+        px(free.origin.x + free.size.width),
+        px(height - free.origin.y),
+    );
+    let whole = screen.frame();
+    let dock_left = free.origin.x - whole.origin.x;
+    let dock_right = (whole.origin.x + whole.size.width) - (free.origin.x + free.size.width);
+    let dock_bottom = free.origin.y - whole.origin.y;
+    let at = if dock_left > dock_bottom.max(dock_right) {
+        super::At::RightOf(y)
+    } else if dock_right > dock_bottom.max(dock_left) {
+        super::At::LeftOf(y)
+    } else {
+        super::At::Above(x)
+    };
     Some(super::Anchor {
-        right: (right * scale).round() as i32,
-        edge: (top * scale).round() as i32,
+        free: rect,
         scale,
-        from_top: true,
+        at,
     })
 }
 

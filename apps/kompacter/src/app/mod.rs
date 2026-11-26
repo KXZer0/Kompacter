@@ -755,9 +755,12 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     // Starts folded, so the first open grows in.
     ui.set_opened(false);
 
-    #[cfg(not(target_os = "linux"))]
+    // The tray icon is Kompacter's home on Windows. On macOS the Dock icon is (click it
+    // to open the panel above it, drop files on it), so there's no menu-bar icon too.
+    // Linux adds its tray once a tray host appears (see `linux_desktop`).
+    #[cfg(windows)]
     let tray = Some(Tray::new()?);
-    #[cfg(target_os = "linux")]
+    #[cfg(not(windows))]
     let tray = None;
     let app = App::new(&ui, tray, prefs, rich, glass);
     APP.with(|a| *a.borrow_mut() = Rc::downgrade(&app));

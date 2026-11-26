@@ -52,6 +52,10 @@ jobs:
           app="$RUNNER_TEMP/Kompacter review/Kompacter.app"
           ffmpeg -v error -y -f lavfi -i testsrc2=size=1920x1080:rate=60:duration=30 \
             -f lavfi -i sine=duration=30 -c:v libx264 -b:v 12M -c:a aac "$shots/gameclip.mp4"
+          # Put the mouse where Kompacter's Dock icon sits, as a click on it would.
+          swift -e 'import AppKit
+          let f = NSScreen.main!.frame
+          CGWarpMouseCursorPosition(CGPoint(x: f.width * 0.84, y: f.height - 30))' || true
           open "$app"
           sleep 10
           screencapture -x "$shots/1-launch.png"

@@ -31,16 +31,29 @@ pub use windows::*;
 #[cfg(not(windows))]
 pub use imp::*;
 
-/// Where the panel opens: the right edge and one horizontal edge of the free screen
-/// area beside the tray, in physical pixels, and the monitor's scale (1.0 = 100%).
+/// Where the panel opens: the free screen area beside the tray or Dock (left, top,
+/// right, bottom, in physical pixels), the monitor's scale (1.0 = 100%), and which side
+/// of it the panel sits against.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Anchor {
-    pub right: i32,
-    /// The bottom of the free area, or its top when `from_top`.
-    pub edge: i32,
+    pub free: (i32, i32, i32, i32),
     pub scale: f64,
-    /// The tray is in a top bar: the panel hangs below it instead of rising from the bottom.
-    pub from_top: bool,
+    pub at: At,
+}
+
+// Each system uses only the placements its taskbar or Dock can produce.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum At {
+    /// Rising from a taskbar at the bottom right (Windows, most Linux panels).
+    BottomRight,
+    /// Hanging from a top bar at the top right (GNOME, Xfce).
+    TopRight,
+    /// Right above a Dock icon at the bottom, centred on this x.
+    Above(i32),
+    /// Beside a Dock icon on the left or right edge, centred on this y.
+    RightOf(i32),
+    LeftOf(i32),
 }
 
 /// The panel's anchor, or `None` where the system places windows itself (Wayland, macOS).
@@ -50,11 +63,10 @@ pub fn anchor() -> Option<Anchor> {
     #[cfg(target_os = "macos")]
     return macos::anchor();
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    return corner().map(|(right, edge, scale)| Anchor {
-        right,
-        edge,
+    return corner().map(|(right, bottom, scale)| Anchor {
+        free: (i32::MIN / 2, i32::MIN / 2, right, bottom),
         scale,
-        from_top: false,
+        at: At::BottomRight,
     });
 }
 
