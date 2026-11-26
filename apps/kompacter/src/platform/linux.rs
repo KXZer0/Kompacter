@@ -435,3 +435,103 @@ mod tests {
         assert!(matches!(primary.listen(|_| {}).action, Action::Open));
     }
 }
+
+/// The free area of the monitor under the mouse (the screen minus panels, from
+/// `_NET_WORKAREA`), anchored on the side that holds the panel with the tray: a top bar
+/// (GNOME, Xfce) drops the panel down from the top right, a bottom one (KDE, Cinnamon)
+/// raises it from the bottom right. `None` on Wayland, where the compositor places
+/// windows and ignores positions, or without an X server.
+pub fn anchor() -> Option<super::Anchor> {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        return None;
+    }
+    let (conn, screen) = x11rb::connect(None).ok()?;
+    x11_anchor(&conn, screen)
+}
+
+fn x11_anchor(conn: &impl x11rb::connection::Connection, screen: usize) -> Option<super::Anchor> {
+    use x11rb::protocol::randr::ConnectionExt as _;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+
+    let root_screen = conn.setup().roots.get(screen)?;
+    let root = root_screen.root;
+    let pointer = conn.query_pointer(root).ok()?.reply().ok()?;
+    let (px, py) = (i32::from(pointer.root_x), i32::from(pointer.root_y));
+
+    // (left, top, right, bottom) of the monitor under the mouse.
+    let whole = (
+        0,
+        0,
+        i32::from(root_screen.width_in_pixels),
+        i32::from(root_screen.height_in_pixels),
+    );
+    let monitors = conn
+        .randr_get_monitors(root, true)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .map(|reply| reply.monitors)
+        .unwrap_or_default();
+    let bounds = |m: &x11rb::protocol::randr::MonitorInfo| {
+        let (x, y) = (i32::from(m.x), i32::from(m.y));
+        (x, y, x + i32::from(m.width), y + i32::from(m.height))
+    };
+    let monitor = monitors
+        .iter()
+        .map(bounds)
+        .find(|&(l, t, r, b)| (l..r).contains(&px) && (t..b).contains(&py))
+        .or_else(|| monitors.iter().find(|m| m.primary).map(bounds))
+        .or_else(|| monitors.first().map(bounds))
+        .unwrap_or(whole);
+
+    let atom = |name: &[u8]| {
+        let atom = conn.intern_atom(true, name).ok()?.reply().ok()?.atom;
+        (atom != 0).then_some(atom)
+    };
+    let cardinals = |name: &[u8], offset: u32, count: u32| -> Option<Vec<u32>> {
+        let reply = conn
+            .get_property(false, root, atom(name)?, AtomEnum::CARDINAL, offset, count)
+            .ok()?
+            .reply()
+            .ok()?;
+        let values: Vec<u32> = reply.value32()?.collect();
+        (values.len() == count as usize).then_some(values)
+    };
+    let desktop = cardinals(b"_NET_CURRENT_DESKTOP", 0, 1).map_or(0, |v| v[0]);
+    let work = cardinals(b"_NET_WORKAREA", desktop.saturating_mul(4), 4)
+        .and_then(|v| {
+            let [x, y, w, h] = [v[0], v[1], v[2], v[3]].map(|n| i32::try_from(n).ok());
+            Some((x?, y?, x? + w?, y? + h?))
+        })
+        .unwrap_or(whole);
+    let free = (
+        monitor.0.max(work.0),
+        monitor.1.max(work.1),
+        monitor.2.min(work.2),
+        monitor.3.min(work.3),
+    );
+    if free.0 >= free.2 || free.1 >= free.3 {
+        return None;
+    }
+    let top_bar = free.1 - monitor.1;
+    let bottom_bar = monitor.3 - free.3;
+    let from_top = top_bar > bottom_bar;
+
+    // The scale winit gives the window on X11.
+    let scale = std::env::var("WINIT_X11_SCALE_FACTOR")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .or_else(|| {
+            let db = x11rb::resource_manager::new_from_default(conn).ok()?;
+            let dpi = db.get_value::<u32>("Xft.dpi", "").ok()??;
+            Some(f64::from(dpi) / 96.0)
+        })
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or(1.0);
+
+    Some(super::Anchor {
+        right: free.2,
+        edge: if from_top { free.1 } else { free.3 },
+        scale,
+        from_top,
+    })
+}

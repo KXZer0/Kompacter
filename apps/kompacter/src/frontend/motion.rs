@@ -23,7 +23,7 @@ const FLYOUT_HEIGHT: f32 = 624.0;
 #[derive(Default)]
 pub struct Motion {
     slide: slint::Timer,
-    anchor: Cell<Option<(i32, i32, f64)>>,
+    anchor: Cell<Option<sys::Anchor>>,
     reveal: Cell<f32>,
     /// Watches what has focus after Kompacter lost it (see `away`).
     away: slint::Timer,
@@ -58,22 +58,28 @@ fn place(ui: &AppWindow, motion: &Motion, glass: bool, resize: bool) {
     let (inset, margin) = if glass { (12.0, 0.0) } else { (0.0, 12.0) };
     let width = 360.0 + 2.0 * inset;
     let height = f64::from(ui.get_win_h()) + 2.0 * inset;
-    let Some((right, bottom, scale)) = motion.anchor.get() else {
+    let Some(anchor) = motion.anchor.get() else {
         if resize {
             ui.window()
                 .set_size(slint::LogicalSize::new(width as f32, height as f32));
         }
         return;
     };
+    let scale = anchor.scale;
     let w = (width * scale).round() as i32;
     let h = (height * scale).round() as i32;
-    let x = right - w - (margin * scale).round() as i32;
+    let x = anchor.right - w - (margin * scale).round() as i32;
     let offset = if glass {
         0.0
     } else {
         f64::from(1.0 - motion.reveal.get()) * 24.0
     };
-    let y = bottom - h + ((offset - margin) * scale).round() as i32;
+    // Rise from below a bottom taskbar, or drop down from a top bar.
+    let y = if anchor.from_top {
+        anchor.edge + ((margin - offset) * scale).round() as i32
+    } else {
+        anchor.edge - h + ((offset - margin) * scale).round() as i32
+    };
     let position = slint::PhysicalPosition::new(x, y);
     if resize {
         if let Some(hwnd) = hwnd(ui) {
@@ -240,7 +246,7 @@ impl App {
         self.auto_hidden.set(None);
         let was_hidden = !ui.window().is_visible();
         if was_hidden || self.motion.anchor.get().is_none() {
-            self.motion.anchor.set(sys::corner());
+            self.motion.anchor.set(sys::anchor());
         }
         self.sync_window_height();
 

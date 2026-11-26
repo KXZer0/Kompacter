@@ -30,6 +30,31 @@ pub use windows::*;
 #[cfg(not(windows))]
 pub use imp::*;
 
+/// Where the panel opens: the right edge and one horizontal edge of the free screen
+/// area beside the tray, in physical pixels, and the monitor's scale (1.0 = 100%).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Anchor {
+    pub right: i32,
+    /// The bottom of the free area, or its top when `from_top`.
+    pub edge: i32,
+    pub scale: f64,
+    /// The tray is in a top bar: the panel hangs below it instead of rising from the bottom.
+    pub from_top: bool,
+}
+
+/// The panel's anchor, or `None` where the system places windows itself (Wayland, macOS).
+pub fn anchor() -> Option<Anchor> {
+    #[cfg(target_os = "linux")]
+    return linux::anchor();
+    #[cfg(not(target_os = "linux"))]
+    return corner().map(|(right, edge, scale)| Anchor {
+        right,
+        edge,
+        scale,
+        from_top: false,
+    });
+}
+
 /// Play a preview against the sound device's sample clock. If audio is
 /// unavailable, start a monotonic clock when video has its first frame.
 pub fn play_preview(
@@ -309,6 +334,7 @@ mod imp {
         }
         Err("not supported on this system yet".into())
     }
+    #[cfg(not(target_os = "linux"))]
     pub fn corner() -> Option<(i32, i32, f64)> {
         None
     }
