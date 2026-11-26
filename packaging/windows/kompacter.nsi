@@ -16,8 +16,8 @@ InstallDirRegKey HKCU "Software\Kompacter" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
-!define MUI_ICON "..\icon.ico"
-!define MUI_UNICON "..\icon.ico"
+!define MUI_ICON "..\..\apps\kompacter\icon.ico"
+!define MUI_UNICON "..\..\apps\kompacter\icon.ico"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\Kompacter.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Open Kompacter"
 !define UNINST "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kompacter"

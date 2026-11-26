@@ -9,7 +9,7 @@ Installers are built by GitHub Actions; nobody has to build from source.
 1. Tag a commit and push the tag (GitHub Desktop: History → right-click → Create Tag → Push).
    The version comes from the tag: `v0.0.3-test` builds version 0.0.3, marked as a pre-release.
 2. The **Release** workflow builds `Kompacter-0.0.3-setup.exe` (ffmpeg included, NSIS script in
-   `apps/kompacter/installer/`) and creates a **draft** release. Check it, then press **Publish**.
+   `packaging/windows/`) and creates a **draft** release. Check it, then press **Publish**.
 
 3. Once it's published (pre-releases count; drafts don't), installed copies find it within a
    day, download it in the background, check its `.sha256` and install it on their next restart.
