@@ -390,52 +390,6 @@ fn tray_host_available() -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn activation(action: Action) -> Activation {
-        Activation {
-            action,
-            paths: Vec::new(),
-            token: None,
-        }
-    }
-
-    #[test]
-    fn a_socket_file_left_by_an_old_resident_is_taken_over() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("kompacter.sock");
-        // A resident that exited: its socket file stays, nobody listens.
-        drop(UnixListener::bind(&path).unwrap());
-        assert!(path.exists());
-        let address = SocketAddr::from_pathname(&path).unwrap();
-        let Elected::Resident(Some(primary)) =
-            elect(&address, Some(&path), activation(Action::Open)).unwrap()
-        else {
-            panic!("expected to become the resident");
-        };
-
-        // The next launch is delivered to it.
-        let (tx, rx) = std::sync::mpsc::channel();
-        primary.listen(move |a| {
-            let _ = tx.send(matches!(a.action, Action::Choose));
-        });
-        let delivered = elect(&address, Some(&path), activation(Action::Choose)).unwrap();
-        assert!(matches!(delivered, Elected::Delivered));
-        assert!(rx.recv_timeout(IO_TIMEOUT).unwrap());
-    }
-
-    #[test]
-    fn without_a_listener_the_launch_still_runs() {
-        let primary = Primary {
-            listener: None,
-            initial: activation(Action::Open),
-        };
-        assert!(matches!(primary.listen(|_| {}).action, Action::Open));
-    }
-}
-
 /// The free area of the monitor under the mouse (the screen minus panels, from
 /// `_NET_WORKAREA`), anchored on the side that holds the panel with the tray: a top bar
 /// (GNOME, Xfce) drops the panel down from the top right, a bottom one (KDE, Cinnamon)
@@ -534,4 +488,50 @@ fn x11_anchor(conn: &impl x11rb::connection::Connection, screen: usize) -> Optio
         scale,
         from_top,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn activation(action: Action) -> Activation {
+        Activation {
+            action,
+            paths: Vec::new(),
+            token: None,
+        }
+    }
+
+    #[test]
+    fn a_socket_file_left_by_an_old_resident_is_taken_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kompacter.sock");
+        // A resident that exited: its socket file stays, nobody listens.
+        drop(UnixListener::bind(&path).unwrap());
+        assert!(path.exists());
+        let address = SocketAddr::from_pathname(&path).unwrap();
+        let Elected::Resident(Some(primary)) =
+            elect(&address, Some(&path), activation(Action::Open)).unwrap()
+        else {
+            panic!("expected to become the resident");
+        };
+
+        // The next launch is delivered to it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        primary.listen(move |a| {
+            let _ = tx.send(matches!(a.action, Action::Choose));
+        });
+        let delivered = elect(&address, Some(&path), activation(Action::Choose)).unwrap();
+        assert!(matches!(delivered, Elected::Delivered));
+        assert!(rx.recv_timeout(IO_TIMEOUT).unwrap());
+    }
+
+    #[test]
+    fn without_a_listener_the_launch_still_runs() {
+        let primary = Primary {
+            listener: None,
+            initial: activation(Action::Open),
+        };
+        assert!(matches!(primary.listen(|_| {}).action, Action::Open));
+    }
 }
