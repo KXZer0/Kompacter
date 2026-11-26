@@ -80,10 +80,8 @@ jobs:
           sleep 9
           wait "$recorder" || true
           if [ -s "$shots/dock.mov" ]; then
-            ffmpeg -v error -y -i "$shots/dock.mov" -vf "fps=15,scale=960:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle" -loop 0 "$shots/macos.gif"
-            echo "GIF-BEGIN macos"
-            base64 -i "$shots/macos.gif" | fold -w 900 | sed 's/^/GIF:/'
-            echo "GIF-END"
+            # The Dock icon and the panel above it: the bottom-right part of the screen.
+            ffmpeg -v error -y -i "$shots/dock.mov" -vf "crop=iw*0.5:ih*0.78:iw*0.5:ih*0.22,fps=12,scale=640:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle" -loop 0 "$shots/macos.gif"
             rm "$shots/dock.mov"
           fi
           screencapture -x "$shots/1-launch.png"
@@ -99,6 +97,13 @@ jobs:
             echo "SHOT-END"
           done
           osascript -e 'quit app "Kompacter"' || pkill -x Kompacter || true
+          # Last in the log, so even a shortened log keeps all of it.
+          if [ -s "$shots/macos.gif" ]; then
+            ls -l "$shots/macos.gif"
+            echo "GIF-BEGIN macos"
+            base64 -i "$shots/macos.gif" | fold -w 900 | sed 's/^/GIF:/'
+            echo "GIF-END"
+          fi
       - name: Keep the screenshots
         if: always()
         uses: actions/upload-artifact@v7
