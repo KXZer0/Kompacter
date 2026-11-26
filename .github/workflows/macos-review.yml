@@ -1,0 +1,44 @@
+name: macOS review build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    name: macOS app bundle and media fixture
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install bundle media tools
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install ffmpeg
+      - run: cargo clippy --locked -p kompacter --all-targets -- -D warnings
+      - name: Verify local file URL handling
+        run: cargo test --locked -p kompacter platform::macos::tests
+      - name: Build the review bundle
+        run: packaging/macos/build-app.sh
+      - name: Compress an actual video with the bundled tools
+        run: |
+          cargo build --locked -p kompacter-cli
+          review="$RUNNER_TEMP/Kompacter review"
+          ditto -x -k target/macos/Kompacter-*.zip "$review"
+          packaging/macos/smoke.sh "$review/Kompacter.app" target/debug/kompacter
+      - name: Keep the review bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: kompacter-macos-review
+          path: |
+            target/macos/Kompacter-*.zip
+            target/macos/SHA256SUMS
+          if-no-files-found: error

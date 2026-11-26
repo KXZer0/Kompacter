@@ -4,6 +4,21 @@
 
 use std::path::{Path, PathBuf};
 
+mod capabilities;
+pub use capabilities::CAPABILITIES;
+
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::{clipboard_files, copy_files};
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::{
+    clipboard_files, clipboard_seq, copy_files, focus_application, install_activation,
+};
+
 #[cfg(windows)]
 mod windows;
 
@@ -100,6 +115,7 @@ pub fn play_preview(
 }
 
 /// Keyboard events from outside Kompacter (Windows).
+#[cfg(windows)]
 pub enum InputEvent {
     /// The global shortcut was pressed.
     Shortcut,
@@ -151,12 +167,14 @@ pub fn chat_app(exe: &str, title: &str) -> Option<&'static str> {
 
 /// Where a second launch leaves the files it was started with ("Kompact" in Explorer,
 /// "Open with"), for the running Kompacter to pick up. One path per line.
+#[cfg(any(windows, test))]
 fn handoff_file() -> PathBuf {
     std::env::temp_dir().join("kompacter-open.txt")
 }
 
 /// Leave `files` for the running Kompacter. Appends, because Explorer starts one launch
 /// per selected file and they all arrive within a moment of each other.
+#[cfg(any(windows, test))]
 pub fn leave_handoff(files: &[PathBuf]) {
     use std::io::Write;
     if files.is_empty() {
@@ -179,6 +197,7 @@ pub fn leave_handoff(files: &[PathBuf]) {
 }
 
 /// Take the files other launches left (empty if none).
+#[cfg(any(windows, test))]
 pub fn take_handoff() -> Vec<PathBuf> {
     let file = handoff_file();
     // Move it aside first, so a launch that writes right now starts a fresh file.
@@ -200,6 +219,7 @@ pub fn take_handoff() -> Vec<PathBuf> {
 
 /// The files or folders named on a command line (anything that isn't a `--switch` and
 /// really exists), as full paths.
+#[cfg(any(windows, target_os = "macos", test))]
 pub fn file_args(args: impl Iterator<Item = String>) -> Vec<PathBuf> {
     args.skip(1)
         .filter(|a| !a.starts_with("--"))
@@ -213,7 +233,7 @@ pub fn open_folder(dir: &Path) {
     #[cfg(windows)]
     let _ = std::process::Command::new("explorer").arg(dir).spawn();
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(dir).spawn();
+    let _ = std::process::Command::new("/usr/bin/open").arg(dir).spawn();
     #[cfg(all(unix, not(target_os = "macos")))]
     let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
 }
@@ -225,11 +245,10 @@ pub fn show_in_folder(file: &Path) {
         .arg(format!("/select,{}", file.display()))
         .spawn();
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open")
-        .arg("-R")
-        .arg(file)
-        .spawn();
-    #[cfg(all(unix, not(target_os = "macos")))]
+    macos::show_in_folder(file);
+    #[cfg(target_os = "linux")]
+    linux::show_in_folder(file);
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
     open_folder(file.parent().unwrap_or(Path::new(".")));
 }
 
@@ -264,17 +283,25 @@ pub fn config_dir() -> Option<PathBuf> {
 pub fn local_data_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     return std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     return config_dir();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    return std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
 }
 
 #[cfg(not(windows))]
 mod imp {
     use std::path::{Path, PathBuf};
 
+    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(target_os = "linux"))]
     pub fn clipboard_files() -> Vec<PathBuf> {
         Vec::new()
     }
+    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(target_os = "linux"))]
     pub fn copy_files(_paths: &[PathBuf]) -> Result<(), String> {
         // Dev builds: the README demos are recorded on Linux and show what Windows does.
         if cfg!(debug_assertions) && std::env::var_os("KOMPACTER_DEMO_COPY").is_some() {
@@ -325,11 +352,6 @@ mod imp {
     pub fn videos_dir() -> Option<PathBuf> {
         std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Videos"))
     }
-    pub fn first_instance() -> bool {
-        true
-    }
-    pub fn listen_for_show(_on_show: impl Fn() + Send + 'static) {}
-    pub fn start_input(_on_event: impl Fn(super::InputEvent) + Send + Sync + 'static) {}
     pub fn set_shortcut(_key: Option<(u32, u32)>) {}
     pub fn set_guard(_on: bool, _discord_limit: u64) {}
     pub fn focus_window(_window: isize) {}
@@ -337,6 +359,7 @@ mod imp {
         true
     }
     pub fn send_paste() {}
+    #[cfg(not(target_os = "macos"))]
     pub fn clipboard_seq() -> u32 {
         0
     }

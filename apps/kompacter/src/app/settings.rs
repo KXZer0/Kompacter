@@ -3,7 +3,9 @@
 
 use std::{io, path::PathBuf};
 
-use kompacter_core::{ArchiveFormat, AudioFormat, ImageFormat, VideoCodec};
+use kompacter_core::{
+    ArchiveFormat, AudioFormat, CompressionPreference, ImageFormat, Options, VideoCodec,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,12 +38,17 @@ pub struct Settings {
     pub explorer_menu: bool,
     /// The one-time "keep the tray icon visible" tip was answered or dismissed.
     pub tray_tip_seen: bool,
-    /// Output formats ("h264" | "h265" | "av1", "auto" | "mp3" | "opus",
-    /// "auto" | "jpeg" | "webp", "zip" | "7z").
-    pub video_codec: VideoCodec,
-    pub audio_format: AudioFormat,
-    pub image_format: ImageFormat,
-    pub archive_format: ArchiveFormat,
+    pub compression_preference: CompressionPreference,
+    // Existing JSON format values are explicit overrides. New installations use the
+    // preference for a format until the user sets a specific override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_codec: Option<VideoCodec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_format: Option<AudioFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_format: Option<ImageFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_format: Option<ArchiveFormat>,
     /// Global shortcut for the quick bar: "off" | "ctrl+alt+k" | "ctrl+shift+k" |
     /// "ctrl+shift+space".
     pub shortcut: String,
@@ -97,10 +104,11 @@ impl Default for Settings {
             welcomed: false,
             explorer_menu: true,
             tray_tip_seen: false,
-            video_codec: VideoCodec::default(),
-            audio_format: AudioFormat::default(),
-            image_format: ImageFormat::default(),
-            archive_format: ArchiveFormat::default(),
+            compression_preference: CompressionPreference::default(),
+            video_codec: None,
+            audio_format: None,
+            image_format: None,
+            archive_format: None,
             shortcut: "ctrl+alt+k".into(),
             paste_guard: false,
             auto_update: true,
@@ -109,6 +117,18 @@ impl Default for Settings {
             watch_folders: false,
             clip_folders: Vec::new(),
         }
+    }
+}
+
+impl Settings {
+    pub fn options(&self, target: u64) -> Options {
+        let mut options = self.compression_preference.options(target);
+        options.video_codec = self.video_codec.unwrap_or(options.video_codec);
+        options.audio_format = self.audio_format.unwrap_or(options.audio_format);
+        options.image_format = self.image_format.unwrap_or(options.image_format);
+        options.archive = self.archive_format.unwrap_or(options.archive);
+        options.gpu &= self.gpu;
+        options
     }
 }
 
@@ -132,4 +152,70 @@ pub fn save(s: &Settings) -> io::Result<()> {
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, json)?;
     std::fs::rename(tmp, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kompacter_core::Speed;
+
+    #[test]
+    fn preference_changes_defaults_and_round_trips() {
+        let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.welcomed);
+        assert_eq!(
+            settings.compression_preference,
+            CompressionPreference::Balanced
+        );
+        assert_eq!(settings.options(10).speed, Speed::Balanced);
+        assert_eq!(settings.options(10).audio_format, AudioFormat::Mp3);
+
+        settings.compression_preference = CompressionPreference::Compatibility;
+        assert_eq!(settings.options(10).image_format, ImageFormat::Jpeg);
+
+        settings.compression_preference = CompressionPreference::Efficiency;
+        settings.welcomed = true;
+        let saved = serde_json::to_vec(&settings).unwrap();
+        let reloaded: Settings = serde_json::from_slice(&saved).unwrap();
+        let options = reloaded.options(10);
+        assert!(reloaded.welcomed);
+        assert_eq!(
+            reloaded.compression_preference,
+            CompressionPreference::Efficiency
+        );
+        assert_eq!(options.speed, Speed::Quality);
+        assert_eq!(options.video_codec, VideoCodec::H264);
+        assert_eq!(options.audio_format, AudioFormat::Opus);
+        assert_eq!(options.image_format, ImageFormat::Webp);
+        assert!(!options.gpu);
+    }
+
+    #[test]
+    fn upgrade_preserves_completed_onboarding_and_each_legacy_format() {
+        let mut settings: Settings = serde_json::from_str(
+            r#"{
+            "welcomed": true,
+            "videoCodec": "h265",
+            "audioFormat": "mp3",
+            "imageFormat": "jpeg",
+            "archiveFormat": "7z"
+        }"#,
+        )
+        .unwrap();
+        assert!(settings.welcomed);
+        assert_eq!(
+            settings.compression_preference,
+            CompressionPreference::Balanced
+        );
+
+        settings.compression_preference = CompressionPreference::Efficiency;
+        let saved = serde_json::to_vec(&settings).unwrap();
+        let reloaded: Settings = serde_json::from_slice(&saved).unwrap();
+        let options = reloaded.options(10);
+        assert!(reloaded.welcomed);
+        assert_eq!(options.video_codec, VideoCodec::H265);
+        assert_eq!(options.audio_format, AudioFormat::Mp3);
+        assert_eq!(options.image_format, ImageFormat::Jpeg);
+        assert_eq!(options.archive, ArchiveFormat::SevenZ);
+    }
 }

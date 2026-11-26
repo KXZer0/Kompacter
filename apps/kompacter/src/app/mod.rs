@@ -2,6 +2,8 @@
 
 mod flow;
 pub(crate) mod format;
+#[cfg(target_os = "linux")]
+mod linux_desktop;
 mod news;
 mod output;
 mod quick;
@@ -20,19 +22,50 @@ use std::time::{Duration, Instant};
 
 use kompacter_core::size::PRESETS;
 use kompacter_core::{
-    ArchiveFormat, AudioFormat, Engine, Estimate, ImageFormat, MediaInfo, MediaKind, Mode, Options,
-    VideoCodec,
+    ArchiveFormat, AudioFormat, CompressionPreference, Engine, Estimate, ImageFormat, MediaInfo,
+    MediaKind, Mode, Options, VideoCodec,
 };
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use crate::frontend::{
-    motion, AppWindow, DetailRow, DiffRow, Fx, Prefs, PresetItem, Theme, Tray, View,
-};
+use crate::frontend::{motion, AppWindow, Fx, Prefs, PresetItem, Theme, Tray, View};
 use crate::platform as sys;
 
 use self::format::bytes;
 use self::settings::Settings;
+
+const COMPRESSION_PREFERENCES: [CompressionPreference; 3] = [
+    CompressionPreference::Compatibility,
+    CompressionPreference::Balanced,
+    CompressionPreference::Efficiency,
+];
+const VIDEO_OVERRIDES: [Option<VideoCodec>; 4] = [
+    None,
+    Some(VideoCodec::H264),
+    Some(VideoCodec::H265),
+    Some(VideoCodec::Av1),
+];
+const AUDIO_OVERRIDES: [Option<AudioFormat>; 4] = [
+    None,
+    Some(AudioFormat::Auto),
+    Some(AudioFormat::Mp3),
+    Some(AudioFormat::Opus),
+];
+const IMAGE_OVERRIDES: [Option<ImageFormat>; 4] = [
+    None,
+    Some(ImageFormat::Auto),
+    Some(ImageFormat::Jpeg),
+    Some(ImageFormat::Webp),
+];
+const ARCHIVE_OVERRIDES: [Option<ArchiveFormat>; 3] =
+    [None, Some(ArchiveFormat::Zip), Some(ArchiveFormat::SevenZ)];
+
+fn choice_index<T: PartialEq>(choices: &[T], value: T) -> i32 {
+    choices
+        .iter()
+        .position(|choice| *choice == value)
+        .unwrap_or(0) as i32
+}
 
 /// A preset as shown: the engine's presets plus "Custom".
 pub struct Target {
@@ -106,9 +139,12 @@ pub struct App {
     pub batch: RefCell<Vec<PathBuf>>,
     /// Files dropped together arrive one event each; they're collected briefly.
     pub dropped: RefCell<Vec<PathBuf>>,
+    /// Shell input received while a probe or compression owns the panel.
+    pending_files: RefCell<Vec<PathBuf>>,
     pub started: Cell<Option<Instant>>,
     /// A file dialog is open: don't auto-hide while the user picks.
     pub modal: Cell<bool>,
+    clipboard_pending: Cell<bool>,
     /// When the window last hid itself on focus loss (a tray click causes that too).
     pub auto_hidden: Cell<Option<Instant>>,
     /// All animations (off in Low-memory mode or when Windows animations are off).
@@ -117,7 +153,7 @@ pub struct App {
     pub glass: bool,
     pub motion: motion::Motion,
     pub trim: trim::Trim,
-    pub tray: slint::Weak<Tray>,
+    pub tray: RefCell<Option<Tray>>,
     /// The quick bar is showing (see quick.rs); `quick_real` is the flow's screen.
     pub quick: Cell<bool>,
     pub quick_real: Cell<View>,
@@ -141,7 +177,7 @@ pub struct App {
 impl App {
     fn new(
         ui: &AppWindow,
-        tray: slint::Weak<Tray>,
+        tray: Option<Tray>,
         prefs: Settings,
         rich: bool,
         glass: bool,
@@ -157,14 +193,16 @@ impl App {
             last_range: Cell::new(None),
             batch: RefCell::new(Vec::new()),
             dropped: RefCell::new(Vec::new()),
+            pending_files: RefCell::new(Vec::new()),
             started: Cell::new(None),
             modal: Cell::new(false),
+            clipboard_pending: Cell::new(false),
             auto_hidden: Cell::new(None),
             rich,
             glass,
             motion: motion::Motion::default(),
             trim: trim::Trim::default(),
-            tray,
+            tray: RefCell::new(tray),
             quick: Cell::new(false),
             quick_real: Cell::new(View::Idle),
             guard: Cell::new(None),
@@ -222,14 +260,7 @@ impl App {
     /// Options for `target` with the user's formats, for compressing and for estimates
     /// (the codec changes what quality a size buys).
     pub fn options(&self, target: u64) -> Options {
-        let s = self.settings.borrow();
-        let mut o = Options::new(target);
-        o.video_codec = s.video_codec;
-        o.audio_format = s.audio_format;
-        o.image_format = s.image_format;
-        o.archive = s.archive_format;
-        o.gpu = s.gpu;
-        o
+        self.settings.borrow().options(target)
     }
 
     pub fn save(&self) {
@@ -299,31 +330,24 @@ impl App {
         prefs.set_output_index(match s.output.as_str() {
             "beside" => 1,
             "custom" => 2,
-            "replace" => 3,
+            "replace" if cfg!(windows) => 3,
             _ => 0,
         });
         prefs.set_output_dir(s.output_dir.as_str().into());
+        prefs.set_windows_integration(cfg!(windows));
         prefs.set_gpu(s.gpu);
         prefs.set_auto_update(s.auto_update);
         prefs.set_auto_hide(s.auto_hide);
         prefs.set_start_with_windows(s.start_with_windows);
         prefs.set_explorer_menu(s.explorer_menu);
-        prefs.set_video_index(match s.video_codec {
-            VideoCodec::H264 => 0,
-            VideoCodec::H265 => 1,
-            VideoCodec::Av1 => 2,
-        });
-        prefs.set_audio_index(match s.audio_format {
-            AudioFormat::Auto => 0,
-            AudioFormat::Mp3 => 1,
-            AudioFormat::Opus => 2,
-        });
-        prefs.set_image_index(match s.image_format {
-            ImageFormat::Auto => 0,
-            ImageFormat::Jpeg => 1,
-            ImageFormat::Webp => 2,
-        });
-        prefs.set_archive_index((s.archive_format == ArchiveFormat::SevenZ) as i32);
+        prefs.set_compression_preference(choice_index(
+            &COMPRESSION_PREFERENCES,
+            s.compression_preference,
+        ));
+        prefs.set_video_index(choice_index(&VIDEO_OVERRIDES, s.video_codec));
+        prefs.set_audio_index(choice_index(&AUDIO_OVERRIDES, s.audio_format));
+        prefs.set_image_index(choice_index(&IMAGE_OVERRIDES, s.image_format));
+        prefs.set_archive_index(choice_index(&ARCHIVE_OVERRIDES, s.archive_format));
         prefs.set_custom_mb((s.custom_bytes / (1024 * 1024)) as i32);
         drop(s);
         self.sync_automatic();
@@ -351,16 +375,26 @@ impl App {
         });
     }
 
-    /// Show the first-run screen: three steps, one choice each. "Copied files" starts
-    /// ticked: it's what makes Kompacter turn up by itself when it's needed, and it only
-    /// looks at the size of copied files. The other two keep whatever is already set (off
-    /// on a new install).
+    /// Show the available automatic features and the compression preference.
     fn welcome(&self) {
         let ui = self.ui();
         let s = self.settings.borrow();
+        let features: Vec<i32> = [
+            (sys::CAPABILITIES.watch_copies, 0),
+            (sys::CAPABILITIES.paste_guard, 1),
+            (sys::CAPABILITIES.watch_folders, 2),
+        ]
+        .into_iter()
+        .filter_map(|(available, feature)| available.then_some(feature))
+        .collect();
+        ui.set_welcome_features(ModelRc::new(VecModel::from(features)));
         ui.set_welcome_copies(true);
         ui.set_welcome_guard(s.paste_guard);
         ui.set_welcome_clips(s.watch_folders);
+        ui.set_welcome_preference(choice_index(
+            &COMPRESSION_PREFERENCES,
+            s.compression_preference,
+        ));
         ui.set_welcome_step(0);
         drop(s);
         self.set_view(View::Welcome);
@@ -422,18 +456,24 @@ impl App {
         });
     }
 
-    /// "Done" on the first-run screen: save the three choices and never ask again.
+    /// "Done" on the first-run screen: save the available choices and never ask again.
     fn welcome_done(self: &Rc<Self>) {
         let ui = self.ui();
         {
             let mut s = self.settings.borrow_mut();
             s.welcomed = true;
-            s.watch_copies = ui.get_welcome_copies();
-            s.paste_guard = ui.get_welcome_guard();
+            s.compression_preference =
+                COMPRESSION_PREFERENCES[ui.get_welcome_preference() as usize];
+            if sys::CAPABILITIES.watch_copies {
+                s.watch_copies = ui.get_welcome_copies();
+            }
+            if sys::CAPABILITIES.paste_guard {
+                s.paste_guard = ui.get_welcome_guard();
+            }
         }
         self.save();
         let clips = ui.get_welcome_clips();
-        if clips != self.settings.borrow().watch_folders {
+        if sys::CAPABILITIES.watch_folders && clips != self.settings.borrow().watch_folders {
             // Fills in the clip folders this PC has, saves and syncs.
             self.set_watch_folders(clips);
         }
@@ -458,6 +498,33 @@ impl App {
         }
     }
 
+    /// Raise the current panel, optionally replacing its selection with files from the shell.
+    fn activate(self: &Rc<Self>, files: Vec<PathBuf>) {
+        if !files.is_empty() {
+            if self.started.get().is_some() || matches!(self.view(), View::Busy | View::Reading) {
+                let mut pending = self.pending_files.borrow_mut();
+                pending.extend(files);
+                self.ui().set_queued_files(pending.len() as i32);
+            } else {
+                let mut pending = self.take_pending_files();
+                pending.extend(files);
+                self.replace_selection(pending);
+            }
+        }
+        self.show();
+    }
+
+    fn take_pending_files(&self) -> Vec<PathBuf> {
+        self.ui().set_queued_files(0);
+        std::mem::take(&mut *self.pending_files.borrow_mut())
+    }
+
+    fn next_selection(self: &Rc<Self>) {
+        let files = self.take_pending_files();
+        self.another();
+        self.open_many(files);
+    }
+
     fn file_hover(&self, active: bool) {
         let ui = self.ui();
         ui.set_dragging(active && self.view() != View::Busy);
@@ -470,6 +537,30 @@ impl App {
         self.guard_app.set(None);
         self.ui().set_guard(false);
         self.set_view(View::Idle);
+    }
+
+    fn paste_clipboard(self: &Rc<Self>) {
+        if self.clipboard_pending.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        run(sys::clipboard_files, move |files| {
+            let Some(app) = weak.upgrade() else { return };
+            app.clipboard_pending.set(false);
+            if !files.is_empty() {
+                app.open_many(files);
+                return;
+            }
+            let ui = app.ui();
+            let note = SharedString::from("Copy a file first");
+            ui.set_note(note.clone());
+            let weak = ui.as_weak();
+            slint::Timer::single_shot(Duration::from_millis(1800), move || {
+                if let Some(ui) = weak.upgrade().filter(|ui| ui.get_note() == note) {
+                    ui.set_note(SharedString::new());
+                }
+            });
+        });
     }
 
     /// Native picker for one or more files, on a worker thread.
@@ -560,6 +651,7 @@ impl<F> Drop for UiOnly<F> {
 
 thread_local! {
     /// What a second launch does: open the window (set once in main).
+    #[cfg(windows)]
     static SHOW: RefCell<Box<dyn Fn()>> = RefCell::new(Box::new(|| {}));
     /// The app, for events from background threads (shortcut, guard, watcher).
     static APP: RefCell<std::rc::Weak<App>> = const { RefCell::new(std::rc::Weak::new()) };
@@ -575,13 +667,23 @@ fn with_app(f: impl FnOnce(&Rc<App>) + Send + 'static) {
 }
 
 pub(crate) fn start() -> Result<(), slint::PlatformError> {
+    #[cfg(target_os = "linux")]
+    let Some(linux_launch) = sys::linux::launch()
+        .map_err(|error| slint::PlatformError::Other(format!("Kompacter activation: {error}")))?
+    else {
+        return Ok(());
+    };
     // Files this launch was given ("Kompact" in Explorer, "Open with", a file dropped on
     // the shortcut). They're left where the running Kompacter looks; if that turns out
     // to be this one, it picks them up itself further down.
-    sys::leave_handoff(&sys::file_args(std::env::args()));
-    if !sys::first_instance() {
-        return Ok(());
+    #[cfg(windows)]
+    {
+        sys::leave_handoff(&sys::file_args(std::env::args()));
+        if !sys::first_instance() {
+            return Ok(());
+        }
     }
+    #[cfg(not(target_os = "linux"))]
     let quiet = std::env::args().any(|a| a == "--tray");
 
     let prefs = settings::load();
@@ -605,12 +707,16 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         })
         .select()?;
 
+    #[cfg(target_os = "linux")]
+    slint::set_xdg_app_id(sys::linux::APP_ID)?;
     let ui = AppWindow::new()?;
     // Skia raster supports the translucent card. Installing a rendering notifier
     // would disable its partial redraws, even if the callback does nothing.
     #[cfg(windows)]
     let glass = true;
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let glass = false;
+    #[cfg(not(any(windows, target_os = "macos")))]
     let glass = ui.window().set_rendering_notifier(|_, _| {}).is_ok();
     let rich = glass && sys::animations_enabled();
     ui.global::<Fx>().set_glass(glass);
@@ -618,14 +724,22 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     // Starts folded, so the first open grows in.
     ui.set_opened(false);
 
-    let tray = Tray::new()?;
-    let app = App::new(&ui, tray.as_weak(), prefs, rich, glass);
+    #[cfg(not(target_os = "linux"))]
+    let tray = Some(Tray::new()?);
+    #[cfg(target_os = "linux")]
+    let tray = None;
+    let app = App::new(&ui, tray, prefs, rich, glass);
     APP.with(|a| *a.borrow_mut() = Rc::downgrade(&app));
+    #[cfg(target_os = "macos")]
+    if !sys::install_activation(|files| with_app(move |app| app.activate(files))) {
+        eprintln!("Kompacter could not register all macOS activation events");
+    }
+    #[cfg(windows)]
     sys::start_input(|e| with_app(move |a| a.on_input(e)));
     // A tray app is only useful if it's running, so it starts with Windows unless the
     // user says otherwise: switched on once here, and theirs to switch off from then on.
     // (Never from a dev build, which would register its target\debug exe.)
-    if !cfg!(debug_assertions) {
+    if cfg!(windows) && !cfg!(debug_assertions) {
         let first = !app.settings.borrow().start_default_done;
         if first || sys::starts_with_windows() {
             // Also keeps the entry pointing at this exe if the app was moved.
@@ -637,7 +751,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         }
     }
     // Keeps the right-click entry pointing at this exe (not from a dev build either).
-    if !cfg!(debug_assertions) && app.settings.borrow().explorer_menu {
+    if cfg!(windows) && !cfg!(debug_assertions) && app.settings.borrow().explorer_menu {
         sys::set_explorer_menu(true);
     }
     // The Run entry is the truth (it can be turned off in Task Manager).
@@ -653,17 +767,31 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     std::thread::spawn(|| output::clean(None));
 
     // ── Tray ──
-    {
-        let a = app.clone();
-        tray.on_open(move || a.toggle());
+    #[cfg(not(target_os = "linux"))]
+    if let Some(tray) = app.tray.borrow().as_ref() {
+        let weak = Rc::downgrade(&app);
+        tray.on_open(move || {
+            if let Some(app) = weak.upgrade() {
+                #[cfg(target_os = "macos")]
+                app.activate(Vec::new());
+                #[cfg(windows)]
+                app.toggle();
+            }
+        });
         tray.on_open_folder(|| {
             if let Ok(d) = output::app_dir() {
                 sys::open_folder(&d);
             }
         });
-        let a = app.clone();
-        tray.on_quit(move || a.trim_quit());
+        let weak = Rc::downgrade(&app);
+        tray.on_quit(move || {
+            if let Some(app) = weak.upgrade() {
+                app.trim_quit();
+            }
+        });
     }
+    #[cfg(target_os = "linux")]
+    linux_desktop::attach(&app);
 
     {
         let a = app.clone();
@@ -695,7 +823,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
                         slint::Timer::single_shot(Duration::from_millis(120), move || {
                             if let Some(a) = weak.upgrade() {
                                 let files = std::mem::take(&mut *a.dropped.borrow_mut());
-                                a.open_dropped(files);
+                                a.replace_selection(files);
                             }
                         });
                     }
@@ -713,22 +841,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         let a = app.clone();
         ui.on_choose_file(move || a.pick_files());
         let a = app.clone();
-        ui.on_paste(move || {
-            let files = sys::clipboard_files();
-            if !files.is_empty() {
-                a.open_many(files);
-            } else {
-                // Say it in the title for a moment.
-                let ui = a.ui();
-                ui.set_note("Copy a file first".into());
-                let w = ui.as_weak();
-                slint::Timer::single_shot(Duration::from_millis(1800), move || {
-                    if let Some(ui) = w.upgrade() {
-                        ui.set_note(SharedString::new());
-                    }
-                });
-            }
-        });
+        ui.on_paste(move || a.paste_clipboard());
         let a = app.clone();
         ui.on_compress(move || {
             if a.batch.borrow().is_empty() {
@@ -747,7 +860,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         let a = app.clone();
         ui.on_remove_file(move || a.another());
         let a = app.clone();
-        ui.on_another(move || a.another());
+        ui.on_another(move || a.next_selection());
         let a = app.clone();
         ui.on_show_in_folder(move || {
             if let Some(p) = a.result.borrow().as_ref() {
@@ -975,33 +1088,37 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         let a = app.clone();
         ui.on_welcome_done(move || a.welcome_done());
         let a = app.clone();
+        prefs.on_set_compression_preference(move |i| {
+            a.settings.borrow_mut().compression_preference =
+                COMPRESSION_PREFERENCES[i.clamp(0, 2) as usize];
+            a.save();
+            a.sync_settings();
+        });
+        let a = app.clone();
         prefs.on_set_video(move |i| {
             a.settings.borrow_mut().video_codec =
-                [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1][i.clamp(0, 2) as usize];
+                VIDEO_OVERRIDES.get(i as usize).copied().flatten();
             a.save();
             a.sync_settings();
         });
         let a = app.clone();
         prefs.on_set_audio(move |i| {
             a.settings.borrow_mut().audio_format =
-                [AudioFormat::Auto, AudioFormat::Mp3, AudioFormat::Opus][i.clamp(0, 2) as usize];
+                AUDIO_OVERRIDES.get(i as usize).copied().flatten();
             a.save();
             a.sync_settings();
         });
         let a = app.clone();
         prefs.on_set_image(move |i| {
             a.settings.borrow_mut().image_format =
-                [ImageFormat::Auto, ImageFormat::Jpeg, ImageFormat::Webp][i.clamp(0, 2) as usize];
+                IMAGE_OVERRIDES.get(i as usize).copied().flatten();
             a.save();
             a.sync_settings();
         });
         let a = app.clone();
         prefs.on_set_archive(move |i| {
-            a.settings.borrow_mut().archive_format = if i == 1 {
-                ArchiveFormat::SevenZ
-            } else {
-                ArchiveFormat::Zip
-            };
+            a.settings.borrow_mut().archive_format =
+                ARCHIVE_OVERRIDES.get(i as usize).copied().flatten();
             a.save();
             a.sync_settings();
         });
@@ -1015,6 +1132,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     }
 
     // A second launch (from the Start menu) opens the window.
+    #[cfg(windows)]
     {
         let weak = Rc::downgrade(&app);
         SHOW.with(|f| {
@@ -1024,13 +1142,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
                 let weak = weak.clone();
                 slint::Timer::single_shot(Duration::from_millis(150), move || {
                     let Some(a) = weak.upgrade() else { return };
-                    let files = sys::take_handoff();
-                    if !files.is_empty() && a.view() != View::Busy {
-                        // The full window, whatever was showing (quick bar included).
-                        a.another();
-                        a.open_many(files);
-                    }
-                    a.show();
+                    a.activate(sys::take_handoff());
                 });
             })
         });
@@ -1108,17 +1220,20 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         app.welcome();
     }
     // Started with files: open them (and the window, even on a quiet start).
-    let given = sys::take_handoff();
-    let quiet = quiet && given.is_empty();
-    if !given.is_empty() && app.view() != View::Busy {
-        app.another();
-        app.open_many(given);
+    #[cfg(not(target_os = "linux"))]
+    {
+        #[cfg(windows)]
+        let given = sys::take_handoff();
+        #[cfg(not(windows))]
+        let given = sys::file_args(std::env::args());
+        if !given.is_empty() || (!quiet && !app.quick.get()) {
+            app.activate(given);
+        }
     }
-    if !quiet && !app.quick.get() {
-        app.show();
-    }
+    #[cfg(target_os = "linux")]
+    linux_desktop::start(&app, linux_launch);
     slint::run_event_loop_until_quit()?;
-    drop(tray);
+    app.tray.borrow_mut().take();
     // A checked update waits for Kompacter to close; the installer reopens it.
     if app.settings.borrow().auto_update {
         if let Some(ready) = app.update_ready.borrow().as_ref() {
@@ -1150,10 +1265,12 @@ fn demo_guard_app() -> &'static str {
     }
 }
 
-/// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord|welcome(-2|-3)|news|update`
+/// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord|welcome(-2|-3|-4|-preference)|news|update`
 /// shows a screen with sample data, for screenshots.
 #[cfg(debug_assertions)]
 fn demo(app: &Rc<App>, which: &str) {
+    use crate::frontend::{DetailRow, DiffRow};
+
     let ui = app.ui();
     ui.set_file_name("Valorant clutch 4K.mp4".into());
     ui.set_file_meta("1:42 · 2560×1440 · 128 MB".into());
@@ -1273,13 +1390,19 @@ fn demo(app: &Rc<App>, which: &str) {
             ui.set_update_progress(0.42);
         }
         "tip" => ui.set_tray_tip(true),
-        // `welcome-2` and `welcome-3` open on that step.
-        "welcome" | "welcome-1" | "welcome-2" | "welcome-3" => {
+        // Numbered demos open the corresponding available step.
+        "welcome" | "welcome-1" | "welcome-2" | "welcome-3" | "welcome-4"
+        | "welcome-preference" => {
             app.welcome();
             let step = which
                 .strip_prefix("welcome-")
                 .and_then(|n| n.parse::<i32>().ok());
-            ui.set_welcome_step(step.map_or(0, |n| n - 1));
+            let final_step = ui.get_welcome_features().row_count() as i32;
+            ui.set_welcome_step(if which == "welcome-preference" {
+                final_step
+            } else {
+                step.map_or(0, |n| n - 1).clamp(0, final_step)
+            });
         }
         "quick" | "quick-busy" | "quick-done" | "guard" | "quick-empty" => {
             app.quick.set(true);
@@ -1349,8 +1472,43 @@ fn demo(app: &Rc<App>, which: &str) {
 }
 
 #[cfg(test)]
-mod drag_tests {
+mod tests {
     use super::*;
+
+    #[test]
+    fn welcome_preference_works_with_the_keyboard() {
+        use slint::platform::{Key, WindowEvent};
+
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = AppWindow::new().unwrap();
+        ui.set_welcome_features(ModelRc::new(VecModel::from(vec![2])));
+        ui.set_view(View::Welcome);
+        ui.set_opened(true);
+        ui.show().unwrap();
+        ui.window()
+            .dispatch_event(WindowEvent::WindowActiveChanged(true));
+
+        let weak = ui.as_weak();
+        ui.on_welcome_done(move || weak.unwrap().set_view(View::Idle));
+        let press = |key: Key| {
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: key.into() });
+            ui.window()
+                .dispatch_event(WindowEvent::KeyReleased { text: key.into() });
+        };
+
+        assert_eq!(ui.get_welcome_preference(), 1);
+        press(Key::Return);
+        assert_eq!(ui.get_welcome_step(), 1);
+        press(Key::Home);
+        assert_eq!(ui.get_welcome_preference(), 0);
+        press(Key::End);
+        assert_eq!(ui.get_welcome_preference(), 2);
+        press(Key::LeftArrow);
+        assert_eq!(ui.get_welcome_preference(), 1);
+        press(Key::Return);
+        assert_eq!(ui.get_view(), View::Idle);
+    }
 
     #[test]
     fn hover_cancel_preserves_trim_and_drop_replaces_it() {
@@ -1373,14 +1531,14 @@ mod drag_tests {
         }
 
         let dir = tempfile::tempdir().unwrap();
-        app.open_dropped(vec![dir.path().join("missing.mp4")]);
+        app.replace_selection(vec![dir.path().join("missing.mp4")]);
         assert_eq!(ui.get_view(), View::Trim);
 
         let replacements = vec![dir.path().join("a.mp4"), dir.path().join("b.mp4")];
         for path in &replacements {
             std::fs::write(path, []).unwrap();
         }
-        app.open_dropped(replacements.clone());
+        app.replace_selection(replacements.clone());
         assert_eq!(ui.get_view(), View::Big);
         assert_eq!(*app.batch.borrow(), replacements);
     }

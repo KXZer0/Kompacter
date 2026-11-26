@@ -1,0 +1,159 @@
+import { Theme, Fx } from "theme.slint";
+
+export component CompressionPreference inherits Rectangle {
+    in property <int> index: 1;
+    in property <bool> confirm-on-return;
+    out property <bool> has-focus: keys.has-focus;
+    callback picked(int);
+    callback confirmed;
+    callback escaped;
+
+    min-height: 90px;
+    preferred-height: 90px;
+
+    property <[string]> labels: ["Compatibility", "Balanced", "Efficiency"];
+    property <string> explanation: root.index == 0
+        ? "Favors formats that play on more devices."
+        : root.index == 1
+        ? "Balances detail and encoding time."
+        : "May take longer to keep more detail under the same size limit.";
+
+    accessible-role: slider;
+    accessible-label: "Compression preference";
+    accessible-description: root.explanation;
+    accessible-value: root.labels[root.index];
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 2;
+    accessible-value-step: 1;
+    accessible-action-increment => { root.pick(root.index + 1); }
+    accessible-action-decrement => { root.pick(root.index - 1); }
+    accessible-action-set-value(value) => {
+        if (value.is-float()) {
+            root.pick(Math.round(value.to-float()));
+        }
+    }
+    forward-focus: keys;
+
+    public function focus-slider() {
+        keys.focus();
+    }
+
+    function pick(index: int) {
+        let next = Math.clamp(index, 0, 2);
+        if (next != root.index) {
+            root.picked(next);
+        }
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.LeftArrow || event.text == Key.DownArrow) {
+                root.pick(root.index - 1);
+                return accept;
+            }
+            if (event.text == Key.RightArrow || event.text == Key.UpArrow) {
+                root.pick(root.index + 1);
+                return accept;
+            }
+            if (event.text == Key.Home || event.text == Key.End) {
+                root.pick(event.text == Key.Home ? 0 : 2);
+                return accept;
+            }
+            if (root.confirm-on-return && event.text == Key.Return) {
+                root.confirmed();
+                return accept;
+            }
+            if (event.text == Key.Escape) {
+                root.escaped();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    Rectangle {
+        height: 50px;
+        y: 0;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: keys.has-focus ? Theme.accent-text : transparent;
+        background: Theme.fill;
+
+        rail := Rectangle {
+            x: parent.width / 6;
+            y: 15px;
+            width: parent.width * 2 / 3;
+            height: 4px;
+            background: Theme.label-2.transparentize(0.5);
+            border-radius: 2px;
+
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: parent.width * root.index / 2;
+                height: parent.height;
+                background: Theme.accent;
+                border-radius: parent.border-radius;
+                animate width { duration: Fx.rich ? 140ms : 0ms; }
+            }
+
+            for i in root.labels.length: Rectangle {
+                x: rail.width * i / 2 - self.width / 2;
+                y: (rail.height - self.height) / 2;
+                width: 7px;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: i <= root.index ? Theme.accent : Theme.label-2;
+            }
+
+            Rectangle {
+                x: rail.width * root.index / 2 - self.width / 2;
+                y: (rail.height - self.height) / 2;
+                width: 16px;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: Theme.accent;
+                border-width: 2px;
+                border-color: Theme.on-accent;
+                animate x { duration: Fx.rich ? 140ms : 0ms; }
+            }
+        }
+
+        for label[i] in root.labels: Text {
+            x: parent.width * i / 3;
+            y: 28px;
+            width: parent.width / 3;
+            height: 16px;
+            text: label;
+            color: i == root.index ? Theme.accent-text : Theme.label-2;
+            font-size: 12px;
+            font-weight: i == root.index ? 650 : 500;
+            horizontal-alignment: center;
+        }
+
+        TouchArea {
+            mouse-cursor: pointer;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                    keys.focus();
+                    root.pick(Math.floor(self.mouse-x * 3 / self.width));
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    root.pick(Math.floor(self.mouse-x * 3 / self.width));
+                }
+            }
+        }
+    }
+
+    Text {
+        y: 57px;
+        height: 33px;
+        text: root.explanation;
+        color: Theme.label-2;
+        font-size: 13px;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+    }
+}

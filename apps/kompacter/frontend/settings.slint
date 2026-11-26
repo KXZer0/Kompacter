@@ -4,6 +4,7 @@
 import { Theme, Fx, Icon, AppLogo, Btn, IconBtn, Switch, Seg, Dropdown } from "theme.slint";
 import { Icons } from "icons.slint";
 import { FeatureDemo } from "demo.slint";
+import { CompressionPreference } from "compression-preference.slint";
 
 export struct PresetItem {
     name: string,
@@ -19,6 +20,7 @@ export global Prefs {
     in property <int> output-index;
     in property <string> output-dir;
     in property <bool> gpu;
+    in property <bool> windows-integration;
     in property <bool> auto-update;
     in property <bool> auto-hide;
     in property <string> auto-hide-error;
@@ -27,6 +29,7 @@ export global Prefs {
     in property <bool> explorer-menu;
     in property <string> tray-note;
     in property <int> custom-mb;
+    in property <int> compression-preference: 1;
     in property <int> video-index;
     in property <int> audio-index;
     in property <int> image-index;
@@ -34,6 +37,10 @@ export global Prefs {
     in property <[string]> shortcut-options: ["Off", "Ctrl+Alt+K", "Ctrl+Shift+K", "Ctrl+Shift+Space"];
     in property <int> shortcut-index;
     in property <bool> shortcut-taken;
+    in property <bool> global-shortcut-available;
+    in property <bool> paste-guard-available;
+    in property <bool> watch-copies-available;
+    in property <bool> watch-folders-available;
     in property <bool> paste-guard;
     in property <bool> watch-copies;
     in property <bool> watch-folders;
@@ -51,6 +58,7 @@ export global Prefs {
     callback set-tray-pinned(bool);
     callback set-explorer-menu(bool);
     callback set-custom-mb(int);
+    callback set-compression-preference(int);
     callback set-video(int);
     callback set-audio(int);
     callback set-image(int);
@@ -68,11 +76,14 @@ export component Cell inherits Rectangle {
     in property <string> label;
     in property <string> small;
     in property <bool> first;
+    in property <bool> shown: true;
     in property <bool> clickable;
     /// The pointer is on the row (not on what sits on top of it, like its switch).
     out property <bool> hovered: ta.has-hover;
     callback clicked;
-    min-height: root.small != "" ? 56px : 44px;
+    min-height: root.shown ? (root.small != "" ? 56px : 44px) : 0px;
+    max-height: root.shown ? 10000px : 0px;
+    visible: root.shown;
     background: ta.has-hover && root.clickable ? Theme.fill : transparent;
     animate background { duration: 120ms; }
     if !root.first: Rectangle {
@@ -231,12 +242,12 @@ export component SettingsView inherits Rectangle {
         color: Theme.label;
         vertical-alignment: center;
     }
-    Flickable {
+    settings-scroll := Flickable {
         x: 0;
         y: 54px;
         width: 360px;
         height: 546px;
-        changed viewport-y => { root.preview-reset(); }
+        changed content-y => { root.preview-reset(); }
         VerticalLayout {
             padding-left: 20px;
             padding-right: 20px;
@@ -389,7 +400,7 @@ export component SettingsView inherits Rectangle {
                     }
                     Check { on: Prefs.output-index == 2; }
                 }
-                Cell {
+                if Prefs.windows-integration: Cell {
                     label: "Replace the original";
                     small: "Original goes to the Recycle Bin";
                     clickable: true;
@@ -398,20 +409,36 @@ export component SettingsView inherits Rectangle {
                 }
             }
 
-            // Formats: the default of each works for everyone; the line under it
-            // says what the choice trades.
-            GroupTitle { text: "FORMATS"; }
+            GroupTitle { text: "COMPRESSION PREFERENCE"; }
+            CompressionPreference {
+                index: Prefs.compression-preference;
+                picked(i) => { Prefs.set-compression-preference(i); }
+                escaped => { root.close-settings(); }
+                changed has-focus => {
+                    if (self.has-focus) {
+                        let top = self.absolute-position.y - settings-scroll.absolute-position.y;
+                        let bottom = top + self.height - settings-scroll.height;
+                        if (top < 0px) {
+                            settings-scroll.content-y -= top;
+                        } else if (bottom > 0px) {
+                            settings-scroll.content-y -= bottom;
+                        }
+                    }
+                }
+            }
+
+            GroupTitle { text: "FORMAT OVERRIDES"; }
             Group {
                 Cell {
                     label: "Video";
-                    small: Prefs.video-index == 0 ? "Most compatible, plays everywhere"
-                        : Prefs.video-index == 1 ? "Smaller files"
-                        : "Smallest files, best quality";
+                    small: Prefs.video-index == 0 ? "H.264"
+                        : Prefs.video-index == 1 ? "Plays on more devices"
+                        : Prefs.video-index == 2 ? "Smaller files"
+                        : "More detail at the same size";
                     first: true;
                     Dropdown {
-                        options: ["H.264", "H.265", "AV1"];
-                        notes: ["Most compatible, plays everywhere", "Smaller files, fast on most GPUs", "Smallest files, best quality"];
-                        best: 2;
+                        options: ["Use preference", "H.264", "H.265", "AV1"];
+                        notes: ["H.264", "Plays on more devices", "Check recipient support", "Check recipient support"];
                         index: Prefs.video-index;
                         y: (parent.height - self.height) / 2;
                         picked(i) => { Prefs.set-video(i); }
@@ -419,11 +446,14 @@ export component SettingsView inherits Rectangle {
                 }
                 Cell {
                     label: "Audio";
-                    small: Prefs.audio-index == 0 ? "MP3, or Opus when the limit is tight"
-                        : Prefs.audio-index == 1 ? "Plays everywhere"
-                        : "Sounds better at the same size";
+                    small: Prefs.audio-index == 0
+                        ? (Prefs.compression-preference == 0 ? "MP3"
+                        : Prefs.compression-preference == 2 ? "Opus" : "Auto")
+                        : Prefs.audio-index == 1 ? "MP3, or Opus for tight limits"
+                        : Prefs.audio-index == 2 ? "Plays on more devices"
+                        : "Better sound at the same size";
                     Dropdown {
-                        options: ["Auto", "MP3", "Opus"];
+                        options: ["Use preference", "Auto", "MP3", "Opus"];
                         index: Prefs.audio-index;
                         y: (parent.height - self.height) / 2;
                         picked(i) => { Prefs.set-audio(i); }
@@ -431,11 +461,13 @@ export component SettingsView inherits Rectangle {
                 }
                 Cell {
                     label: "Images";
-                    small: Prefs.image-index == 0 ? "Lossless first, then JPEG"
-                        : Prefs.image-index == 1 ? "Opens everywhere"
-                        : "Smaller than JPEG, keeps transparency";
+                    small: Prefs.image-index == 0
+                        ? (Prefs.compression-preference == 2 ? "WebP" : "Auto")
+                        : Prefs.image-index == 1 ? "Lossless first"
+                        : Prefs.image-index == 2 ? "Opens on more devices"
+                        : "Keeps transparency";
                     Dropdown {
-                        options: ["Auto", "JPEG", "WebP"];
+                        options: ["Use preference", "Auto", "JPEG", "WebP"];
                         index: Prefs.image-index;
                         y: (parent.height - self.height) / 2;
                         picked(i) => { Prefs.set-image(i); }
@@ -443,10 +475,10 @@ export component SettingsView inherits Rectangle {
                 }
                 Cell {
                     label: "Folders & files";
-                    small: Prefs.archive-index == 0 ? "Opens everywhere"
-                        : "Smaller, needs Windows 11 or 7-Zip";
+                    small: Prefs.archive-index == 0 ? "Zip" : Prefs.archive-index == 1
+                        ? "Opens on more devices" : "Needs Windows 11 or 7-Zip";
                     Dropdown {
-                        options: ["Zip", "7z"];
+                        options: ["Use preference", "Zip", "7z"];
                         index: Prefs.archive-index;
                         y: (parent.height - self.height) / 2;
                         picked(i) => { Prefs.set-archive(i); }
@@ -455,9 +487,10 @@ export component SettingsView inherits Rectangle {
             }
 
             // Things Kompacter does without being opened. All off except the shortcut.
-            GroupTitle { text: "AUTOMATIC"; }
+            if Prefs.global-shortcut-available || Prefs.watch-copies-available
+                || Prefs.paste-guard-available || Prefs.watch-folders-available: GroupTitle { text: "AUTOMATIC"; }
             Group {
-                Cell {
+                if Prefs.global-shortcut-available: Cell {
                     label: "Shortcut";
                     small: Prefs.shortcut-taken ? "Used by another app, pick another"
                         : Prefs.shortcut-index == 0 ? "" : "Compress what you copied";
@@ -470,6 +503,8 @@ export component SettingsView inherits Rectangle {
                     }
                 }
                 copy-cell := Cell {
+                    shown: Prefs.watch-copies-available;
+                    first: !Prefs.global-shortcut-available;
                     label: "When I copy a big file";
                     small: "A small bar offers to shrink it";
                     copy-switch := Switch {
@@ -479,6 +514,8 @@ export component SettingsView inherits Rectangle {
                     }
                 }
                 paste-cell := Cell {
+                    shown: Prefs.paste-guard-available;
+                    first: !Prefs.global-shortcut-available && !Prefs.watch-copies-available;
                     label: "When I paste into a chat";
                     small: "Asks first in Discord, Slack and more";
                     paste-switch := Switch {
@@ -488,6 +525,8 @@ export component SettingsView inherits Rectangle {
                     }
                 }
                 clip-cell := Cell {
+                    shown: Prefs.watch-folders-available;
+                    first: !Prefs.global-shortcut-available && !Prefs.watch-copies-available && !Prefs.paste-guard-available;
                     label: "When I save a game clip";
                     small: "Shrinks new clips on their own";
                     clip-switch := Switch {
@@ -496,7 +535,7 @@ export component SettingsView inherits Rectangle {
                         toggled(on) => { Prefs.set-watch-folders(on); }
                     }
                 }
-                if Prefs.watch-folders: VerticalLayout {
+                if Prefs.watch-folders-available && Prefs.watch-folders: VerticalLayout {
                     for f[i] in Prefs.clip-folders: Cell {
                         label: f;
                         IconBtn {
@@ -523,9 +562,11 @@ export component SettingsView inherits Rectangle {
             Group {
                 Cell {
                     label: "GPU encoding";
+                    small: Prefs.compression-preference == 2 ? "Efficiency uses software encoding" : "";
                     first: true;
                     Switch {
-                        checked: Prefs.gpu;
+                        checked: Prefs.gpu && Prefs.compression-preference != 2;
+                        enabled: Prefs.compression-preference != 2;
                         y: (parent.height - self.height) / 2;
                         toggled(on) => { Prefs.set-gpu(on); }
                     }
@@ -539,7 +580,7 @@ export component SettingsView inherits Rectangle {
                         toggled(on) => { Prefs.set-auto-hide(on); }
                     }
                 }
-                Cell {
+                if Prefs.windows-integration: Cell {
                     label: "Start with Windows";
                     Switch {
                         checked: Prefs.start-with-windows;
@@ -547,7 +588,7 @@ export component SettingsView inherits Rectangle {
                         toggled(on) => { Prefs.set-start(on); }
                     }
                 }
-                Cell {
+                if Prefs.windows-integration: Cell {
                     label: "Right-click menu";
                     small: "“Kompact” on files and folders in Explorer";
                     Switch {
@@ -556,7 +597,7 @@ export component SettingsView inherits Rectangle {
                         toggled(on) => { Prefs.set-explorer-menu(on); }
                     }
                 }
-                Cell {
+                if Prefs.windows-integration: Cell {
                     label: "Install updates";
                     small: "Checked daily, installed on restart";
                     Switch {
@@ -565,7 +606,7 @@ export component SettingsView inherits Rectangle {
                         toggled(on) => { Prefs.set-auto-update(on); }
                     }
                 }
-                Cell {
+                if Prefs.windows-integration: Cell {
                     label: "Keep tray icon visible";
                     small: Prefs.tray-note != "" ? Prefs.tray-note : "Next to the clock, not in the ^ menu";
                     Switch {

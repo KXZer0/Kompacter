@@ -15,7 +15,9 @@ use slint::winit_030::WinitWindowAccessor;
 use slint::ComponentHandle;
 
 use crate::frontend::{Prefs, View};
-use crate::platform::{self as sys, InputEvent};
+use crate::platform as sys;
+#[cfg(windows)]
+use crate::platform::InputEvent;
 
 use super::format::{bytes, file_name};
 use super::settings::{shortcut_keys, SHORTCUTS};
@@ -140,6 +142,7 @@ impl App {
         }
     }
 
+    #[cfg(windows)]
     pub fn on_input(self: &Rc<Self>, e: InputEvent) {
         match e {
             InputEvent::Shortcut => {
@@ -259,7 +262,7 @@ impl App {
     }
 
     pub fn set_tray_tip(&self, text: &str) {
-        if let Some(t) = self.tray.upgrade() {
+        if let Some(t) = self.tray.borrow().as_ref() {
             t.set_tip(text.into());
         }
     }
@@ -274,6 +277,11 @@ impl App {
             .position(|(id, _)| *id == s.shortcut)
             .unwrap_or(0);
         prefs.set_shortcut_index(index as i32);
+        let capabilities = &sys::CAPABILITIES;
+        prefs.set_global_shortcut_available(capabilities.global_shortcut);
+        prefs.set_paste_guard_available(capabilities.paste_guard);
+        prefs.set_watch_copies_available(capabilities.watch_copies);
+        prefs.set_watch_folders_available(capabilities.watch_folders);
         prefs.set_paste_guard(s.paste_guard);
         prefs.set_watch_copies(s.watch_copies);
         prefs.set_watch_folders(s.watch_folders);
@@ -287,14 +295,16 @@ impl App {
         }
 
         let limit = self.user_target_bytes();
-        if *self.shortcut_set.borrow() != s.shortcut {
+        if capabilities.global_shortcut && *self.shortcut_set.borrow() != s.shortcut {
             *self.shortcut_set.borrow_mut() = s.shortcut.clone();
             sys::set_shortcut(shortcut_keys(&s.shortcut));
         }
-        sys::set_guard(s.paste_guard, self.chat_limit("discord"));
+        if capabilities.paste_guard {
+            sys::set_guard(s.paste_guard, self.chat_limit("discord"));
+        }
         self.watch.set(watch::Config {
-            copies: s.watch_copies,
-            folders_on: s.watch_folders,
+            copies: capabilities.watch_copies && s.watch_copies,
+            folders_on: capabilities.watch_folders && s.watch_folders,
             folders: s.clip_folders.iter().map(PathBuf::from).collect(),
             limit,
         });

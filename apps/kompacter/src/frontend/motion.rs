@@ -191,7 +191,7 @@ impl App {
         }
     }
 
-    pub fn close_settings(&self) {
+    pub fn close_settings(self: &Rc<Self>) {
         let back = self.motion.settings_return.take().unwrap_or_else(|| {
             if self.current.borrow().is_some() {
                 View::Big
@@ -199,7 +199,28 @@ impl App {
                 View::Idle
             }
         });
+        if back == View::Big {
+            let options = self.options(self.target_bytes());
+            let refreshed = {
+                let mut current = self.current.borrow_mut();
+                current.as_mut().is_some_and(|file| {
+                    self.engine
+                        .estimate(&file.info, &options)
+                        .is_ok_and(|estimate| {
+                            file.estimate = estimate;
+                            true
+                        })
+                })
+            };
+            if refreshed {
+                self.show_big();
+                return;
+            }
+        }
         self.set_view(back);
+        if back == View::Trim {
+            self.trim_update();
+        }
     }
 
     pub fn show(self: &Rc<Self>) {
@@ -243,7 +264,12 @@ impl App {
             self.set_flyout_input_height(view_height(&ui));
         }
         if focus {
+            #[cfg(target_os = "macos")]
+            sys::focus_application();
             ui.window().with_winit_window(|w| w.focus_window());
+            // Linux compositors may show the panel without granting focus.
+            // Their actual focus-loss event still starts auto-hide.
+            #[cfg(not(target_os = "linux"))]
             self.away();
         }
 
@@ -432,7 +458,7 @@ impl App {
         self.hide_now();
     }
 
-    fn hide_now(&self) {
+    fn hide_now(self: &Rc<Self>) {
         let ui = self.ui();
         let _ = ui.hide();
         if ui.get_view() == View::Settings {
@@ -447,6 +473,7 @@ impl App {
         self.motion.reveal.set(0.0);
     }
 
+    #[cfg(windows)]
     pub fn toggle(self: &Rc<Self>) {
         let ui = self.ui();
         let open = ui.window().is_visible() && ui.get_opened();

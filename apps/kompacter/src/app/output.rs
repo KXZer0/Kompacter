@@ -35,12 +35,11 @@ pub fn dir(prefs: &Settings, original: &Path) -> Result<PathBuf, String> {
 }
 
 /// Kompacter's own output folder, first one that works:
-/// 1. `Kompacted` next to Kompacter.exe (portable style)
-/// 2. `Videos\Kompacter`
-/// 3. the app's local data folder
+/// Try the portable output folder on Windows, then the user's Videos or data folder.
 pub fn app_dir() -> Result<PathBuf, String> {
-    std::env::current_exe()
-        .ok()
+    cfg!(windows)
+        .then(|| std::env::current_exe().ok())
+        .flatten()
         .and_then(|p| p.parent().map(|d| d.join("Kompacted")))
         .filter(|d| writable(d))
         .or_else(|| {

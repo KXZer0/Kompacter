@@ -32,3 +32,13 @@ version; never the nightly), picked when the workflow runs.
 | Code signing | Without it, Windows SmartScreen warns "unknown publisher" | Free for open source via [SignPath Foundation](https://signpath.org), or Azure Trusted Signing (~$10/month) |
 | winget | `winget install Kompacter` | Submit a manifest to `microsoft/winget-pkgs` after the first signed release |
 | macOS / Linux | More users | Add jobs to `release.yml` (needs Mac/Linux ffmpeg and clipboard support) |
+
+## Desktop review builds
+
+- Linux builds an amd64 Debian package and a portable archive with checksums. Run
+  `packaging/linux/build.sh` on an x86-64 Linux build machine with Debian packaging
+  tools and `desktop-file-validate` installed.
+- The macOS review workflow builds an application bundle with FFmpeg and ffprobe,
+  runs a compression fixture, and uploads the bundle archive and checksum. The
+  review bundle is ad-hoc signed. Distribution signing and notarization require
+  a Developer ID release. See [macOS packaging](../packaging/macos/README.md).
