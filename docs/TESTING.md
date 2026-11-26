@@ -127,3 +127,17 @@ macOS (Settings → General → "Open at login"), with the `.app` from the DMG:
       GlobalShortcuts`): Settings → Shortcut shows "Set a shortcut in your system settings
       that runs: kompacter". A system shortcut running `kompacter` opens the panel.
 - [ ] Settings has no paste guard row on Linux.
+
+## Noticing copies on macOS and Linux (Settings → Automatic → "When I copy a big file")
+
+Turn the setting on and copy a file bigger than your limit, then a small one, then some
+text. Only the big file should bring up the bar, once per copy.
+
+- [ ] macOS: copy in Finder (Cmd+C); the bar appears within about a second, and nothing
+      happens while the setting is off.
+- [ ] KDE Plasma (Wayland): copy in Dolphin.
+- [ ] Sway or another wlroots desktop: copy in a file manager (Nautilus, Thunar, PCManFM),
+      and with `wl-copy --type text/uri-list file:///path/to/big.mp4`.
+- [ ] A path with spaces or accents (`My Clips/été.mp4`) is noticed.
+- [ ] GNOME (Wayland) and any X11 session: the setting is greyed out with a short reason,
+      and first start doesn't offer it.

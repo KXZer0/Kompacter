@@ -11,7 +11,7 @@ pub struct Capabilities {
 }
 
 pub const CAPABILITIES: Capabilities = Capabilities {
-    watch_copies: cfg!(windows),
+    watch_copies: cfg!(any(windows, target_os = "linux", target_os = "macos")),
     // macOS: only once Accessibility is allowed (Settings says so). Wayland has no way to
     // see or hold back a paste in another app.
     paste_guard: cfg!(any(windows, target_os = "macos")),
@@ -22,6 +22,19 @@ pub const CAPABILITIES: Capabilities = Capabilities {
     trash: cfg!(any(windows, target_os = "linux", target_os = "macos")),
     start_with_system: cfg!(any(windows, target_os = "linux", target_os = "macos")),
 };
+
+/// Whether copies can be noticed in this session (Linux: only on Wayland desktops with a
+/// data-control protocol). `Err` says why not, in a few words, for the settings.
+pub fn watch_copies_support() -> Result<(), &'static str> {
+    #[cfg(target_os = "linux")]
+    return super::linux::clipboard_watch::support();
+    #[cfg(not(target_os = "linux"))]
+    return if CAPABILITIES.watch_copies {
+        Ok(())
+    } else {
+        Err("Not available on this system")
+    };
+}
 
 /// What the system calls the place deleted files go.
 pub const TRASH_NAME: &str = if cfg!(windows) {

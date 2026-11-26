@@ -38,6 +38,8 @@ url = "2"
 x11rb = { version = "0.13", features = ["randr", "resource_manager"] }
 wayland-client = { version = "0.31", features = ["system", "dlopen"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+# Clipboard managers on wlroots desktops and older KDE (noticing copied files).
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # Share the D-Bus dependency used by the Slint tray backend.
 zbus = "5"
 

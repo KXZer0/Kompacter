@@ -55,6 +55,8 @@ export global Prefs {
     in property <bool> global-shortcut-available;
     in property <bool> paste-guard-available;
     in property <bool> watch-copies-available;
+    /// Why copies can't be noticed in this session (empty: they can).
+    in property <string> watch-copies-note;
     in property <bool> watch-folders-available;
     in property <bool> paste-guard;
     in property <bool> watch-copies;
@@ -554,9 +556,10 @@ export component SettingsView inherits Rectangle {
                     shown: Prefs.watch-copies-available;
                     first: !Prefs.global-shortcut-available;
                     label: "When I copy a big file";
-                    small: "A small bar offers to shrink it";
+                    small: Prefs.watch-copies-note != "" ? Prefs.watch-copies-note : "A small bar offers to shrink it";
                     copy-switch := Switch {
-                        checked: Prefs.watch-copies;
+                        checked: Prefs.watch-copies && Prefs.watch-copies-note == "";
+                        enabled: Prefs.watch-copies-note == "";
                         y: (parent.height - self.height) / 2;
                         toggled(on) => { Prefs.set-watch-copies(on); }
                     }

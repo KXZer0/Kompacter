@@ -9,6 +9,30 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::platform as sys;
 
+/// Where new copies come from. Windows: the clipboard's sequence number is cheap to poll
+/// from this thread. macOS: a main-thread timer watches the pasteboard. Linux: a Wayland
+/// data-control watcher.
+#[cfg(target_os = "linux")]
+use sys::linux::clipboard_watch::Watcher as Copies;
+#[cfg(target_os = "macos")]
+use sys::macos_watch::Watcher as Copies;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+struct Copies;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+impl Copies {
+    fn start() -> Option<Self> {
+        Some(Self)
+    }
+    fn seq(&self) -> u32 {
+        sys::clipboard_seq()
+    }
+    fn files(&self) -> Vec<PathBuf> {
+        sys::clipboard_files()
+    }
+}
+
 pub enum WatchEvent {
     /// Files were copied and at least one is over the limit.
     Copied(Vec<PathBuf>),
@@ -149,6 +173,7 @@ impl Watch {
         std::thread::spawn(move || {
             let mut c = Config::default();
             let mut seq = 0;
+            let mut copies: Option<Copies> = None;
             let mut clips = Clips::default();
             let mut since = SystemTime::now();
             let mut copy_at: Option<Instant> = None;
@@ -165,9 +190,11 @@ impl Watch {
                 match update {
                     Ok(new) => {
                         if new.copies && !c.copies {
-                            seq = sys::clipboard_seq();
-                            copy_at = Some(now + CLIPBOARD_POLL);
+                            copies = Copies::start();
+                            seq = copies.as_ref().map_or(0, Copies::seq);
+                            copy_at = copies.is_some().then(|| now + CLIPBOARD_POLL);
                         } else if !new.copies {
+                            copies = None;
                             copy_at = None;
                         }
                         if new.folders_on && !new.folders.is_empty() {
@@ -184,12 +211,15 @@ impl Watch {
                     Err(RecvTimeoutError::Disconnected) => break,
                     Err(RecvTimeoutError::Timeout) => {}
                 }
-                if copy_at.is_some_and(|at| now >= at) {
+                if let Some(source) = copies
+                    .as_ref()
+                    .filter(|_| copy_at.is_some_and(|at| now >= at))
+                {
                     copy_at = Some(now + CLIPBOARD_POLL);
-                    let current = sys::clipboard_seq();
+                    let current = source.seq();
                     if current != seq {
                         seq = current;
-                        let files = sys::clipboard_files();
+                        let files = source.files();
                         let over = files.iter().any(|p| {
                             !ours(p)
                                 && std::fs::metadata(p)

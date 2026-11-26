@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 mod capabilities;
-pub use capabilities::{CAPABILITIES, TRASH_NAME};
+pub use capabilities::{watch_copies_support, CAPABILITIES, TRASH_NAME};
 
 #[cfg(target_os = "linux")]
 pub mod linux;
@@ -25,6 +25,8 @@ pub use macos::{
     clipboard_files, clipboard_seq, copy_files, focus_application, install_activation, recycle,
     style_panel,
 };
+#[cfg(target_os = "macos")]
+pub mod macos_watch;
 
 #[cfg(any(target_os = "macos", test))]
 mod macos_input;
@@ -524,7 +526,8 @@ mod imp {
     pub fn set_guard(_on: bool, _discord_limit: u64) {}
     #[cfg(not(target_os = "macos"))]
     pub fn send_paste() {}
-    #[cfg(not(target_os = "macos"))]
+    // macOS and Linux: the watch reads copies from their own watchers instead.
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     pub fn clipboard_seq() -> u32 {
         0
     }

@@ -14,6 +14,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 mod activation;
+pub mod clipboard_watch;
 mod shortcut;
 mod trash;
 pub use activation::activate_window;
@@ -301,12 +302,17 @@ pub fn clipboard_files() -> Vec<PathBuf> {
     .unwrap_or_default()
 }
 
+/// Local paths in a `text/uri-list` (RFC 2483: CRLF lines, `#` comments) or GNOME's
+/// `x-special/gnome-copied-files` (a `copy`/`cut` line first). Anything that isn't a
+/// local `file://` URI is skipped.
 fn paths_from_uris(bytes: &[u8]) -> Vec<PathBuf> {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Vec::new();
     };
     text.trim_end_matches('\0')
         .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .filter_map(|line| url::Url::parse(line).ok()?.to_file_path().ok())
         .collect()
 }
@@ -529,6 +535,31 @@ mod tests {
         let delivered = elect(&address, Some(&path), activation(Action::Choose)).unwrap();
         assert!(matches!(delivered, Elected::Delivered));
         assert!(rx.recv_timeout(IO_TIMEOUT).unwrap());
+    }
+
+    #[test]
+    fn copied_file_lists_become_local_paths() {
+        let list = b"# copied by a file manager\r\n\
+            file:///home/me/My%20Clips/game%23one.mp4\r\n\
+            https://example.com/video.mp4\r\n\
+            file://otherhost/share/a.mp4\r\n\
+            file://localhost/tmp/b.mkv\r\n\
+            not a uri\r\n\
+            file:///tmp/%C3%A9t%C3%A9.mov\r\n\0";
+        assert_eq!(
+            paths_from_uris(list),
+            [
+                PathBuf::from("/home/me/My Clips/game#one.mp4"),
+                PathBuf::from("/tmp/b.mkv"),
+                PathBuf::from("/tmp/été.mov"),
+            ]
+        );
+        assert_eq!(
+            paths_from_uris(b"copy\nfile:///tmp/a.mp4\nfile:///tmp/b.mp4"),
+            [PathBuf::from("/tmp/a.mp4"), PathBuf::from("/tmp/b.mp4")]
+        );
+        assert!(paths_from_uris(b"hello").is_empty());
+        assert!(paths_from_uris(&[0xff, 0xfe]).is_empty());
     }
 
     #[test]
