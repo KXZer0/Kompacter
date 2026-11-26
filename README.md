@@ -6,7 +6,7 @@ Compress any file, any time. With better quality and more for those apps. All lo
 
 Copy a file that's too big for Discord (or email, or any app with an upload limit), and Kompacter shrinks it to fit, puts it back on your clipboard, and you paste. Videos, audio, images, documents, 3D models, whole folders. Nothing is uploaded anywhere: every byte stays on your computer. Runs on Windows, Linux and macOS.
 
-> Status: early development. One app and one compression engine on Windows, Linux and macOS. Windows draws with Skia, Linux and macOS with FemtoVG (OpenGL) or the software renderer. Media jobs run in FFmpeg, with hardware encoding on supported GPUs. Windows has the most automatic features today (see the table under Features).
+> Status: early development. One app and one compression engine on Windows, Linux and macOS. Windows draws with Skia, Linux and macOS with FemtoVG (OpenGL) or the software renderer. Media jobs run in FFmpeg, with hardware encoding on supported GPUs. The automatic features work on all three, within what each system allows (see the table under Features).
 
 ## Download
 
@@ -47,7 +47,7 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 - **Existing desktop tools** handle one file type (usually video) or one OS.
 - **Kompacter** handles everything, runs locally with your GPU on Windows, Linux and macOS, and is built for "share this clip right now".
 
-## Features (planned for v1)
+## Features
 
 - Fits files under a target size: Discord 20 / 50 / 500 MB, Slack 1 GB, WhatsApp 2 GB, Telegram 2 GB, Signal 100 MB, email 25 MB, or custom.
 - **Compression preference:** Compatibility (plays everywhere, fastest), Balanced, or Efficiency (smallest files, slower). Any output format can be pinned to override it.
@@ -61,14 +61,15 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 - Logs, CSVs and other text: a 7z when a zip isn't small enough.
 - Short clips as **GIFs** that fit.
 - Results go to Kompacter's folder, next to the original, a folder you pick, or replace the original (which goes to the Recycle Bin or Trash).
-- Lives in the tray or menu bar. Open it by dropping a file, choosing one, pasting, or from the file manager.
+- Lives in the tray (Windows, Linux) or the Dock (macOS: click the icon to open the panel above it, drop files on it). Open it by dropping a file, choosing one, pasting, or from the file manager.
+- Works on its own if you want: a hotkey quick bar, a paste guard for chat apps, a notice when you copy a file that's too big, shrinking new clips in your clip folders, and starting with the system (per-system details in the table below).
 - Updates itself: a new version is checked against its published checksum, with a short "What's new". Can be switched off.
 - No admin rights needed. No account. No network access except update checks.
 
 | | Windows | Linux | macOS |
 |---|---|---|---|
 | Drop, choose or paste files; compress; copy the result to the clipboard | ✓ | ✓ | ✓ |
-| Tray / menu-bar app, single instance | ✓ | ✓ (tray when the desktop has one) | ✓ |
+| Tray or Dock app, single instance | ✓ Tray | ✓ Tray (when the desktop has one) | ✓ Dock icon |
 | Open files from the file manager | Right-click **Kompact** in Explorer | "Open with" / launcher | Finder "Open with" / Dock |
 | Shrink new clips in watched clip folders (Medal, Game Bar, ShadowPlay, OBS…) | ✓ | ✓ | ✓ |
 | Replace the original (to the Recycle Bin / Trash) | ✓ | ✓ | ✓ |
