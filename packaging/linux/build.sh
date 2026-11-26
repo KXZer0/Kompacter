@@ -10,7 +10,11 @@ cd "$repo"
 out=${1:-"$repo/dist/linux"}
 mkdir -p "$out"
 out=$(CDPATH='' cd -- "$out" && pwd)
-version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+# The release workflow passes the tag's version; local builds use Cargo.toml's.
+version=${KOMPACTER_PACKAGE_VERSION:-${KOMPACTER_VERSION:-}}
+if [ -z "$version" ]; then
+    version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+fi
 app_id=io.github.KXZer0.Kompacter
 target=x86_64-unknown-linux-gnu
 
@@ -34,6 +38,11 @@ install -d "$deb/usr/bin"
 ln -s ../lib/kompacter/Kompacter "$deb/usr/bin/kompacter"
 install -Dm644 "$here/$app_id.desktop" "$deb/usr/share/applications/$app_id.desktop"
 install -Dm644 "$icon" "$deb/usr/share/icons/hicolor/32x32/apps/$app_id.png"
+install -d "$deb/usr/share/icons/hicolor/256x256/apps"
+python3 "$here/extract_icon.py" "$repo/apps/kompacter/icon.ico" \
+    "$deb/usr/share/icons/hicolor/256x256/apps/$app_id.png"
+chmod 644 "$deb/usr/share/icons/hicolor/256x256/apps/$app_id.png"
+install -Dm644 "$here/$app_id.metainfo.xml" "$deb/usr/share/metainfo/$app_id.metainfo.xml"
 install -Dm644 LICENSE "$deb/usr/share/doc/kompacter/copyright"
 
 # Let dpkg-shlibdeps derive the actual libc floor of the build machine.
@@ -66,7 +75,12 @@ install -Dm644 "$here/$app_id.desktop" "$bundle/$app_id.desktop"
 install -Dm644 "$icon" "$bundle/$app_id.png"
 if [ -n "${KOMPACTER_FFMPEG_DIR:-}" ]; then
     install -m755 "$KOMPACTER_FFMPEG_DIR/ffmpeg" "$KOMPACTER_FFMPEG_DIR/ffprobe" "$bundle/"
-    install -Dm644 "$KOMPACTER_FFMPEG_DIR/LICENSE" "$bundle/FFmpeg-LICENSE"
+    for name in LICENSE LICENSE.txt; do
+        if [ -f "$KOMPACTER_FFMPEG_DIR/$name" ]; then
+            install -Dm644 "$KOMPACTER_FFMPEG_DIR/$name" "$bundle/FFmpeg-LICENSE"
+            break
+        fi
+    done
 fi
 tar -C "$stage" -czf "$out/$bundle_name.tar.gz" "$bundle_name"
 (cd "$out" && sha256sum "kompacter_${version}_amd64.deb" "$bundle_name.tar.gz" > SHA256SUMS)
