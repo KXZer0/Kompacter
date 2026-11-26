@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::sys;
+use crate::platform as sys;
 
 pub enum WatchEvent {
     /// Files were copied and at least one is over the limit.

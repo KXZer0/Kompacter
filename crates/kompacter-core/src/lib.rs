@@ -16,14 +16,14 @@ pub mod size;
 mod thumbs;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
 pub use error::{Error, Result};
 pub use ffmpeg::Ffmpeg;
-pub use formats::{ArchiveFormat, AudioFormat, ImageFormat, VideoCodec};
+pub use formats::{ArchiveFormat, AudioFormat, CompressionPreference, ImageFormat, VideoCodec};
 pub use gpu::Encoder;
 pub use jobs::split::MAX_PARTS;
 pub use plan::{Quality, Trim, VideoPlan};
@@ -171,12 +171,27 @@ impl Engine {
 
     /// Hardware encoders for this codec that work on this PC, best first (cached).
     pub fn hw_encoders_for(&self, codec: VideoCodec) -> &[Encoder] {
-        let i = match codec {
+        self.encoder_cache(codec)
+            .get_or_init(|| gpu::detect(&self.ff, codec))
+    }
+
+    fn encoder_cache(&self, codec: VideoCodec) -> &OnceLock<Vec<Encoder>> {
+        &self.encoders[match codec {
             VideoCodec::H264 => 0,
             VideoCodec::H265 => 1,
             VideoCodec::Av1 => 2,
-        };
-        self.encoders[i].get_or_init(|| gpu::detect(&self.ff, codec))
+        }]
+    }
+
+    fn hw_encoders_for_job(&self, codec: VideoCodec, cancel: &AtomicBool) -> &[Encoder] {
+        let cache = self.encoder_cache(codec);
+        if let Some(encoders) = cache.get() {
+            return encoders;
+        }
+        match gpu::detect_cancellable(&self.ff, codec, cancel) {
+            Some(encoders) => cache.get_or_init(|| encoders),
+            None => &[],
+        }
     }
 
     /// The exact frame at `t` seconds (raw RGB), for the trimmer's preview.
@@ -433,9 +448,7 @@ impl Engine {
             target_bytes: target,
             seconds,
             // A folder can't be sent as-is: it always gets packed into one file.
-            fits_as_is: trim.is_none()
-                && info.size_bytes <= target
-                && info.kind != MediaKind::Folder,
+            fits_as_is: fits_as_is(info, opts, trim),
             keep_quality_bytes,
             video,
             audio_kbps,
@@ -451,26 +464,48 @@ impl Engine {
         progress: &mut dyn FnMut(f32),
         cancel: &AtomicBool,
     ) -> Result<Outcome> {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Error::Cancelled);
+        }
         let info = self.probe(path)?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Error::Cancelled);
+        }
         let trim = resolve_trim(&info, opts.trim)?;
         let target = opts.target_bytes;
 
-        let as_is = trim.is_none() && opts.mode != Mode::Gif;
-        if as_is && info.size_bytes <= target && info.kind != MediaKind::Folder {
-            progress(1.0);
-            return Ok(outcome(
-                &info,
-                path.to_path_buf(),
-                info.size_bytes,
-                target,
-                true,
-            ));
+        if fits_as_is(&info, opts, trim) {
+            // A cheap check that the file is whole (not a full decode), so a big video
+            // that already fits comes back almost at once.
+            let verified = if info.kind == MediaKind::Video && opts.mode == Mode::Fit {
+                jobs::video::quick_verify(
+                    &self.ff,
+                    path,
+                    info.duration,
+                    info.audio.is_some(),
+                    &mut ffmpeg::scaled(&mut *progress, 0.0, 0.9),
+                    cancel,
+                )
+            } else {
+                Ok(())
+            };
+            match verified {
+                Ok(()) => {
+                    let size = jobs::file_size(path)?;
+                    if size <= target {
+                        progress(1.0);
+                        return Ok(outcome(&info, path.to_path_buf(), size, target, true));
+                    }
+                }
+                Err(err) if jobs::video::can_retry(&err) => (),
+                Err(err) => return Err(err),
+            }
         }
 
         let out_base = out_base(path, opts.out_dir.as_deref())?;
         let encoders = || {
             if opts.gpu {
-                self.hw_encoders_for(opts.video_codec)
+                self.hw_encoders_for_job(opts.video_codec, cancel)
             } else {
                 &[]
             }
@@ -535,6 +570,16 @@ impl Engine {
         let size = jobs::file_size(&out)?;
         Ok(outcome(&info, out, size, target, false))
     }
+}
+
+fn fits_as_is(info: &MediaInfo, opts: &Options, trim: Option<Trim>) -> bool {
+    trim.is_none()
+        && opts.mode != Mode::Gif
+        && info.size_bytes <= opts.target_bytes
+        && info.kind != MediaKind::Folder
+        && (info.kind != MediaKind::Video
+            || opts.mode != Mode::Fit
+            || jobs::video::can_keep_original(info, opts.video_codec))
 }
 
 fn outcome(info: &MediaInfo, path: PathBuf, size: u64, target: u64, untouched: bool) -> Outcome {

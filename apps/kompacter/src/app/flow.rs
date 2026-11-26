@@ -9,13 +9,16 @@ use std::time::{Duration, Instant};
 
 use kompacter_core::{MediaKind, Mode, Outcome, Trim};
 
-use crate::format::{bytes, file_name};
-use crate::{format, kind_name, output, run, sys, App, AppWindow, Current, DiffRow, View};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
+use crate::frontend::{AppWindow, DiffRow, View};
+use crate::platform as sys;
+
+use super::format::{bytes, file_name};
+use super::{format, kind_name, output, run, App, Current};
+
 impl App {
-    /// A file arrived (drop, paste, choose). Read it, then compress right away if that's
-    /// the obvious next step, or show the choices.
+    /// Read an incoming file and show its size and compression options.
     pub fn open(self: &Rc<Self>, path: PathBuf) {
         let ui = self.ui();
         if self.started.get().is_some() || matches!(self.view(), View::Busy | View::Reading) {
@@ -48,12 +51,20 @@ impl App {
             },
             move |r| {
                 let Some(app) = weak.upgrade() else { return };
+                if !app.pending_files.borrow().is_empty() {
+                    let mut files = vec![path];
+                    files.extend(app.take_pending_files());
+                    app.another();
+                    app.open_many(files);
+                    return;
+                }
                 match r {
                     Err(e) => app.fail(&e),
                     Ok((info, estimate, folder_rows, icon)) => {
                         let kind = info.kind;
-                        // The paste guard always offers its choices first.
-                        let direct = !matches!(kind, MediaKind::Folder)
+                        // The Windows quick bar keeps its single-step clipboard shortcuts.
+                        let direct = app.quick.get()
+                            && !matches!(kind, MediaKind::Folder)
                             && (estimate.fits_as_is || !matches!(kind, MediaKind::Video))
                             && app.guard.get().is_none();
                         *app.current.borrow_mut() = Some(Current {
@@ -76,6 +87,14 @@ impl App {
 
     /// One file opens normally; several get the list screen ("Compress all").
     pub fn open_many(self: &Rc<Self>, files: Vec<PathBuf>) {
+        self.open_files(files, false);
+    }
+
+    pub fn replace_selection(self: &Rc<Self>, files: Vec<PathBuf>) {
+        self.open_files(files, true);
+    }
+
+    fn open_files(self: &Rc<Self>, files: Vec<PathBuf>, replace: bool) {
         if self.started.get().is_some() || matches!(self.view(), View::Busy | View::Reading) {
             return;
         }
@@ -83,6 +102,9 @@ impl App {
             .into_iter()
             .filter_map(|path| std::fs::metadata(&path).ok().map(|m| (path, m)))
             .collect();
+        if replace && !files.is_empty() && (self.quick.get() || self.view() != View::Idle) {
+            self.another();
+        }
         match files.len() {
             0 => {}
             1 => self.open(files.remove(0).0),
@@ -175,11 +197,12 @@ impl App {
                 let mut progress = publish_progress(ui_weak);
                 for (i, path) in files.iter().enumerate() {
                     let mut opts = opts.clone();
-                    opts.out_dir = output::dir(&prefs, path).ok();
+                    opts.out_dir = Some(output::dir(&prefs, path)?);
                     let mut on_progress = |p: f32| progress((i as f32 + p) / n as f32);
                     match engine.compress(path, &opts, &mut on_progress, &cancel) {
                         Ok(out) if out.fits => made.push(out.path),
-                        _ if cancel.load(Ordering::Relaxed) => return Err(()),
+                        Err(kompacter_core::Error::Cancelled) => return Err(String::new()),
+                        Err(kompacter_core::Error::Io(error)) => return Err(error.to_string()),
                         _ => failed += 1,
                     }
                 }
@@ -193,13 +216,19 @@ impl App {
                 let Some(app) = weak.upgrade() else { return };
                 ETA.with(|e| *e.borrow_mut() = None);
                 let ui = app.ui();
-                let Ok((made, failed, copied)) = r else {
-                    // Cancelled: back to the list.
-                    app.started.set(None);
-                    let files = app.batch.borrow().clone();
-                    app.set_view(View::Big);
-                    app.open_many(files);
-                    return;
+                let (made, failed, copied) = match r {
+                    Ok(result) => result,
+                    Err(_) if app.cancel.load(Ordering::Relaxed) => {
+                        app.started.set(None);
+                        let files = app.batch.borrow().clone();
+                        app.set_view(View::Big);
+                        app.open_many(files);
+                        return;
+                    }
+                    Err(error) => {
+                        app.fail(&error);
+                        return;
+                    }
                 };
                 ui.set_progress(1.0);
                 ui.set_squeeze(1.0);
@@ -209,7 +238,9 @@ impl App {
                     (true, true) => format!("Copied {} files", made.len()),
                     (true, false) => format!("Saved {} files", made.len()),
                 };
-                let sub = if failed > 0 {
+                let sub = if ok && !copied {
+                    "Couldn't copy files. Open the output folder.".into()
+                } else if failed > 0 {
                     format!("{failed} of {n} couldn't fit")
                 } else {
                     format!("Each under {}", bytes(target))
@@ -229,7 +260,7 @@ impl App {
                     if ok {
                         ui.set_hop(ui.get_hop() + 1);
                     }
-                    if !app.guard_done(ok && copied) {
+                    if !app.guard_done(ok && copied) && copied {
                         app.auto_hide_result();
                     }
                 });
@@ -266,6 +297,8 @@ impl App {
         ui.set_over_text(
             if over {
                 format!("{} too big", bytes(size - target))
+            } else if c.info.kind == MediaKind::Video && !c.estimate.fits_as_is {
+                "Fits · Convert for playback".into()
             } else {
                 "Fits".into()
             }
@@ -277,7 +310,7 @@ impl App {
         let label = if self.guard.get().is_some() {
             "Compress & paste".into()
         } else if folder {
-            format!("Compress & {}", self.settings.borrow().archive_format.ext())
+            format!("Compress & {}", self.options(target).archive.ext())
         } else {
             "Compress".into()
         };
@@ -285,7 +318,7 @@ impl App {
         // Big summary: the folder's own row when there's a tree, else the size cap.
         let after = match (folder, rows.first()) {
             (true, Some(r)) => r.after.to_string(),
-            _ if size > target => format!("≤ {}", bytes(target)),
+            _ if !c.estimate.fits_as_is => format!("≤ {}", bytes(target)),
             _ => bytes(size),
         };
         ui.set_sum_before(bytes(size).into());
@@ -339,7 +372,7 @@ impl App {
                 .collect(),
             MediaKind::Video | MediaKind::Audio => {
                 let mut rows = Vec::new();
-                let codec = self.settings.borrow().video_codec;
+                let codec = self.options(target).video_codec;
                 if let (Some(v), Some(p)) = (&c.info.video, &c.estimate.video) {
                     rows.push(row(
                         0,
@@ -411,7 +444,10 @@ impl App {
         let cur = self.current.borrow();
         let Some(c) = cur.as_ref() else { return };
         let path = c.path.clone();
-        let quick = c.estimate.fits_as_is && range.is_none() && mode != Mode::Gif;
+        let quick = c.estimate.fits_as_is
+            && range.is_none()
+            && mode != Mode::Gif
+            && !(mode == Mode::Fit && c.info.kind == MediaKind::Video);
         let height = if keep || mode == Mode::Gif {
             None
         } else {
@@ -580,10 +616,14 @@ impl App {
                 "{} · trim it or pick a bigger target",
                 bytes(out.output_bytes)
             )
+        } else if !copied {
+            if parts > 0 {
+                "Couldn't copy files. Open the output folder.".into()
+            } else {
+                format!("{} · Couldn't copy to clipboard", bytes(out.output_bytes))
+            }
         } else if parts > 0 {
             format!("{parts} files · each under {}", bytes(target))
-        } else if !copied {
-            "Couldn't copy it, drag it from the folder".into()
         } else {
             details.join(" · ")
         };
@@ -595,11 +635,9 @@ impl App {
         if out.fits {
             ui.set_hop(ui.get_hop() + 1);
         }
-        // Paste guard: straight into Discord. Quick bar: fold away after a moment.
-        if self.guard_done(out.fits && copied) {
-            return;
+        if !self.guard_done(out.fits && copied) && copied {
+            self.auto_hide_result();
         }
-        self.auto_hide_result();
     }
 
     pub fn fail(&self, e: &str) {

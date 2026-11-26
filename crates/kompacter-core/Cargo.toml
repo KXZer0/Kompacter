@@ -12,10 +12,12 @@ serde_json.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true
 zip.workspace = true
+# Reading PNGs' zlib-compressed ICC profiles (already built for zip and lopdf).
+flate2 = "1"
 # Shrinking pictures inside PDFs (no extras).
 lopdf = { version = "0.47", default-features = false }
 # 7z archives (LZMA2), for the "7z" archive format. Compression only.
-sevenz-rust2 = { version = "0.25", default-features = false, features = ["compress", "util"] }
+sevenz-rust2 = { version = "0.27", default-features = false, features = ["compress", "util"] }
 
 [dev-dependencies]
 lopdf = { version = "0.47", default-features = false }

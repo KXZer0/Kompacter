@@ -2,11 +2,11 @@
 
 ```
  ┌──────────────── tray app (apps/kompacter) ─────────────────────┐
- │  UI: Slint (ui/*.slint), CPU-rendered, no web view              │
+ │  UI: Slint (frontend/*.slint)                                   │
  │        ▲ properties (progress, estimates)  │ callbacks          │
  │        │                                   ▼                    │
- │  Rust: src/main.rs (flow) · sys.rs (clipboard, tray corner,     │
- │        Recycle Bin, start with Windows) · output.rs · settings  │
+ │  Rust: src/app (state, jobs, settings)                          │
+ │        src/frontend (Slint bindings, motion) · src/platform    │
  └────────────────────────────┬────────────────────────────────────┘
                               │ calls (worker threads)
                      ┌────────▼─────────┐        ┌──────────────┐
@@ -21,46 +21,48 @@
 ## apps/kompacter
 
 - One tray process and one flyout, with FFmpeg as a child process for media jobs.
-- The Windows UI uses Skia raster. Other platforms use FemtoVG/OpenGL. The flyout
-  keeps its translucent fold and reuses a shadow image.
+- The Windows UI uses Skia raster and keeps its translucent fold and shadow.
+  Linux and macOS use FemtoVG/OpenGL. The macOS app uses an opaque frame.
 - The blob body, its gloss and the press heads use pre-drawn images
-  (`tools/art.py` makes `ui/*.png`).
-- UI files: `ui/app.slint` (window, screens), `ui/settings.slint` (Settings screen and the
-  `Prefs` global it reads and calls), `ui/stage.slint` (blob, press), `ui/theme.slint`
-  (colors, buttons, dropdown, switch), `ui/demo.slint` (the small looping scenes that show
+  (`tools/art.py` makes `frontend/*.png`).
+- UI files: `frontend/app.slint` (window, screens), `frontend/settings.slint` (Settings screen and the
+  `Prefs` global it reads and calls), `frontend/stage.slint` (blob, press), `frontend/theme.slint`
+  (colors, buttons, dropdown, switch), `frontend/demo.slint` (the small looping scenes that show
   the three automatic features, in the first-run steps and Settings' hover previews).
 - App logos (Discord, Slack, WhatsApp, Telegram, Signal) are the official marks from Simple
-  Icons, as SVG path data in `ui/icons.slint`, drawn in each brand's colours by `AppLogo`
-  (`ui/theme.slint`): Slack in its four colours, Telegram as its circle with a white plane.
-- `src/flow.rs` (file → compress → clipboard), `src/trim.rs` (trimmer, live estimates,
-  playhead, GIF), `src/motion.rs` (open/close, eyes, press, marching dashes),
-  `src/quick.rs` (the quick bar, paste guard, clips that shrink on their own),
-  `src/watch.rs` (background look at the clipboard and clip folders), `src/sys.rs`
-  (Windows bits, including the global shortcut and the paste guard's keyboard hook).
+  Icons, as SVG path data in `frontend/icons.slint`, drawn in each brand's colours by `AppLogo`
+  (`frontend/theme.slint`): Slack in its four colours, Telegram as its circle with a white plane.
+- `src/app/mod.rs` coordinates startup, application state, and event routing.
+  `src/app/flow.rs` handles file ingestion and compression, `src/app/trim.rs` handles the
+  trimmer and live estimates, and `src/app/quick.rs` and `src/app/watch.rs` handle the quick bar
+  and background watches. `src/frontend/motion.rs` owns flyout and stage animation.
 - Quick bar: a 136 px view on top of the normal flow. While it shows, `set_view` turns
   Reading / Big / Busy / Done / Error into its states, so the flow code is the same.
 - Paste guard: a low-level keyboard hook (only while the setting is on) sees Ctrl+V in a
   chat app: Discord, Slack, WhatsApp, Telegram or Signal, found by the program in front
-  or, in a browser, by the tab's title (`sys::chat_app`). If a copied file is over *that
+  or, in a browser, by the tab's title (`platform::chat_app`). If a copied file is over *that
   app's* limit (Discord follows the user's Discord tier), it holds the paste back and opens
   the quick bar with the app's logo; while the bar is open, `App::target_bytes` is that
   app's limit. After Compress & paste, Kompacter brings the chat back and presses Ctrl+V,
   only if it really is in front.
-- Updates: `src/update.rs` checks GitHub's release list once a day (release builds on
+- Updates: `src/app/update.rs` checks GitHub's release list once a day (release builds on
   Windows only; the release workflow stamps `KOMPACTER_VERSION`), downloads the newest
   published installer with curl.exe, checks it against the `.sha256` the release publishes,
   and runs it silently (`/S`) when Kompacter quits or the user presses Restart; the
   installer reopens the app. Settings → General → "Install updates" turns it off.
-- What's new: `src/news.rs` holds a few lines per version, shown once on the first start
+- What's new: `src/app/news.rs` holds a few lines per version, shown once on the first start
   of a new version (`seen_version` in settings). A version with no entry shows nothing.
-- Platform code lives in `src/sys.rs` (Windows now; macOS/Linux get their own part later).
+- `src/platform/` provides OS integration. `src/platform/windows/` holds the native Windows
+  shell, window, audio, global shortcut, and paste guard code. Linux has resident
+  activation, StatusNotifierItem, desktop file clipboard and file-manager reveal.
+  macOS uses AppKit for Finder and Dock activation and the file pasteboard.
 - ffmpeg runs as a hidden child process at below-normal priority, so games stay smooth.
 - Dev builds: `KOMPACTER_DEMO=big|details|trim|trim-gif|busy|done|error|settings|auto|drag|discord|quick|quick-busy|quick-done|quick-empty|guard`
   shows a screen with sample data. `KOMPACTER_OPEN=<file>` opens a file at start;
   `KOMPACTER_QUICK=<file>` opens it in the quick bar (add `KOMPACTER_GUARD=1` for the
   paste guard's bar). `KOMPACTER_DROP=<file>@<seconds>` acts out a drop at that time, and
-  `KOMPACTER_DEMO_COPY=1` makes the Linux build report the copy as done (Linux has no file
-  clipboard yet); both are for recording the README demos.
+  `KOMPACTER_DEMO_COPY=1` reports a successful copy in the isolated Linux README recorder.
+  Release builds use the desktop file clipboard.
 - README media: `tools/media/banner.py` draws the banner from the app's art;
   `tools/media/record.py` drives the debug build on a virtual display (Xvfb) with real
   clicks and saves each frame with its alpha; `tools/media/compose.py` puts the frames on a
@@ -94,9 +96,9 @@
 | `gpu` | Finds hardware encoders (H.264, H.265, AV1 on NVENC, AMF, Quick Sync, VideoToolbox) that really work, with a tiny test encode. Cached per codec. NVENC also gets spatial AQ + 20-frame lookahead (+ temporal AQ on H.264/H.265); the test encode leaves them out, and an encode that's refused with them retries once without, so older cards stay on the GPU. |
 | `hdr` | HDR → SDR: `zscale` + `tonemap` (Hable) to BT.709, run after scaling, output tagged BT.709. Whether ffmpeg has the filters is asked once (`-filters`) and cached; without them, or when a file's tags make zscale refuse, the picture is encoded as before. |
 | `formats` | User-chosen output formats: video codec (H.264 most compatible, H.265 smaller, AV1 smallest), audio (Auto/MP3/Opus), images (Auto lossless-first/JPEG/WebP), archives (Zip/7z). The planner judges quality per codec. |
-| `jobs::video` | MP4 (H.264, H.265 or AV1 + AAC), scaled/fps-capped per plan. GPU single pass when available, else two-pass x264, or x265 / SVT-AV1; falls back to CPU if the GPU encode fails; one retry if it overshoots. HDR is tone-mapped. AAC goes mono under 64 kbps. When only the audio is too big (whole file, video already the chosen codec, 8-bit 4:2:0 SDR, upright, ≤ 60 fps, and it plus ≥ 48 kbps of audio fits), the video is copied as-is and only the audio re-encoded; if that still comes out too big, it's re-encoded the normal way. |
+| `jobs::video` | Keeps compatible MP4 within the cap, then tries remuxing or copying compatible streams before encoding. Decodes and measures candidates before publication. Uses two-pass x264, x265 or SVT-AV1 for software encoding, with measured size retries and same-codec fallback when hardware encoding fails. |
 | `jobs::audio` | MP3 (≥ 64 kbps) or Opus (below), mono under 64 kbps, retry on overshoot. |
-| `jobs::image` | JPEG, or WebP when transparent; steps quality then size down until it fits. Caps at 4096 px. |
+| `jobs::image` | Tries the best fitting quality at each resolution, highest resolution first and capped at 4096 px. Keeps alpha in WebP and preserves supported orientation and color metadata. |
 | Archives everywhere | When a zip doesn't fit but there's text or documents in it, a 7z (LZMA2) is tried before giving up. |
 | `jobs::folder` | Shares the size budget across media files (and documents, models) by original size, shrinks them, zips (media stored, others deflated). If it can't fit in one zip, packs it into several zips that each fit. |
 | `jobs::split` | Too long for one good file: cuts video/audio into equal parts that each fit (up to 10). |
@@ -112,7 +114,9 @@ Public API: `Engine::probe`, `Engine::estimate` (live numbers), `Engine::compres
 ### Key rules
 
 - ffmpeg runs only during a job, so idle cost is close to zero.
-- Results go to `<name>.kompacter.<ext>`, by default in a `Kompacted` folder next to the app, cleaned after 7 days.
+- Results go to `<name>.kompacter.<ext>`. The Windows portable build tries a
+  `Kompacted` folder next to the executable first. Other installs use the user's
+  Videos or data folder. Kompacter's managed output is cleaned after seven days.
 - Everything is local. The engine never touches the network.
 
 ## Known gaps

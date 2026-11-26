@@ -1,6 +1,6 @@
 """README banner: the two press heads squeeze the blob from the sides, then let go.
 
-Uses the app's own art (apps/kompacter/ui/*.png). Run from the repo root:
+Uses the app's own art (apps/kompacter/frontend/*.png). Run from the repo root:
     python3 tools/media/banner.py      (needs Pillow + numpy, and ffmpeg for the GIF)
 Writes docs/media/banner.gif.
 """
@@ -11,7 +11,7 @@ import tempfile
 
 from PIL import Image, ImageDraw, ImageFilter
 
-UI = "apps/kompacter/ui"
+UI = "apps/kompacter/frontend"
 OUT = "docs/media/banner.gif"
 W, H = 1280, 300
 SS = 2               # drawn at 2x, scaled down for smooth edges

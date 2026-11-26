@@ -13,14 +13,17 @@ use std::time::{Duration, Instant};
 use slint::winit_030::WinitWindowAccessor;
 use slint::ComponentHandle;
 
-use crate::{format, sys, App, AppWindow, View};
+use crate::app::{format, App};
+use crate::platform as sys;
+
+use super::{AppWindow, View};
 
 const FLYOUT_HEIGHT: f32 = 624.0;
 
 #[derive(Default)]
 pub struct Motion {
     slide: slint::Timer,
-    anchor: Cell<Option<(i32, i32, f64)>>,
+    anchor: Cell<Option<sys::Anchor>>,
     reveal: Cell<f32>,
     /// Watches what has focus after Kompacter lost it (see `away`).
     away: slint::Timer,
@@ -55,22 +58,57 @@ fn place(ui: &AppWindow, motion: &Motion, glass: bool, resize: bool) {
     let (inset, margin) = if glass { (12.0, 0.0) } else { (0.0, 12.0) };
     let width = 360.0 + 2.0 * inset;
     let height = f64::from(ui.get_win_h()) + 2.0 * inset;
-    let Some((right, bottom, scale)) = motion.anchor.get() else {
+    let Some(anchor) = motion.anchor.get() else {
         if resize {
             ui.window()
                 .set_size(slint::LogicalSize::new(width as f32, height as f32));
         }
         return;
     };
+    // macOS sizes and moves the window by its own scale factor, which can differ from
+    // the screen's backing scale the anchor was measured in: convert the anchor to it.
+    #[cfg(target_os = "macos")]
+    let anchor = {
+        let window = f64::from(ui.window().scale_factor());
+        let k = if anchor.scale > 0.0 {
+            window / anchor.scale
+        } else {
+            1.0
+        };
+        let px = |v: i32| (f64::from(v) * k).round() as i32;
+        let (l, t, r, b) = anchor.free;
+        sys::Anchor {
+            free: (px(l), px(t), px(r), px(b)),
+            scale: window,
+            at: match anchor.at {
+                sys::At::Above(x) => sys::At::Above(px(x)),
+                sys::At::RightOf(y) => sys::At::RightOf(px(y)),
+                sys::At::LeftOf(y) => sys::At::LeftOf(px(y)),
+                at => at,
+            },
+        }
+    };
+    let scale = anchor.scale;
     let w = (width * scale).round() as i32;
     let h = (height * scale).round() as i32;
-    let x = right - w - (margin * scale).round() as i32;
+    let m = (margin * scale).round() as i32;
     let offset = if glass {
-        0.0
+        0
     } else {
-        f64::from(1.0 - motion.reveal.get()) * 24.0
+        (f64::from(1.0 - motion.reveal.get()) * 24.0 * scale).round() as i32
     };
-    let y = bottom - h + ((offset - margin) * scale).round() as i32;
+    let (left, top, right, bottom) = anchor.free;
+    // Centred on the Dock icon, but never past the edges of the free area.
+    let centre =
+        |at: i32, size: i32, low: i32, high: i32| (at - size / 2).min(high - size - m).max(low + m);
+    // Each placement slides in from the taskbar, top bar or Dock it sits against.
+    let (x, y) = match anchor.at {
+        sys::At::BottomRight => (right - w - m, bottom - h - m + offset),
+        sys::At::TopRight => (right - w - m, top + m - offset),
+        sys::At::Above(cx) => (centre(cx, w, left, right), bottom - h - m + offset),
+        sys::At::RightOf(cy) => (left + m - offset, centre(cy, h, top, bottom)),
+        sys::At::LeftOf(cy) => (right - w - m + offset, centre(cy, h, top, bottom)),
+    };
     let position = slint::PhysicalPosition::new(x, y);
     if resize {
         if let Some(hwnd) = hwnd(ui) {
@@ -99,6 +137,19 @@ fn hwnd(ui: &AppWindow) -> Option<isize> {
 #[cfg(not(windows))]
 fn hwnd(_ui: &AppWindow) -> Option<isize> {
     None
+}
+
+/// Rounded corners and the system shadow for the panel on macOS.
+#[cfg(target_os = "macos")]
+fn style_mac_panel(ui: &AppWindow) {
+    use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    ui.window().with_winit_window(|w| {
+        if let Ok(handle) = w.window_handle() {
+            if let RawWindowHandle::AppKit(h) = handle.as_raw() {
+                sys::style_panel(h.ns_view);
+            }
+        }
+    });
 }
 
 fn ease_out(t: f32) -> f32 {
@@ -188,7 +239,7 @@ impl App {
         }
     }
 
-    pub fn close_settings(&self) {
+    pub fn close_settings(self: &Rc<Self>) {
         let back = self.motion.settings_return.take().unwrap_or_else(|| {
             if self.current.borrow().is_some() {
                 View::Big
@@ -196,7 +247,28 @@ impl App {
                 View::Idle
             }
         });
+        if back == View::Big {
+            let options = self.options(self.target_bytes());
+            let refreshed = {
+                let mut current = self.current.borrow_mut();
+                current.as_mut().is_some_and(|file| {
+                    self.engine
+                        .estimate(&file.info, &options)
+                        .is_ok_and(|estimate| {
+                            file.estimate = estimate;
+                            true
+                        })
+                })
+            };
+            if refreshed {
+                self.show_big();
+                return;
+            }
+        }
         self.set_view(back);
+        if back == View::Trim {
+            self.trim_update();
+        }
     }
 
     pub fn show(self: &Rc<Self>) {
@@ -216,7 +288,7 @@ impl App {
         self.auto_hidden.set(None);
         let was_hidden = !ui.window().is_visible();
         if was_hidden || self.motion.anchor.get().is_none() {
-            self.motion.anchor.set(sys::corner());
+            self.motion.anchor.set(sys::anchor());
         }
         self.sync_window_height();
 
@@ -228,6 +300,8 @@ impl App {
             if let Some(h) = hwnd(&ui) {
                 sys::style_plain_window(h);
             }
+            #[cfg(target_os = "macos")]
+            style_mac_panel(&ui);
         }
         place(&ui, &self.motion, self.glass, was_hidden);
         if self.glass && cfg!(windows) {
@@ -240,7 +314,12 @@ impl App {
             self.set_flyout_input_height(view_height(&ui));
         }
         if focus {
+            #[cfg(target_os = "macos")]
+            sys::focus_application();
             ui.window().with_winit_window(|w| w.focus_window());
+            // Linux compositors may show the panel without granting focus.
+            // Their actual focus-loss event still starts auto-hide.
+            #[cfg(not(target_os = "linux"))]
             self.away();
         }
 
@@ -429,7 +508,7 @@ impl App {
         self.hide_now();
     }
 
-    fn hide_now(&self) {
+    fn hide_now(self: &Rc<Self>) {
         let ui = self.ui();
         let _ = ui.hide();
         if ui.get_view() == View::Settings {
@@ -444,6 +523,7 @@ impl App {
         self.motion.reveal.set(0.0);
     }
 
+    #[cfg(windows)]
     pub fn toggle(self: &Rc<Self>) {
         let ui = self.ui();
         let open = ui.window().is_visible() && ui.get_opened();

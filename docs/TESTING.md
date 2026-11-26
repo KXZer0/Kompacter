@@ -6,7 +6,7 @@ and, if you can, Windows 10. Tick each one off; anything that fails, note what h
 ## Install and first start
 
 - [ ] The installer runs without admin rights and opens Kompacter at the end.
-- [ ] First start shows the three-step first-run screen; the choices stick after a restart.
+- [ ] First start shows the available setup steps. Use the keyboard to change the compression preference, select Done, restart, and check the saved value in Settings.
 - [ ] The tray icon appears; the one-time "keep the tray icon visible" tip shows on the idle
       screen, and its switch moves the icon out of the ^ menu (now, or after Explorer
       restarts: note which).
@@ -20,6 +20,10 @@ and, if you can, Windows 10. Tick each one off; anything that fails, note what h
       under "Show more options").
 - [ ] Ctrl+Alt+K with a big file copied opens the quick bar.
 - [ ] Copying a big file in Explorer offers the quick bar (when that setting is on).
+
+- [ ] Open a video in Trim and move both handles. Hover a second file from Explorer over
+      the panel, press Escape, and verify the same video and both handle positions remain.
+      Then drop the second file and verify it replaces the first selection.
 
 ## Paste guard (Settings → Automatic → "When I paste into a chat")
 

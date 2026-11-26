@@ -1,8 +1,8 @@
-"""Draws the app logo: the blue blob with the mascot's face, as icon.ico and ui/tray.png.
+"""Draws the app logo: the blue blob with the mascot's face, as icon.ico and frontend/tray.png.
 
 The .ico holds every size Windows asks for (taskbar, Start, Explorer, the installer and
 the "Kompact" entry in Explorer's menu, which uses the exe's icon). Big sizes are drawn
-at high resolution and scaled down, with the face of the blob in ui/stage.slint (52×28
+at high resolution and scaled down, with the face of the blob in frontend/stage.slint (52×28
 units: two rounded eyes and a small smile). Scaled down as is, that face turns to mush,
 so from 64 px down it is drawn bolder and on whole pixels, and at 16-24 px pixel by pixel.
 Run from apps/kompacter: python3 tools/icon.py (needs numpy + Pillow).
@@ -109,4 +109,4 @@ if __name__ == "__main__":
                      append_images=[images[n] for n in SIZES if n != 256])
     # Tray: one 32 px image, which Windows also shrinks to 16 px at 100% scaling, so its
     # face is bolder still: 2 px eyes and a 2 px smile still read as a face at half size.
-    render(32, dict(ew=2, eh=4, ex=4, top=13, my=19.5, mr=2.3, line=1.8)).save("ui/tray.png", optimize=True)
+    render(32, dict(ew=2, eh=4, ex=4, top=13, my=19.5, mr=2.3, line=1.8)).save("frontend/tray.png", optimize=True)

@@ -14,7 +14,7 @@ const BLOCK: usize = PREVIEW_PCM_RATE as usize / 50 * 4;
 const HEADER_SIZE: u32 = size_of::<WAVEHDR>() as u32;
 const POLL: Duration = Duration::from_millis(5);
 
-pub(super) struct Control<'a> {
+pub(in crate::platform) struct Control<'a> {
     pub ready: &'a AtomicBool,
     pub running: &'a AtomicBool,
     pub stop: &'a AtomicBool,
@@ -22,7 +22,12 @@ pub(super) struct Control<'a> {
     pub clock: &'a AtomicU64,
 }
 
-pub(super) fn play(engine: &Engine, info: &MediaInfo, range: Range<f64>, control: Control<'_>) {
+pub(in crate::platform) fn play(
+    engine: &Engine,
+    info: &MediaInfo,
+    range: Range<f64>,
+    control: Control<'_>,
+) {
     let Some(mut output) = Output::open() else {
         return;
     };

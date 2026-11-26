@@ -1,0 +1,89 @@
+name: macOS review build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    name: macOS app bundle and media fixture
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install bundle media tools
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install ffmpeg
+      - run: cargo clippy --locked -p kompacter --all-targets -- -D warnings
+      - name: Verify local file URL handling
+        run: cargo test --locked -p kompacter platform::macos::tests
+      - name: Build the review bundle
+        run: packaging/macos/build-app.sh
+      - name: Compress an actual video with the bundled tools
+        run: |
+          cargo build --locked -p kompacter-cli
+          review="$RUNNER_TEMP/Kompacter review"
+          ditto -x -k target/macos/Kompacter-*.zip "$review"
+          packaging/macos/smoke.sh "$review/Kompacter.app" target/debug/kompacter
+      - name: Build the review DMG
+        run: |
+          packaging/macos/make-dmg.sh target/macos/Kompacter.app target/macos/Kompacter-review-macos-arm64.dmg
+          mount="$RUNNER_TEMP/Kompacter DMG"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" target/macos/Kompacter-review-macos-arm64.dmg
+          test -L "$mount/Applications"
+          codesign --verify --deep --strict "$mount/Kompacter.app"
+          hdiutil detach "$mount"
+      # Screenshots of the real app for review. Never fails the job: a runner without a
+      # usable screen just produces no pictures.
+      - name: Screenshot the app
+        continue-on-error: true
+        run: |
+          shots="$RUNNER_TEMP/screenshots"
+          mkdir -p "$shots"
+          app="$RUNNER_TEMP/Kompacter review/Kompacter.app"
+          ffmpeg -v error -y -f lavfi -i testsrc2=size=1920x1080:rate=60:duration=30 \
+            -f lavfi -i sine=duration=30 -c:v libx264 -b:v 12M -c:a aac "$shots/gameclip.mp4"
+          # Put the mouse where Kompacter's Dock icon sits, as a click on it would.
+          swift -e 'import AppKit
+          let f = NSScreen.main!.frame
+          CGWarpMouseCursorPosition(CGPoint(x: f.width * 0.84, y: f.height - 30))' || true
+          open "$app"
+          sleep 10
+          screencapture -x "$shots/1-launch.png"
+          screencapture -x -R 0,0,1920,40 "$shots/2-menu-bar.png" || true
+          open -a "$app" "$shots/gameclip.mp4"
+          sleep 8
+          screencapture -x "$shots/3-file-opened.png"
+          rm "$shots/gameclip.mp4"
+          for f in "$shots"/*.png; do
+            sips -Z 1600 -s format jpeg -s formatOptions 70 "$f" --out "${f%.png}.jpg" >/dev/null
+            echo "SHOT-BEGIN $(basename "${f%.png}")"
+            base64 -i "${f%.png}.jpg" | fold -w 900 | sed 's/^/SHOT:/'
+            echo "SHOT-END"
+          done
+          osascript -e 'quit app "Kompacter"' || pkill -x Kompacter || true
+      - name: Keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kompacter-macos-screenshots
+          path: ${{ runner.temp }}/screenshots/*.png
+          if-no-files-found: warn
+      - name: Keep the review bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: kompacter-macos-review
+          path: |
+            target/macos/Kompacter-*.zip
+            target/macos/Kompacter-*.dmg
+            target/macos/SHA256SUMS
+          if-no-files-found: error

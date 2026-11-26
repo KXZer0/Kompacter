@@ -1,5 +1,5 @@
 // The Kompacter flyout: a calm 360×472 card; the trimmer and settings are taller.
-// Rust owns the logic (src/main.rs) and sets the properties below; this file only draws.
+// Rust owns the logic (src/app/mod.rs) and sets the properties below; this file only draws.
 //
 // With translucency the rounded card floats inside the window and folds toward the taskbar.
 // On a plain window, Rust slides the window in and out.
@@ -9,6 +9,7 @@ import { Icons } from "icons.slint";
 import { Mood, Blob, DropZone, Press, Sparks } from "stage.slint";
 import { Prefs, SettingsView, PresetItem } from "settings.slint";
 import { FeatureDemo } from "demo.slint";
+import { CompressionPreference } from "compression-preference.slint";
 
 export { Theme, Fx, Prefs, PresetItem }
 
@@ -35,8 +36,10 @@ export struct DetailRow {
 /// The tray icon (left click opens, right click shows the menu).
 export component Tray inherits SystemTrayIcon {
     callback open();
+    callback choose();
     callback open-folder();
     callback quit();
+    in property <bool> has-chooser;
     in property <string> tip: "Kompacter";
     icon: @image-url("tray.png");
     tooltip: root.tip;
@@ -45,6 +48,10 @@ export component Tray inherits SystemTrayIcon {
         MenuItem {
             title: "Open Kompacter";
             activated => { root.open(); }
+        }
+        if root.has-chooser: MenuItem {
+            title: "Choose files";
+            activated => { root.choose(); }
         }
         MenuItem {
             title: "Open Kompacted folder";
@@ -120,6 +127,7 @@ export component AppWindow inherits Window {
     in-out property <bool> dragging;
     /// The card is open (floating card grows/folds with this).
     in-out property <bool> opened: true;
+    in property <bool> resident-controls;
     /// Window content height (Rust delays shrinking until the card has folded in).
     in property <length> win-h: 472px;
     in property <float> progress;
@@ -199,6 +207,7 @@ export component AppWindow inherits Window {
     property <string> busy-status: progress >= 0.99 ? "Finishing…"
         : busy-left == "" ? "Compressing…" : busy-left;
 
+    in property <int> queued-files;
     in property <bool> done-ok;
     in property <string> done-title;
     in property <string> done-sub;
@@ -210,8 +219,11 @@ export component AppWindow inherits Window {
     in-out property <bool> welcome-copies: true;
     in-out property <bool> welcome-guard;
     in-out property <bool> welcome-clips;
-    /// Which step is showing: 0 copies, 1 paste guard, 2 game clips.
+    // Available automatic features, in order. 0 copies, 1 paste guard, 2 game clips.
+    in property <[int]> welcome-features;
+    in-out property <int> welcome-preference: 1;
     in-out property <int> welcome-step;
+    property <int> welcome-step-count: root.welcome-features.length + 1;
     /// After an update: the version and its few lines of "What's new".
     in property <string> news-version;
     in property <[string]> news-items;
@@ -234,6 +246,8 @@ export component AppWindow inherits Window {
 
     // ── Calls into Rust ──
     callback choose-file();
+    callback hide-resident();
+    callback quit-resident();
     callback paste();
     callback compress();
     callback split();
@@ -276,6 +290,7 @@ export component AppWindow inherits Window {
     }
 
     title: "Kompacter";
+    icon: @image-url("tray.png");
     no-frame: true;
     always-on-top: true;
     background: Fx.glass ? transparent : Theme.bg;
@@ -315,11 +330,18 @@ export component AppWindow inherits Window {
 
     // First run: "Next" goes one step on, "Done" saves.
     function welcome-next() {
-        if (root.welcome-step < 2) {
-            root.welcome-step += 1;
+        if (root.welcome-step + 1 < root.welcome-step-count) {
+            root.welcome-select(root.welcome-step + 1);
         } else {
             root.welcome-done();
         }
+    }
+
+    function welcome-select(step: int) {
+        if (step != root.welcome-step && step + 1 < root.welcome-step-count) {
+            keys.focus();
+        }
+        root.welcome-step = step;
     }
 
     keys := FocusScope {
@@ -332,11 +354,27 @@ export component AppWindow inherits Window {
                 root.news-done();
                 return accept;
             }
-            if (root.view == View.welcome && event.text == Key.Return) {
-                root.welcome-next();
-                return accept;
+            if (root.view == View.welcome) {
+                if (event.text == Key.Return) {
+                    root.welcome-next();
+                    return accept;
+                }
+                if (root.welcome-step + 1 == root.welcome-step-count) {
+                    if (event.text == Key.LeftArrow || event.text == Key.DownArrow) {
+                        root.welcome-preference = Math.max(0, root.welcome-preference - 1);
+                        return accept;
+                    }
+                    if (event.text == Key.RightArrow || event.text == Key.UpArrow) {
+                        root.welcome-preference = Math.min(2, root.welcome-preference + 1);
+                        return accept;
+                    }
+                    if (event.text == Key.Home || event.text == Key.End) {
+                        root.welcome-preference = event.text == Key.Home ? 0 : 2;
+                        return accept;
+                    }
+                }
             }
-            if (event.modifiers.control && (event.text == "v" || event.text == "V")) {
+            if ((event.modifiers.control || event.modifiers.meta) && (event.text == "v" || event.text == "V")) {
                 root.paste();
                 return accept;
             }
@@ -378,8 +416,8 @@ export component AppWindow inherits Window {
         transform-scale-x: 0.94 + 0.06 * self.reveal;
         border-radius: Fx.glass ? 22px : 0;
         background: Fx.glass ? Theme.card : Theme.bg;
-        border-width: Fx.glass ? 1px : 0;
-        border-color: Theme.hair;
+        border-width: root.dragging && !root.stage-lg && !root.stage-md ? 2px : Fx.glass ? 1px : 0;
+        border-color: root.dragging && !root.stage-lg && !root.stage-md ? Theme.accent : Theme.hair;
     }
     Rectangle {
         x: card.x;
@@ -437,13 +475,29 @@ export component AppWindow inherits Window {
                 }
             }
             if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome && root.view != View.news: IconBtn {
-                x: parent.width - 14px - self.width;
+                x: parent.width - 14px - self.width - (root.resident-controls ? 64px : 0px);
                 y: 13px;
                 icon: Icons.gear;
                 tip: "Settings";
                 tip-below: true;
                 enabled: root.view != View.busy;
                 clicked => { root.open-settings(); }
+            }
+            if root.resident-controls && root.view != View.settings && root.view != View.trim && root.view != View.quick: IconBtn {
+                x: parent.width - 46px - self.width;
+                y: 13px;
+                icon: "M6 12h12";
+                tip: "Hide panel";
+                tip-below: true;
+                clicked => { root.hide-resident(); }
+            }
+            if root.resident-controls && root.view != View.settings && root.view != View.trim && root.view != View.quick: IconBtn {
+                x: parent.width - 14px - self.width;
+                y: 13px;
+                icon: "M12 3v8M7 5.6a8 8 0 1 0 10 0";
+                tip: "Quit Kompacter";
+                tip-below: true;
+                clicked => { root.quit-resident(); }
             }
 
             menu := PopupWindow {
@@ -778,9 +832,7 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // First run, once: Kompacter sits in the tray, so say how it turns up by itself.
-            // Three short steps, one choice each: a little scene showing it, the choice,
-            // Next, and dots.
+            // First run: available automatic features followed by the compression preference.
             if root.view == View.welcome: Appear {
                 x: 0;
                 y: 0;
@@ -789,9 +841,10 @@ export component AppWindow inherits Window {
                 // One block per step, all in the same place. The current one is shown;
                 // the others wait off to the side, so a step slides in from the way it
                 // comes and the old one drifts out the other way.
-                for title[i] in ["When I copy a big file", "When I paste into a chat", "When I save a game clip"]: Rectangle {
+                for kind[i] in root.welcome-features: Rectangle {
                     property <bool> current: i == root.welcome-step;
-                    property <bool> on: i == 0 ? root.welcome-copies : i == 1 ? root.welcome-guard : root.welcome-clips;
+                    property <bool> on: kind == 0 ? root.welcome-copies
+                        : kind == 1 ? root.welcome-guard : root.welcome-clips;
                     x: Fx.rich ? (i - root.welcome-step) * 48px : 0;
                     animate x { duration: Fx.rich ? 300ms : 0ms; easing: ease-out-back; }
                     y: 232px;
@@ -805,7 +858,7 @@ export component AppWindow inherits Window {
                         y: -196px;
                         width: 280px;
                         height: 170px;
-                        feature: i;
+                        feature: kind;
                         playing: parent.current && root.opened;
                     }
                     // The old step is gone quickly and the new one fades in just after,
@@ -820,14 +873,15 @@ export component AppWindow inherits Window {
                         x: 24px;
                         y: 0;
                         width: parent.width - 48px;
-                        text: title;
+                        text: kind == 0 ? "When I copy a big file"
+                            : kind == 1 ? "When I paste into a chat" : "When I save a game clip";
                     }
                     Sub {
                         x: 24px;
                         y: 30px;
                         width: parent.width - 48px;
-                        text: i == 0 ? "A small bar pops up and offers to shrink it"
-                            : i == 1 ? "Discord, Slack, WhatsApp and more: holds a too-big paste and asks first"
+                        text: kind == 0 ? "A small bar pops up and offers to shrink it"
+                            : kind == 1 ? "Discord, Slack, WhatsApp and more: holds a too-big paste and asks first"
                             : "Shrinks new clips on its own";
                     }
                     Switch {
@@ -836,14 +890,46 @@ export component AppWindow inherits Window {
                         checked: parent.on;
                         enabled: parent.current;
                         toggled(on) => {
-                            if (i == 0) {
+                            if (kind == 0) {
                                 root.welcome-copies = on;
-                            } else if (i == 1) {
+                            } else if (kind == 1) {
                                 root.welcome-guard = on;
                             } else {
                                 root.welcome-clips = on;
                             }
                         }
+                    }
+                }
+                if root.welcome-step + 1 == root.welcome-step-count: Appear {
+                    Rectangle {
+                        y: 36px;
+                        width: parent.width;
+                        height: 170px;
+                        Blob {
+                            mood: Mood.happy;
+                            s: 0.8;
+                            touchable: false;
+                            cx: parent.width / 2;
+                            cy: parent.height / 2;
+                        }
+                    }
+                    Title {
+                        x: 24px;
+                        y: 232px;
+                        width: parent.width - 48px;
+                        text: "Compression preference";
+                    }
+                    preference := CompressionPreference {
+                        x: 40px;
+                        y: 266px;
+                        width: parent.width - 80px;
+                        height: 90px;
+                        index: root.welcome-preference;
+                        confirm-on-return: true;
+                        init => { self.focus-slider(); }
+                        picked(i) => { root.welcome-preference = i; }
+                        confirmed => { root.welcome-next(); }
+                        escaped => { root.escape(); }
                     }
                 }
                 // A layout, so the button gets a real width (placed alone it has none).
@@ -855,7 +941,7 @@ export component AppWindow inherits Window {
                     Btn {
                         large: true;
                         primary: true;
-                        text: root.welcome-step < 2 ? "Next" : "Done";
+                        text: root.welcome-step + 1 < root.welcome-step-count ? "Next" : "Done";
                         clicked => { root.welcome-next(); }
                     }
                 }
@@ -866,7 +952,7 @@ export component AppWindow inherits Window {
                     width: parent.width;
                     height: 24px;
                     alignment: center;
-                    for i in 3: Rectangle {
+                    for i in root.welcome-step-count: Rectangle {
                         property <bool> current: i == root.welcome-step;
                         width: dot.width + 10px;
                         dot := Rectangle {
@@ -881,7 +967,7 @@ export component AppWindow inherits Window {
                         }
                         dot-ta := TouchArea {
                             mouse-cursor: pointer;
-                            clicked => { root.welcome-step = i; }
+                            clicked => { root.welcome-select(i); }
                         }
                     }
                 }
@@ -2000,7 +2086,7 @@ export component AppWindow inherits Window {
                         clicked => { root.show-in-folder(); }
                     }
                     Btn {
-                        text: "Another";
+                        text: root.queued-files > 0 ? "Open next files" : "Another";
                         plain: true;
                         clicked => { root.another(); }
                     }
@@ -2036,7 +2122,7 @@ export component AppWindow inherits Window {
                     height: 36px;
                     alignment: center;
                     Btn {
-                        text: "Try another";
+                        text: root.queued-files > 0 ? "Open next files" : "Try another";
                         primary: true;
                         clicked => { root.another(); }
                     }

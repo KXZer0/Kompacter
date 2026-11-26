@@ -1,4 +1,4 @@
-"""Pre-draws the blob's body and the press heads as PNGs for ui/.
+"""Pre-draws the blob's body and the press heads as PNGs for frontend/.
 
 Slint's lightweight CPU renderer can't round or cut gradient shapes, so these are drawn
 once here and shipped as small images; they look the same in both drawing modes.
@@ -71,11 +71,11 @@ def shadow(path):
     img[..., 3] = a
     Image.fromarray((img * 255 + 0.5).astype(np.uint8), "RGBA").save(path, optimize=True)
 
-body("#e9f2ff", "#9cc4ff", "#5b8cff", "ui/blob-light.png", "ui/blob-gloss.png")
-body("#cfe2ff", "#7aa9ff", "#3d6fff", "ui/blob-dark.png")
-body("#e6e8ff", "#9aa4ff", "#5865f2", "ui/blob-discord-light.png")
-body("#d6daff", "#8891f2", "#5865f2", "ui/blob-discord-dark.png")
-shadow("ui/blob-shadow.png")
+body("#e9f2ff", "#9cc4ff", "#5b8cff", "frontend/blob-light.png", "frontend/blob-gloss.png")
+body("#cfe2ff", "#7aa9ff", "#3d6fff", "frontend/blob-dark.png")
+body("#e6e8ff", "#9aa4ff", "#5865f2", "frontend/blob-discord-light.png")
+body("#d6daff", "#8891f2", "#5865f2", "frontend/blob-discord-dark.png")
+shadow("frontend/blob-shadow.png")
 
 # Flyout shadow with a 34 px nine-slice border, stretched only along straight edges.
 y, x = np.mgrid[0.5:72, 0.5:72]
@@ -84,7 +84,7 @@ dy = np.maximum(np.abs(y - 38) - 2, 0)
 distance = np.maximum(np.hypot(dx, dy) - 22, 0)
 flyout = np.zeros((72, 72, 4), dtype=np.uint8)
 flyout[..., 3] = np.rint(108 * np.exp(-0.5 * (distance / 4.5) ** 2))
-Image.fromarray(flyout, "RGBA").save("ui/flyout-shadow.png", optimize=True)
+Image.fromarray(flyout, "RGBA").save("frontend/flyout-shadow.png", optimize=True)
 
 
 def press_head(path_top, path_bottom, scale=2):
@@ -151,4 +151,4 @@ def press_head(path_top, path_bottom, scale=2):
     im.save(path_top, optimize=True)
     im.transpose(Image.FLIP_TOP_BOTTOM).save(path_bottom, optimize=True)
 
-press_head("ui/press-top.png", "ui/press-bottom.png")
+press_head("frontend/press-top.png", "frontend/press-bottom.png")

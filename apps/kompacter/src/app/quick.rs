@@ -14,11 +14,15 @@ use std::time::Duration;
 use slint::winit_030::WinitWindowAccessor;
 use slint::ComponentHandle;
 
-use crate::format::{bytes, file_name};
-use crate::settings::{shortcut_keys, SHORTCUTS};
-use crate::sys::{self, InputEvent};
-use crate::watch::{self, WatchEvent};
-use crate::{output, run, App, Prefs, View};
+use crate::frontend::{Prefs, View};
+use crate::platform as sys;
+#[cfg(windows)]
+use crate::platform::InputEvent;
+
+use super::format::{bytes, file_name};
+use super::settings::{shortcut_keys, SHORTCUTS};
+use super::watch::{self, WatchEvent};
+use super::{output, run, same_rows, App};
 
 impl App {
     /// The screen the flow is on (behind the quick bar, when it's showing).
@@ -138,6 +142,7 @@ impl App {
         }
     }
 
+    #[cfg(windows)]
     pub fn on_input(self: &Rc<Self>, e: InputEvent) {
         match e {
             InputEvent::Shortcut => {
@@ -257,7 +262,7 @@ impl App {
     }
 
     pub fn set_tray_tip(&self, text: &str) {
-        if let Some(t) = self.tray.upgrade() {
+        if let Some(t) = self.tray.borrow().as_ref() {
             t.set_tip(text.into());
         }
     }
@@ -272,6 +277,11 @@ impl App {
             .position(|(id, _)| *id == s.shortcut)
             .unwrap_or(0);
         prefs.set_shortcut_index(index as i32);
+        let capabilities = &sys::CAPABILITIES;
+        prefs.set_global_shortcut_available(capabilities.global_shortcut);
+        prefs.set_paste_guard_available(capabilities.paste_guard);
+        prefs.set_watch_copies_available(capabilities.watch_copies);
+        prefs.set_watch_folders_available(capabilities.watch_folders);
         prefs.set_paste_guard(s.paste_guard);
         prefs.set_watch_copies(s.watch_copies);
         prefs.set_watch_folders(s.watch_folders);
@@ -280,19 +290,21 @@ impl App {
             .iter()
             .map(|f| short_folder(f).into())
             .collect();
-        if !crate::same_rows(&prefs.get_clip_folders(), &shown) {
+        if !same_rows(&prefs.get_clip_folders(), &shown) {
             prefs.set_clip_folders(slint::ModelRc::new(slint::VecModel::from(shown)));
         }
 
         let limit = self.user_target_bytes();
-        if *self.shortcut_set.borrow() != s.shortcut {
+        if capabilities.global_shortcut && *self.shortcut_set.borrow() != s.shortcut {
             *self.shortcut_set.borrow_mut() = s.shortcut.clone();
             sys::set_shortcut(shortcut_keys(&s.shortcut));
         }
-        sys::set_guard(s.paste_guard, self.chat_limit("discord"));
+        if capabilities.paste_guard {
+            sys::set_guard(s.paste_guard, self.chat_limit("discord"));
+        }
         self.watch.set(watch::Config {
-            copies: s.watch_copies,
-            folders_on: s.watch_folders,
+            copies: capabilities.watch_copies && s.watch_copies,
+            folders_on: capabilities.watch_folders && s.watch_folders,
             folders: s.clip_folders.iter().map(PathBuf::from).collect(),
             limit,
         });

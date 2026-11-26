@@ -1,7 +1,13 @@
 name: Release
 
-# Push a tag like v0.0.3-test (or run it by hand) to build the Windows installer.
-# The result is a DRAFT GitHub Release: check it, then press Publish.
+# Push a tag like v0.0.3-test (or run it by hand) to build every download:
+#   Windows  Kompacter-<v>-setup.exe
+#   Linux    Kompacter-<v>-x86_64.AppImage, kompacter_<v>_amd64.deb,
+#            Kompacter-<v>-linux-x86_64.tar.gz
+#   macOS    Kompacter-<v>-macos-arm64.dmg, Kompacter-<v>-macos-x86_64.dmg
+# each with a .sha256 next to it. The build jobs only upload artifacts; on tags the
+# `publish` job collects them all into one DRAFT GitHub Release (so parallel jobs never
+# race on it): check it, then press Publish. Manual runs keep the artifacts only.
 on:
   push:
     tags: ["v*"]
@@ -30,7 +36,7 @@ jobs:
           if ($v -ne "0.0.0") { "KOMPACTER_VERSION=$v" >> $env:GITHUB_ENV }
 
       - name: Build Kompacter
-        run: cargo build --release -p kompacter
+        run: cargo build --locked --release -p kompacter
 
       # ffmpeg ships inside the installer so users don't install anything: the newest
       # stable release (BtbN's "nX.Y" build with the latest fixes on that branch, never
@@ -51,7 +57,7 @@ jobs:
           Invoke-WebRequest $stable.browser_download_url -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-dl
           $bin = (Get-ChildItem ffmpeg-dl -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
-          $dist = "apps/kompacter/installer/dist"
+          $dist = "packaging/windows/dist"
           New-Item -ItemType Directory -Force $dist | Out-Null
           Copy-Item "$bin/ffmpeg.exe", "$bin/ffprobe.exe" $dist
           $license = Get-ChildItem ffmpeg-dl -Recurse -Filter LICENSE.txt | Select-Object -First 1
@@ -60,7 +66,7 @@ jobs:
           Copy-Item target/release/Kompacter.exe $dist
 
       - name: Build installer
-        working-directory: apps/kompacter/installer
+        working-directory: packaging/windows
         shell: pwsh
         run: |
           $v = $env:VERSION
@@ -71,28 +77,249 @@ jobs:
 
       # The app checks every update it downloads against this before running it.
       - name: Checksum
-        working-directory: apps/kompacter/installer
+        working-directory: packaging/windows
         shell: pwsh
         run: |
           $f = Get-Item Kompacter-*-setup.exe
           $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
           "$hash  $($f.Name)" | Out-File -Encoding ascii -NoNewline "$($f.FullName).sha256"
 
+      - name: Keep the installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-windows
+          path: |
+            packaging/windows/Kompacter-*-setup.exe
+            packaging/windows/Kompacter-*-setup.exe.sha256
+          if-no-files-found: error
+
+  linux:
+    # The oldest supported Ubuntu sets the glibc floor of the AppImage and the .deb.
+    runs-on: ubuntu-22.04
+    env:
+      # Pinned appimagetool (it fetches the static type2 runtime when it runs).
+      APPIMAGETOOL_URL: https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Same rule as the Windows job: v0.0.3-test -> 0.0.3; manual runs are 0.0.0 and the
+      # app is built without a version, so it never updates itself.
+      - name: Version
+        run: |
+          v=0.0.0
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v=$(printf '%s' "$GITHUB_REF_NAME" | sed 's/^[v.]*//; s/-.*//')
+          fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "KOMPACTER_PACKAGE_VERSION=$v" >> "$GITHUB_ENV"
+          if [[ "$v" != 0.0.0 ]]; then echo "KOMPACTER_VERSION=$v" >> "$GITHUB_ENV"; fi
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig-dev desktop-file-utils dpkg-dev appstream xz-utils file
+
+      - name: Build Kompacter
+        run: cargo build --locked --release -p kompacter
+
+      # Static linux64 builds of the newest stable ffmpeg branch, from the same source as
+      # the Windows installer (BtbN "nX.Y", never "master"). GPL build; license included.
+      - name: Download ffmpeg
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          name=$(gh api repos/BtbN/FFmpeg-Builds/releases/tags/latest --jq '.assets[].name' |
+            grep -E '^ffmpeg-n[0-9]+\.[0-9]+-latest-linux64-gpl-[0-9]+\.[0-9]+\.tar\.xz$' |
+            sort -V | tail -n 1)
+          if [[ -z "$name" ]]; then echo "No stable linux64 GPL ffmpeg build found" >&2; exit 1; fi
+          echo "ffmpeg: $name"
+          gh release download latest --repo BtbN/FFmpeg-Builds --pattern "$name" --dir "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/ffmpeg-dl" "$RUNNER_TEMP/ffmpeg"
+          tar -xJf "$RUNNER_TEMP/$name" -C "$RUNNER_TEMP/ffmpeg-dl"
+          src=$(dirname "$(find "$RUNNER_TEMP/ffmpeg-dl" -type f -name ffmpeg -path '*/bin/*' | head -n 1)")
+          install -m755 "$src/ffmpeg" "$src/ffprobe" "$RUNNER_TEMP/ffmpeg/"
+          install -m644 "$(find "$RUNNER_TEMP/ffmpeg-dl" -name LICENSE.txt | head -n 1)" "$RUNNER_TEMP/ffmpeg/LICENSE"
+          echo "$name" > "$RUNNER_TEMP/ffmpeg/VERSION"
+          file "$RUNNER_TEMP/ffmpeg/ffmpeg"
+          "$RUNNER_TEMP/ffmpeg/ffmpeg" -hide_banner -version | head -n 1
+          echo "KOMPACTER_FFMPEG_DIR=$RUNNER_TEMP/ffmpeg" >> "$GITHUB_ENV"
+
+      - name: Download appimagetool
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/appimagetool" "$APPIMAGETOOL_URL"
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          echo "APPIMAGETOOL=$RUNNER_TEMP/appimagetool" >> "$GITHUB_ENV"
+
+      # The .deb depends on the distribution's ffmpeg; the tarball and AppImage carry their own.
+      - name: Build .deb, tarball and AppImage
+        env:
+          KOMPACTER_LINUX_BINARY: target/release/Kompacter
+        run: |
+          packaging/linux/build.sh dist/linux
+          packaging/linux/appimage.sh dist/linux
+
+      - name: Check the AppImage
+        working-directory: dist/linux
+        run: |
+          image="Kompacter-$VERSION-x86_64.AppImage"
+          "./$image" --appimage-extract >/dev/null
+          for f in AppRun usr/bin/Kompacter usr/bin/ffmpeg usr/bin/ffprobe \
+                   io.github.KXZer0.Kompacter.desktop usr/share/doc/kompacter/FFmpeg-LICENSE; do
+            test -e "squashfs-root/$f" || { echo "missing $f" >&2; exit 1; }
+          done
+          squashfs-root/usr/bin/ffprobe -hide_banner -version | head -n 1
+          rm -rf squashfs-root
+          dpkg-deb --info "kompacter_${VERSION}_amd64.deb"
+
+      - name: Checksums
+        working-directory: dist/linux
+        run: |
+          for f in Kompacter-*.AppImage kompacter_*.deb Kompacter-*-linux-x86_64.tar.gz; do
+            sha256sum "$f" > "$f.sha256"
+          done
+
+      - name: Keep the Linux downloads
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-linux
+          path: |
+            dist/linux/Kompacter-*.AppImage
+            dist/linux/kompacter_*.deb
+            dist/linux/Kompacter-*-linux-x86_64.tar.gz
+            dist/linux/*.sha256
+          if-no-files-found: error
+
+  macos:
+    # Each architecture is built natively, with the matching Homebrew ffmpeg inside.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Version
+        run: |
+          v=0.0.0
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v=$(printf '%s' "$GITHUB_REF_NAME" | sed 's/^[v.]*//; s/-.*//')
+          fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "KOMPACTER_PACKAGE_VERSION=$v" >> "$GITHUB_ENV"
+          if [[ "$v" != 0.0.0 ]]; then echo "KOMPACTER_VERSION=$v" >> "$GITHUB_ENV"; fi
+
+      - name: Install ffmpeg
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install ffmpeg
+
+      # Signing is optional: without these secrets the DMG is ad-hoc signed and users
+      # open it with right-click > Open (see packaging/macos/README.md).
+      - name: Import the signing certificate
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          if [[ -z "$APPLE_CERTIFICATE_P12" ]]; then
+            echo "No APPLE_CERTIFICATE_P12 secret: building an ad-hoc signed DMG."
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity=$(security find-identity -v -p codesigning "$keychain" |
+            awk -F'"' '/Developer ID Application/ { print $2; exit }')
+          if [[ -z "$identity" ]]; then echo "No Developer ID Application identity in the certificate" >&2; exit 1; fi
+          echo "KOMPACTER_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Build Kompacter.app
+        run: packaging/macos/build-app.sh
+
+      - name: Check the bundled ffmpeg
+        run: |
+          app=target/macos/Kompacter.app
+          lipo -archs "$app/Contents/MacOS/Kompacter"
+          lipo -archs "$app/Contents/MacOS/ffmpeg"
+          "$app/Contents/MacOS/ffprobe" -hide_banner -version | head -n 1
+
+      - name: Build the DMG
+        run: |
+          dmg="target/macos/Kompacter-$VERSION-macos-${{ matrix.arch }}.dmg"
+          packaging/macos/make-dmg.sh target/macos/Kompacter.app "$dmg"
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
+
+      - name: Notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [[ -z "${KOMPACTER_SIGN_IDENTITY:-}" || -z "$APPLE_ID" || -z "$APPLE_TEAM_ID" || -z "$APPLE_APP_PASSWORD" ]]; then
+            echo "Signing or notarization secrets missing: skipping notarization."
+            exit 0
+          fi
+          packaging/macos/notarize.sh "$DMG"
+
+      - name: Checksum
+        run: |
+          cd "$(dirname "$DMG")"
+          shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256"
+
+      - name: Keep the DMG
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: |
+            target/macos/Kompacter-*.dmg
+            target/macos/Kompacter-*.dmg.sha256
+          if-no-files-found: error
+
+  # One job creates the release from every build's artifacts, so uploads never race.
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      # Every download must have its checksum (the updater refuses files without one).
+      - name: Check the downloads
+        working-directory: dist
+        run: |
+          ls -l
+          for f in *; do
+            case "$f" in *.sha256) continue ;; esac
+            test -f "$f.sha256" || { echo "missing $f.sha256" >&2; exit 1; }
+          done
+
       - name: Create draft release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           draft: true
           # Tags with a dash (v0.0.3-test) are marked as pre-releases.
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
-          files: |
-            apps/kompacter/installer/Kompacter-*-setup.exe
-            apps/kompacter/installer/Kompacter-*-setup.exe.sha256
-
-      - name: Keep the installer (manual runs)
-        if: "!startsWith(github.ref, 'refs/tags/v')"
-        uses: actions/upload-artifact@v7
-        with:
-          name: installer
-          path: apps/kompacter/installer/Kompacter-*-setup.exe
+          files: dist/*

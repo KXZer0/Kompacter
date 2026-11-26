@@ -1,0 +1,540 @@
+//! Linux desktop activation, native file clipboard and file manager integration.
+
+use std::ffi::OsString;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::{self, Read, Write};
+use std::net::Shutdown;
+use std::os::fd::AsRawFd;
+use std::os::linux::net::SocketAddrExt;
+use std::os::unix::ffi::OsStringExt;
+use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+
+mod activation;
+mod trash;
+pub use activation::activate_window;
+pub use trash::recycle;
+
+pub const APP_ID: &str = "io.github.KXZer0.Kompacter";
+const IO_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_MESSAGE: u64 = 8 * 1024 * 1024;
+
+#[derive(Deserialize, Serialize)]
+pub enum Action {
+    Open,
+    Choose,
+    Quit,
+    Quiet,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct Activation {
+    pub action: Action,
+    paths: Vec<Vec<u8>>,
+    pub token: Option<String>,
+}
+
+impl Activation {
+    fn from_args() -> Self {
+        let mut action = Action::Open;
+        let mut paths = Vec::new();
+        let mut literal = false;
+        for arg in std::env::args_os().skip(1) {
+            if !literal {
+                match arg.to_str() {
+                    Some("--") => {
+                        literal = true;
+                        continue;
+                    }
+                    Some("--tray") => {
+                        action = Action::Quiet;
+                        continue;
+                    }
+                    Some("--choose-files") => {
+                        action = Action::Choose;
+                        continue;
+                    }
+                    Some("--quit") => {
+                        action = Action::Quit;
+                        continue;
+                    }
+                    Some(arg) if arg.starts_with("--") => continue,
+                    _ => {}
+                }
+            }
+            if let Ok(path) = std::path::absolute(&arg) {
+                if path.exists() {
+                    paths.push(path.into_os_string().into_vec());
+                }
+            }
+        }
+        if !paths.is_empty() && matches!(action, Action::Quiet) {
+            action = Action::Open;
+        }
+        Self {
+            action,
+            paths,
+            token: std::env::var("XDG_ACTIVATION_TOKEN")
+                .or_else(|_| std::env::var("DESKTOP_STARTUP_ID"))
+                .ok(),
+        }
+    }
+
+    pub fn take_files(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.paths)
+            .into_iter()
+            .map(|bytes| PathBuf::from(OsString::from_vec(bytes)))
+            .collect()
+    }
+}
+
+pub struct Primary {
+    /// None: another user holds our socket names, so this launch runs on its own
+    /// (no single instance) rather than not at all.
+    listener: Option<UnixListener>,
+    initial: Activation,
+}
+
+impl Primary {
+    pub fn listen(self, on_activation: impl Fn(Activation) + Send + 'static) -> Activation {
+        let Self { listener, initial } = self;
+        let Some(listener) = listener else {
+            return initial;
+        };
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                // An abstract socket is automatically released at exit, but is
+                // visible to other users. Only accept messages from our own UID.
+                if !same_user(&stream) || stream.set_read_timeout(Some(IO_TIMEOUT)).is_err() {
+                    continue;
+                }
+                let mut body = Vec::new();
+                let read = (&stream).take(MAX_MESSAGE + 1).read_to_end(&mut body);
+                if read.is_ok() && body.len() as u64 <= MAX_MESSAGE {
+                    if let Ok(activation) = serde_json::from_slice(&body) {
+                        on_activation(activation);
+                        let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+                        let _ = stream.write_all(b"\x01");
+                    }
+                }
+            }
+        });
+        initial
+    }
+}
+
+fn same_user(stream: &UnixStream) -> bool {
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of_val(&cred) as libc::socklen_t;
+    // SO_PEERCRED reads the credentials associated with the connected socket.
+    unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut cred as *mut libc::ucred).cast(),
+            &mut len,
+        ) == 0
+            && cred.uid == libc::geteuid()
+    }
+}
+
+/// Socket name for this user and graphical login.
+fn socket_name() -> String {
+    // Keep each graphical login independent, including multiple sessions
+    // sharing /run/user/<uid>. Use the Wayland socket in a Wayland session.
+    let mut session = DefaultHasher::new();
+    let display = std::env::var_os("WAYLAND_DISPLAY").or_else(|| std::env::var_os("DISPLAY"));
+    display.hash(&mut session);
+    std::env::var_os("XDG_RUNTIME_DIR").hash(&mut session);
+    format!(
+        "{APP_ID}.{}.{:016x}",
+        unsafe { libc::geteuid() },
+        session.finish()
+    )
+}
+
+/// A socket file in `$XDG_RUNTIME_DIR`, used when the abstract name is taken by another
+/// user. Only when that folder is ours and private (0700), so nobody else can take it.
+fn private_socket() -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
+    let meta = std::fs::symlink_metadata(&dir).ok()?;
+    let ours =
+        meta.is_dir() && meta.uid() == unsafe { libc::geteuid() } && meta.mode() & 0o077 == 0;
+    ours.then(|| dir.join(format!("{}.sock", socket_name())))
+}
+
+enum Elected {
+    /// This launch is the resident (None: it only wanted to quit the resident).
+    Resident(Option<Primary>),
+    /// Delivered to the running Kompacter.
+    Delivered,
+    /// The socket belongs to another user.
+    Taken(Activation),
+}
+
+/// Elect a resident before initializing the GUI, or deliver this launch to it.
+pub fn launch() -> io::Result<Option<Primary>> {
+    let initial = Activation::from_args();
+    let abstract_name = SocketAddr::from_abstract_name(socket_name().as_bytes())?;
+    let initial = match elect(&abstract_name, None, initial)? {
+        Elected::Resident(primary) => return Ok(primary),
+        Elected::Delivered => return Ok(None),
+        Elected::Taken(initial) => initial,
+    };
+    // Someone else (another local user) holds the name: never fail to start because of
+    // that. Use a private socket file instead, or else run without single instance.
+    eprintln!("Kompacter: activation socket is held by another user, using a fallback");
+    let initial = match private_socket() {
+        Some(path) => match SocketAddr::from_pathname(&path) {
+            Ok(address) => match elect(&address, Some(&path), initial)? {
+                Elected::Resident(primary) => return Ok(primary),
+                Elected::Delivered => return Ok(None),
+                Elected::Taken(initial) => initial,
+            },
+            Err(_) => initial,
+        },
+        None => initial,
+    };
+    if matches!(initial.action, Action::Quit) {
+        return Ok(None);
+    }
+    Ok(Some(Primary {
+        listener: None,
+        initial,
+    }))
+}
+
+/// `file`: the address is a socket file, removed when nothing listens on it any more.
+fn elect(address: &SocketAddr, file: Option<&Path>, initial: Activation) -> io::Result<Elected> {
+    let deadline = std::time::Instant::now() + IO_TIMEOUT;
+    loop {
+        match UnixListener::bind_addr(address) {
+            Ok(_) if matches!(initial.action, Action::Quit) => return Ok(Elected::Resident(None)),
+            Ok(listener) => {
+                return Ok(Elected::Resident(Some(Primary {
+                    listener: Some(listener),
+                    initial,
+                })))
+            }
+            Err(error) if error.kind() == io::ErrorKind::AddrInUse => {}
+            Err(error) => return Err(error),
+        }
+
+        match UnixStream::connect_addr(address) {
+            Ok(mut stream) => {
+                if !same_user(&stream) {
+                    return Ok(Elected::Taken(initial));
+                }
+                stream.set_write_timeout(Some(IO_TIMEOUT))?;
+                stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+                let message = serde_json::to_vec(&initial)?;
+                if message.len() as u64 > MAX_MESSAGE {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Too many files for one activation",
+                    ));
+                }
+                stream.write_all(&message)?;
+                stream.shutdown(Shutdown::Write)?;
+                return stream.read_exact(&mut [0]).map(|()| Elected::Delivered);
+            }
+            // The previous resident may have exited between bind and connect. A socket
+            // file outlives its resident, so remove it before binding again.
+            Err(error)
+                if error.kind() == io::ErrorKind::ConnectionRefused
+                    && std::time::Instant::now() < deadline =>
+            {
+                if let Some(file) = file {
+                    let _ = std::fs::remove_file(file);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+const FILE_LIST: &str = "text/uri-list";
+const GNOME_FILES: &str = "x-special/gnome-copied-files";
+
+// X11 serves clipboard requests on a background connection. Reuse its
+// context across jobs so hiding the panel leaves a single selection owner.
+static CLIPBOARD: std::sync::Mutex<Option<clipboard_rs::ClipboardContext>> =
+    std::sync::Mutex::new(None);
+
+fn clipboard<T>(
+    f: impl FnOnce(&clipboard_rs::ClipboardContext) -> clipboard_rs::common::Result<T>,
+) -> Result<T, String> {
+    let mut context = CLIPBOARD.lock().map_err(|e| e.to_string())?;
+    if context.is_none() {
+        *context = Some(clipboard_rs::ClipboardContext::new().map_err(|e| e.to_string())?);
+    }
+    f(context.as_ref().expect("clipboard initialized")).map_err(|e| e.to_string())
+}
+
+pub fn clipboard_files() -> Vec<PathBuf> {
+    use clipboard_rs::Clipboard;
+
+    clipboard(|clipboard| {
+        let formats = clipboard.available_formats()?;
+        for mime in [FILE_LIST, GNOME_FILES] {
+            if !formats.iter().any(|format| format == mime) {
+                continue;
+            }
+            if let Ok(bytes) = clipboard.get_buffer(mime) {
+                let files = paths_from_uris(&bytes);
+                if !files.is_empty() {
+                    return Ok(files);
+                }
+            }
+        }
+        Ok(Vec::new())
+    })
+    .unwrap_or_default()
+}
+
+fn paths_from_uris(bytes: &[u8]) -> Vec<PathBuf> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Vec::new();
+    };
+    text.trim_end_matches('\0')
+        .lines()
+        .filter_map(|line| url::Url::parse(line).ok()?.to_file_path().ok())
+        .collect()
+}
+
+pub fn copy_files(paths: &[PathBuf]) -> Result<(), String> {
+    use clipboard_rs::{Clipboard, ClipboardContent};
+
+    if cfg!(debug_assertions) && std::env::var_os("KOMPACTER_DEMO_COPY").is_some() {
+        return Ok(());
+    }
+    let uris = paths
+        .iter()
+        .map(|path| {
+            url::Url::from_file_path(path)
+                .map(|uri| uri.to_string())
+                .map_err(|()| format!("Invalid clipboard path: {}", path.display()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if uris.is_empty() {
+        return Err("No files to copy".into());
+    }
+    clipboard(|clipboard| {
+        clipboard.set(vec![
+            ClipboardContent::Other(FILE_LIST.into(), uris.join("\r\n").into_bytes()),
+            ClipboardContent::Other(
+                GNOME_FILES.into(),
+                format!("copy\n{}", uris.join("\n")).into_bytes(),
+            ),
+            ClipboardContent::Other("application/x-kde-cutselection".into(), b"0".to_vec()),
+        ])
+    })
+}
+
+pub fn show_in_folder(file: &Path) {
+    let file = file.to_owned();
+    std::thread::spawn(move || {
+        if reveal(&file).is_err() {
+            super::open_folder(file.parent().unwrap_or(Path::new(".")));
+        }
+    });
+}
+
+fn reveal(file: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let uri = url::Url::from_file_path(std::path::absolute(file)?)
+        .map_err(|()| io::Error::new(io::ErrorKind::InvalidInput, "Invalid file path"))?;
+    let session = zbus::blocking::Connection::session()?;
+    let manager = zbus::blocking::Proxy::new(
+        &session,
+        "org.freedesktop.FileManager1",
+        "/org/freedesktop/FileManager1",
+        "org.freedesktop.FileManager1",
+    )?;
+    manager.call::<_, _, ()>("ShowItems", &([uri.as_str()], ""))?;
+    Ok(())
+}
+
+/// Track host availability off the UI thread. Slint's SNI service retries
+/// registrations once it is running, but needs a host for its initial start.
+pub fn watch_tray_host(on_available: impl FnOnce() + Send + 'static) {
+    std::thread::spawn(move || loop {
+        if tray_host_available() {
+            on_available();
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    });
+}
+
+fn tray_host_available() -> bool {
+    let Ok(session) = zbus::blocking::Connection::session() else {
+        return false;
+    };
+    zbus::blocking::proxy::Builder::<zbus::blocking::Proxy<'_>>::new(&session)
+        .destination("org.kde.StatusNotifierWatcher")
+        .and_then(|builder| builder.path("/StatusNotifierWatcher"))
+        .and_then(|builder| builder.interface("org.kde.StatusNotifierWatcher"))
+        .and_then(|builder| {
+            builder
+                .cache_properties(zbus::proxy::CacheProperties::No)
+                .build()
+        })
+        .and_then(|watcher| watcher.get_property::<bool>("IsStatusNotifierHostRegistered"))
+        .unwrap_or(false)
+}
+
+/// The free area of the monitor under the mouse (the screen minus panels, from
+/// `_NET_WORKAREA`), anchored on the side that holds the panel with the tray: a top bar
+/// (GNOME, Xfce) drops the panel down from the top right, a bottom one (KDE, Cinnamon)
+/// raises it from the bottom right. `None` on Wayland, where the compositor places
+/// windows and ignores positions, or without an X server.
+pub fn anchor() -> Option<super::Anchor> {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        return None;
+    }
+    let (conn, screen) = x11rb::connect(None).ok()?;
+    x11_anchor(&conn, screen)
+}
+
+fn x11_anchor(conn: &impl x11rb::connection::Connection, screen: usize) -> Option<super::Anchor> {
+    use x11rb::protocol::randr::ConnectionExt as _;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+
+    let root_screen = conn.setup().roots.get(screen)?;
+    let root = root_screen.root;
+    let pointer = conn.query_pointer(root).ok()?.reply().ok()?;
+    let (px, py) = (i32::from(pointer.root_x), i32::from(pointer.root_y));
+
+    // (left, top, right, bottom) of the monitor under the mouse.
+    let whole = (
+        0,
+        0,
+        i32::from(root_screen.width_in_pixels),
+        i32::from(root_screen.height_in_pixels),
+    );
+    let monitors = conn
+        .randr_get_monitors(root, true)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .map(|reply| reply.monitors)
+        .unwrap_or_default();
+    let bounds = |m: &x11rb::protocol::randr::MonitorInfo| {
+        let (x, y) = (i32::from(m.x), i32::from(m.y));
+        (x, y, x + i32::from(m.width), y + i32::from(m.height))
+    };
+    let monitor = monitors
+        .iter()
+        .map(bounds)
+        .find(|&(l, t, r, b)| (l..r).contains(&px) && (t..b).contains(&py))
+        .or_else(|| monitors.iter().find(|m| m.primary).map(bounds))
+        .or_else(|| monitors.first().map(bounds))
+        .unwrap_or(whole);
+
+    let atom = |name: &[u8]| {
+        let atom = conn.intern_atom(true, name).ok()?.reply().ok()?.atom;
+        (atom != 0).then_some(atom)
+    };
+    let cardinals = |name: &[u8], offset: u32, count: u32| -> Option<Vec<u32>> {
+        let reply = conn
+            .get_property(false, root, atom(name)?, AtomEnum::CARDINAL, offset, count)
+            .ok()?
+            .reply()
+            .ok()?;
+        let values: Vec<u32> = reply.value32()?.collect();
+        (values.len() == count as usize).then_some(values)
+    };
+    let desktop = cardinals(b"_NET_CURRENT_DESKTOP", 0, 1).map_or(0, |v| v[0]);
+    let work = cardinals(b"_NET_WORKAREA", desktop.saturating_mul(4), 4)
+        .and_then(|v| {
+            let [x, y, w, h] = [v[0], v[1], v[2], v[3]].map(|n| i32::try_from(n).ok());
+            Some((x?, y?, x? + w?, y? + h?))
+        })
+        .unwrap_or(whole);
+    let free = (
+        monitor.0.max(work.0),
+        monitor.1.max(work.1),
+        monitor.2.min(work.2),
+        monitor.3.min(work.3),
+    );
+    if free.0 >= free.2 || free.1 >= free.3 {
+        return None;
+    }
+    let top_bar = free.1 - monitor.1;
+    let bottom_bar = monitor.3 - free.3;
+    let from_top = top_bar > bottom_bar;
+
+    // The scale winit gives the window on X11.
+    let scale = std::env::var("WINIT_X11_SCALE_FACTOR")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .or_else(|| {
+            let db = x11rb::resource_manager::new_from_default(conn).ok()?;
+            let dpi = db.get_value::<u32>("Xft.dpi", "").ok()??;
+            Some(f64::from(dpi) / 96.0)
+        })
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or(1.0);
+
+    Some(super::Anchor {
+        free,
+        scale,
+        at: if from_top {
+            super::At::TopRight
+        } else {
+            super::At::BottomRight
+        },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn activation(action: Action) -> Activation {
+        Activation {
+            action,
+            paths: Vec::new(),
+            token: None,
+        }
+    }
+
+    #[test]
+    fn a_socket_file_left_by_an_old_resident_is_taken_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kompacter.sock");
+        // A resident that exited: its socket file stays, nobody listens.
+        drop(UnixListener::bind(&path).unwrap());
+        assert!(path.exists());
+        let address = SocketAddr::from_pathname(&path).unwrap();
+        let Elected::Resident(Some(primary)) =
+            elect(&address, Some(&path), activation(Action::Open)).unwrap()
+        else {
+            panic!("expected to become the resident");
+        };
+
+        // The next launch is delivered to it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        primary.listen(move |a| {
+            let _ = tx.send(matches!(a.action, Action::Choose));
+        });
+        let delivered = elect(&address, Some(&path), activation(Action::Choose)).unwrap();
+        assert!(matches!(delivered, Elected::Delivered));
+        assert!(rx.recv_timeout(IO_TIMEOUT).unwrap());
+    }
+
+    #[test]
+    fn without_a_listener_the_launch_still_runs() {
+        let primary = Primary {
+            listener: None,
+            initial: activation(Action::Open),
+        };
+        assert!(matches!(primary.listen(|_| {}).action, Action::Open));
+    }
+}
