@@ -16,10 +16,11 @@ pub fn activate_window(window: &slint::Window, token: Option<&str>) {
         let is_wayland = window
             .display_handle()
             .is_ok_and(|handle| matches!(handle.as_raw(), RawDisplayHandle::Wayland(_)));
-        if is_wayland && !window.has_focus() {
-            if !token.is_some_and(|token| activate_wayland(window, token).is_some()) {
-                window.request_user_attention(Some(UserAttentionType::Informational));
-            }
+        if is_wayland
+            && !window.has_focus()
+            && !token.is_some_and(|token| activate_wayland(window, token).is_some())
+        {
+            window.request_user_attention(Some(UserAttentionType::Informational));
         }
     });
 }
