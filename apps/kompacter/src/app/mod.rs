@@ -1485,8 +1485,12 @@ mod tests {
         ui.set_view(View::Welcome);
         ui.set_opened(true);
         ui.show().unwrap();
+        ui.window().dispatch_event(WindowEvent::Resized {
+            size: slint::LogicalSize::new(360.0, 472.0),
+        });
         ui.window()
             .dispatch_event(WindowEvent::WindowActiveChanged(true));
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(400));
 
         let weak = ui.as_weak();
         ui.on_welcome_done(move || weak.unwrap().set_view(View::Idle));
