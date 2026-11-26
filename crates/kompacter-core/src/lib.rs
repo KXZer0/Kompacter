@@ -475,8 +475,10 @@ impl Engine {
         let target = opts.target_bytes;
 
         if fits_as_is(&info, opts, trim) {
+            // A cheap check that the file is whole (not a full decode), so a big video
+            // that already fits comes back almost at once.
             let verified = if info.kind == MediaKind::Video && opts.mode == Mode::Fit {
-                jobs::video::verify(
+                jobs::video::quick_verify(
                     &self.ff,
                     path,
                     info.duration,

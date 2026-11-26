@@ -1,8 +1,9 @@
 //! Video: MP4 (H.264, H.265 or AV1 video + AAC audio) aimed at an exact size.
-//! Compatible streams are copied when they fit. A video encode uses a hardware encoder
-//! when available, with two-pass x264 or single-pass x265/SVT-AV1 as the CPU fallback.
-//! A candidate is decoded and measured before publication. HDR sources are tone-mapped
-//! to SDR when ffmpeg can.
+//! Compatible streams (H.264 always, H.265/AV1 when chosen) are copied when they fit.
+//! A video encode uses a hardware encoder when available, with two-pass x264 or
+//! single-pass x265/SVT-AV1 as the CPU fallback. An encoded candidate is decoded and
+//! measured before publication; copied packets get a cheaper integrity check. HDR sources
+//! are tone-mapped to SDR when ffmpeg can.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -21,6 +22,9 @@ const HW_HEADROOM: f64 = 0.92;
 const VERIFY_START: f32 = 0.92;
 const VERIFY_END: f32 = 0.99;
 
+/// True when a video that already fits can be published as it is: an MP4 whose streams
+/// play broadly (see `copy_codec`) with nothing extra in it. The chosen codec only governs
+/// re-encodes, so an H.264 file is kept whatever codec is selected.
 pub(crate) fn can_keep_original(info: &MediaInfo, codec: VideoCodec) -> bool {
     let has_ext = |ext| {
         info.path
@@ -30,20 +34,27 @@ pub(crate) fn can_keep_original(info: &MediaInfo, codec: VideoCodec) -> bool {
     if super::is_gif(info) {
         return has_ext("gif") && info.playback.stream_count == 1;
     }
+    let Some(source) = copy_codec(info, codec) else {
+        return false;
+    };
     let expected_streams = 1 + usize::from(info.audio.is_some());
     has_ext("mp4")
         && info.playback.mp4
         && info.playback.stream_count == expected_streams
-        && can_copy_video(info, codec)
         && can_copy_audio(info)
-        && info.playback.video_tag
-            == match codec {
-                VideoCodec::H264 => "avc1",
-                VideoCodec::H265 => "hvc1",
-                VideoCodec::Av1 => "av01",
-            }
+        && info.playback.video_tag == mp4_tag(source)
 }
 
+/// The MP4 sample entry players expect for each codec.
+fn mp4_tag(codec: VideoCodec) -> &'static str {
+    match codec {
+        VideoCodec::H264 => "avc1",
+        VideoCodec::H265 => "hvc1",
+        VideoCodec::Av1 => "av01",
+    }
+}
+
+/// Fully decode a freshly encoded candidate before it is published.
 pub(crate) fn verify(
     ff: &crate::Ffmpeg,
     path: &Path,
@@ -67,6 +78,51 @@ pub(crate) fn verify(
     }
     a.extend(args(["-f", "null", "-"]));
     ff.run(&a, duration, progress, cancel)
+}
+
+/// A cheap integrity check for video packets that were not encoded here (an untouched
+/// original or a remux): read every packet without decoding the video, which catches
+/// truncation and container damage, decode the audio (cheap), then decode the first
+/// second and the last three seconds of video.
+pub(crate) fn quick_verify(
+    ff: &crate::Ffmpeg,
+    path: &Path,
+    duration: f64,
+    has_audio: bool,
+    progress: Progress,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    let mut a = args(["-xerror", "-abort_on", "empty_output_stream", "-i"]);
+    a.push(path.into());
+    a.extend(args(["-map", "0:V:0", "-c:v", "copy"]));
+    if has_audio {
+        a.extend(args(["-map", "0:a:0"]));
+    }
+    a.extend(args(["-f", "null", "-"]));
+    ff.run(&a, duration, &mut scaled(&mut *progress, 0.0, 0.6), cancel)?;
+
+    let mut a = args([
+        "-xerror",
+        "-abort_on",
+        "empty_output_stream",
+        "-threads",
+        "4",
+        "-t",
+        "1",
+        "-i",
+    ]);
+    a.push(path.into());
+    a.extend(args(["-threads", "4", "-sseof", "-3", "-i"]));
+    a.push(path.into());
+    a.extend(args([
+        "-map", "0:V:0", "-f", "null", "-", "-map", "1:V:0", "-f", "null", "-",
+    ]));
+    ff.run(
+        &a,
+        duration.min(3.0),
+        &mut scaled(progress, 0.6, 1.0),
+        cancel,
+    )
 }
 
 pub(crate) fn fit(
@@ -243,10 +299,9 @@ fn filters(v: &VideoStream, plan: &VideoPlan, trim: Option<Trim>, tonemap: bool)
 }
 
 /// The audio bitrate to use when the video can be copied as-is: the whole file (no trim),
-/// already what a re-encode would make (the chosen codec, plain 8-bit 4:2:0 SDR, upright,
-/// at most 60 fps), and small enough that it plus a re-encoded audio track fits. The
-/// planner only scales to save bits, so a video that fits needs no scaling. `None` when
-/// the normal re-encode is the way.
+/// broadly playable (see `copy_codec`), and small enough that it plus a re-encoded audio
+/// track fits. The planner only scales to save bits, so a video that fits needs no
+/// scaling. `None` when the normal re-encode is the way.
 fn copy_plan(info: &MediaInfo, trim: Option<Trim>, codec: VideoCodec, target: u64) -> Option<u32> {
     if trim.is_some() || info.audio.is_none() || !can_copy_video(info, codec) {
         return None;
@@ -260,16 +315,25 @@ fn copy_plan(info: &MediaInfo, trim: Option<Trim>, codec: VideoCodec, target: u6
     }
 }
 
+/// The codec of a video stream that can be copied into the MP4 unchanged, if any: plain
+/// 8-bit 4:2:0 SDR, upright, at most 60 fps, and either H.264 (plays everywhere) or the
+/// codec the user chose (they opted into H.265 or AV1 players).
+fn copy_codec(info: &MediaInfo, codec: VideoCodec) -> Option<VideoCodec> {
+    let v = info.video.as_ref()?;
+    let source = [VideoCodec::H264, codec]
+        .into_iter()
+        .find(|c| v.codec == c.probe_name())?;
+    (matches!(v.pix_fmt.as_str(), "yuv420p" | "yuvj420p")
+        && v.hdr.is_none()
+        && !v.rotated
+        && v.width > 0
+        && v.height > 0
+        && v.fps <= 60.01)
+        .then_some(source)
+}
+
 fn can_copy_video(info: &MediaInfo, codec: VideoCodec) -> bool {
-    info.video.as_ref().is_some_and(|v| {
-        v.codec == codec.probe_name()
-            && matches!(v.pix_fmt.as_str(), "yuv420p" | "yuvj420p")
-            && v.hdr.is_none()
-            && !v.rotated
-            && v.width > 0
-            && v.height > 0
-            && v.fps <= 60.01
-    })
+    copy_codec(info, codec).is_some()
 }
 
 fn can_copy_audio(info: &MediaInfo) -> bool {
@@ -285,7 +349,7 @@ fn video_may_fit(info: &MediaInfo, target: u64) -> bool {
     bitrate.is_none_or(|kbps| kbps as f64 * 1000.0 * info.duration / 8.0 <= target as f64 * 1.05)
 }
 
-/// Remux compatible packets, optionally replacing the audio with AAC at the chosen rate.
+/// Remux compatible packets into MP4, optionally replacing the audio with AAC at that rate.
 fn copy_video(
     ctx: &Ctx,
     info: &MediaInfo,
@@ -294,10 +358,15 @@ fn copy_video(
     out: &Path,
     progress: Progress,
 ) -> Result<()> {
-    let mut a = input_args(&info.path, None);
+    let source = copy_codec(info, ctx.codec)
+        .ok_or_else(|| Error::Unsupported("video stream can't be copied".into()))?;
+    // A damaged packet (a truncated file) must not be copied: stop, and re-encode instead.
+    let mut a = args(["-xerror"]);
+    a.extend(input_args(&info.path, None));
     a.extend(args(["-map", "0:V:0", "-c:v", "copy"]));
     audio_args(&mut a, info, audio_kbps);
-    finish(&mut a, ctx.codec, out);
+    // Tagged for the copied stream's codec, not the one a re-encode would use.
+    finish(&mut a, source, out);
     ctx.ff.run(
         &a,
         info.duration,
@@ -312,15 +381,15 @@ fn copy_video(
             best: size,
         });
     }
-    verify(
+    // The packets were copied, not encoded here: the cheap check is enough.
+    quick_verify(
         ctx.ff,
         out,
         info.duration,
         info.audio.is_some(),
         &mut scaled(progress, VERIFY_START, VERIFY_END),
         ctx.cancel,
-    )?;
-    Ok(())
+    )
 }
 
 /// AAC for the first audio track; mono when the bitrate is too low for stereo.
@@ -681,7 +750,7 @@ mod tests {
     }
 
     #[test]
-    fn copies_the_video_only_when_it_is_already_what_we_would_make() {
+    fn copies_only_broadly_playable_video() {
         let target = 2 * MB;
         let ok = clip(1200);
         assert_eq!(copy_plan(&ok, None, VideoCodec::H264, target), Some(128));
@@ -697,8 +766,10 @@ mod tests {
         let mut silent = clip(1200);
         silent.audio = None;
         assert_eq!(copy_plan(&silent, None, VideoCodec::H264, target), None);
-        // Not what a re-encode would make: other codec, 10-bit, HDR, rotated, over 60 fps.
-        assert_eq!(copy_plan(&ok, None, VideoCodec::H265, target), None);
+        // H.264 plays everywhere, so it is copied whatever codec a re-encode would use.
+        assert_eq!(copy_plan(&ok, None, VideoCodec::H265, target), Some(128));
+        assert_eq!(copy_plan(&ok, None, VideoCodec::Av1, target), Some(128));
+        // Not broadly playable: other codec, 10-bit, HDR, rotated, over 60 fps.
         assert_eq!(with(|v| v.codec = "vp9".into()), None);
         assert_eq!(with(|v| v.pix_fmt = "yuv420p10le".into()), None);
         assert_eq!(with(|v| v.hdr = Some(Hdr::Pq)), None);
@@ -707,6 +778,84 @@ mod tests {
         // A trimmed part is cut and re-encoded.
         let trim = Trim::new(1.0, 5.0).ok();
         assert_eq!(copy_plan(&ok, trim, VideoCodec::H264, target), None);
+    }
+
+    #[test]
+    fn h265_and_av1_are_copied_only_when_chosen() {
+        let with_codec = |name: &str| {
+            let mut info = clip(1200);
+            info.video.as_mut().unwrap().codec = name.into();
+            info
+        };
+        let all = [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1];
+        for codec in all {
+            assert_eq!(copy_codec(&clip(1200), codec), Some(VideoCodec::H264));
+        }
+        for (name, source) in [("hevc", VideoCodec::H265), ("av1", VideoCodec::Av1)] {
+            let info = with_codec(name);
+            for codec in all {
+                let expected = (codec == source).then_some(source);
+                assert_eq!(copy_codec(&info, codec), expected, "{name} as {codec:?}");
+                assert_eq!(can_copy_video(&info, codec), expected.is_some());
+            }
+        }
+        assert_eq!(copy_codec(&with_codec("vp9"), VideoCodec::Av1), None);
+    }
+
+    /// `clip` as a plain MP4 with AAC-LC audio, tagged as players expect.
+    fn mp4(codec: &str, tag: &str) -> MediaInfo {
+        let mut info = clip(1200);
+        info.path = "clip.mp4".into();
+        info.video.as_mut().unwrap().codec = codec.into();
+        info.audio.as_mut().unwrap().codec = "aac".into();
+        info.playback = PlaybackInfo {
+            mp4: true,
+            video_tag: tag.into(),
+            audio_profile: "LC".into(),
+            stream_count: 2,
+        };
+        info
+    }
+
+    #[test]
+    fn keeps_a_playable_mp4_whatever_codec_a_re_encode_would_use() {
+        let h264 = mp4("h264", "avc1");
+        for codec in [VideoCodec::H264, VideoCodec::H265, VideoCodec::Av1] {
+            assert!(can_keep_original(&h264, codec), "{codec:?}");
+        }
+        // H.265 and AV1 are kept only for users who chose them.
+        let hevc = mp4("hevc", "hvc1");
+        assert!(can_keep_original(&hevc, VideoCodec::H265));
+        assert!(!can_keep_original(&hevc, VideoCodec::H264));
+        assert!(!can_keep_original(&hevc, VideoCodec::Av1));
+        let av1 = mp4("av1", "av01");
+        assert!(can_keep_original(&av1, VideoCodec::Av1));
+        assert!(!can_keep_original(&av1, VideoCodec::H265));
+        // Apple players want hvc1, not hev1.
+        assert!(!can_keep_original(&mp4("hevc", "hev1"), VideoCodec::H265));
+
+        let changed = |change: fn(&mut MediaInfo)| {
+            let mut info = mp4("h264", "avc1");
+            change(&mut info);
+            can_keep_original(&info, VideoCodec::Av1)
+        };
+        // Other containers are remuxed into MP4 instead.
+        assert!(!changed(|i| i.path = "clip.mkv".into()));
+        assert!(!changed(|i| i.path = "clip.mov".into()));
+        assert!(!changed(|i| i.playback.mp4 = false));
+        // Extra streams, audio that isn't AAC-LC, or video that isn't broadly playable.
+        assert!(!changed(|i| i.playback.stream_count = 3));
+        assert!(!changed(|i| i.audio.as_mut().unwrap().codec = "opus".into()));
+        assert!(!changed(|i| i.playback.audio_profile = "HE-AAC".into()));
+        assert!(!changed(
+            |i| i.video.as_mut().unwrap().pix_fmt = "yuv444p".into()
+        ));
+        assert!(!changed(|i| i.video.as_mut().unwrap().rotated = true));
+        // Silent is fine.
+        assert!(changed(|i| {
+            i.audio = None;
+            i.playback.stream_count = 1;
+        }));
     }
 
     #[test]
