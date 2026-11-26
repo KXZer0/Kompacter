@@ -35,11 +35,11 @@ clipboard-rs = { version = "0.3.5", default-features = false, features = ["wayla
 libc = "0.2"
 url = "2"
 # Already built for Slint's X11 backend: find the free screen area beside the tray.
-x11rb = { version = "0.13", features = ["randr", "resource_manager"] }
+x11rb = { version = "0.14", features = ["randr", "resource_manager"] }
 wayland-client = { version = "0.31", features = ["system", "dlopen"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 # Share the D-Bus dependency used by the Slint tray backend.
-zbus = "5"
+zbus = "6"
 
 [target.'cfg(not(windows))'.dependencies]
 slint = { version = "1.19", default-features = false, features = [
