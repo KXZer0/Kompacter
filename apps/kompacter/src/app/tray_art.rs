@@ -38,8 +38,6 @@ pub struct TrayArt {
     /// The compressing frames for the tray's tint and size; empty unless busy.
     frames: RefCell<Vec<Image>>,
     anim: Timer,
-    /// Done / error happened while the panel was open, so it was seen there.
-    seen: Cell<bool>,
 }
 
 impl App {
@@ -59,9 +57,12 @@ impl App {
 
     pub(super) fn set_mood(&self, mood: Mood) {
         let art = &self.tray_art;
-        // Done and error stay in the icon until the panel has shown them (see
-        // `mood_seen` / `mood_hidden`), however long that takes.
-        art.seen.set(self.ui().window().is_visible());
+        // Done and error are news for someone not looking: with the panel open it shows
+        // the result itself, so the icon only ever says "compressing" or nothing. Hidden,
+        // they stay until the panel is opened (`mood_seen`).
+        if matches!(mood, Mood::Done | Mood::Error) && self.ui().window().is_visible() {
+            return self.settle_mood();
+        }
         if art.mood.get() == Some(mood) {
             return;
         }
@@ -91,14 +92,6 @@ impl App {
     /// The panel opened from hidden: it shows the result, so the icon can stop saying it.
     pub(crate) fn mood_seen(&self) {
         if matches!(self.tray_art.mood.get(), Some(Mood::Done | Mood::Error)) {
-            self.settle_mood();
-        }
-    }
-
-    /// The panel hid. A result that came in while it was open has been seen there.
-    pub(crate) fn mood_hidden(&self) {
-        let art = &self.tray_art;
-        if art.seen.get() && matches!(art.mood.get(), Some(Mood::Done | Mood::Error)) {
             self.settle_mood();
         }
     }
