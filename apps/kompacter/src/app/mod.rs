@@ -62,7 +62,7 @@ const ARCHIVE_OVERRIDES: [Option<ArchiveFormat>; 3] =
 
 fn audio_label(format: AudioFormat) -> &'static str {
     match format {
-        AudioFormat::Auto => "Auto",
+        AudioFormat::Auto => "Best fit",
         AudioFormat::Mp3 => "MP3",
         AudioFormat::Opus => "Opus",
     }
@@ -70,7 +70,7 @@ fn audio_label(format: AudioFormat) -> &'static str {
 
 fn image_label(format: ImageFormat) -> &'static str {
     match format {
-        ImageFormat::Auto => "Auto",
+        ImageFormat::Auto => "Best fit",
         ImageFormat::Jpeg => "JPEG",
         ImageFormat::Webp => "WebP",
     }

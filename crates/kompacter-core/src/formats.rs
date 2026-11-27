@@ -26,9 +26,10 @@ impl CompressionPreference {
                 options.image_format = ImageFormat::Jpeg;
             }
             Self::Balanced => options.audio_format = AudioFormat::Mp3,
+            // Lightest on the PC: video goes to the graphics card (CPU only as a fallback)
+            // and audio and pictures use the newer, smaller formats.
             Self::Efficiency => {
-                options.speed = Speed::Quality;
-                options.gpu = false;
+                options.gpu = true;
                 options.audio_format = AudioFormat::Opus;
                 options.image_format = ImageFormat::Webp;
             }

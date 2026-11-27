@@ -43,7 +43,7 @@ export global Prefs {
     /// What each format is under the current preference (shown while it is followed).
     in property <string> video-auto: "H.264";
     in property <string> audio-auto: "MP3";
-    in property <string> image-auto: "Auto";
+    in property <string> image-auto: "Best fit";
     in property <string> archive-auto: "Zip";
     in property <[string]> shortcut-options: ["Off", "Ctrl+Alt+K", "Ctrl+Shift+K", "Ctrl+Shift+Space"];
     in property <int> shortcut-index;
@@ -80,7 +80,7 @@ export global Prefs {
     callback set-audio(int);
     callback set-image(int);
     callback set-archive(int);
-    /// Every format back to "Follow preference".
+    /// Every format back to "Automatic".
     callback reset-formats();
     callback set-shortcut(int);
     callback set-paste-guard(bool);
@@ -88,6 +88,12 @@ export global Prefs {
     callback set-watch-folders(bool);
     callback add-clip-folder();
     callback remove-clip-folder(int);
+}
+
+/// Set while the settings list is scrolling: rows passing under a resting pointer don't
+/// light up one after another (that flicker read as a glitch while scrolling).
+global ScrollState {
+    in-out property <bool> moving;
 }
 
 /// A group row in settings: label + optional small text + something on the right.
@@ -103,7 +109,7 @@ export component Cell inherits Rectangle {
     min-height: root.shown ? (root.small != "" ? 56px : 44px) : 0px;
     max-height: root.shown ? 10000px : 0px;
     visible: root.shown;
-    background: ta.has-hover && root.clickable ? Theme.fill : transparent;
+    background: ta.has-hover && root.clickable && !ScrollState.moving ? Theme.fill : transparent;
     animate background { duration: 120ms; }
     if !root.first: Rectangle {
         x: 12px;
@@ -239,7 +245,9 @@ export component SettingsView inherits Rectangle {
         : paste-cell.hovered || paste-switch.hovered ? 1
         : clip-cell.hovered || clip-switch.hovered ? 2 : -1;
     property <bool> preview-on;
-    // Formats set to something other than "Follow preference".
+    property <string> preference-name: Prefs.compression-preference == 0 ? "Compatibility"
+        : Prefs.compression-preference == 1 ? "Balanced" : "Efficiency";
+    // Formats pinned to something other than "Automatic".
     property <int> overrides: (Prefs.video-index != 0 ? 1 : 0) + (Prefs.audio-index != 0 ? 1 : 0)
         + (Prefs.image-index != 0 ? 1 : 0) + (Prefs.archive-index != 0 ? 1 : 0);
     // Which row the card is for; kept while it fades out.
@@ -248,6 +256,18 @@ export component SettingsView inherits Rectangle {
     // row, or a scroll, hides it and starts the count again. (Counting, because a Timer
     // that is restarted by hand keeps going after its `running` turns false.)
     property <int> preview-wait;
+    // Scroll settling: counted like `preview-wait`, cleared after ~150 ms without movement.
+    property <int> scroll-quiet;
+    Timer {
+        interval: 50ms;
+        running: ScrollState.moving;
+        triggered => {
+            root.scroll-quiet += 1;
+            if (root.scroll-quiet >= 3) {
+                ScrollState.moving = false;
+            }
+        }
+    }
     function preview-reset() {
         root.preview-on = false;
         root.preview-wait = 0;
@@ -285,7 +305,11 @@ export component SettingsView inherits Rectangle {
         y: 54px;
         width: 360px;
         height: 546px;
-        changed content-y => { root.preview-reset(); }
+        changed content-y => {
+            root.preview-reset();
+            ScrollState.moving = true;
+            root.scroll-quiet = 0;
+        }
         VerticalLayout {
             padding-left: 20px;
             padding-right: 20px;
@@ -448,38 +472,47 @@ export component SettingsView inherits Rectangle {
             }
 
             GroupTitle { text: "COMPRESSION PREFERENCE"; }
-            CompressionPreference {
-                index: Prefs.compression-preference;
-                picked(i) => { Prefs.set-compression-preference(i); }
-                escaped => { root.close-settings(); }
-                changed has-focus => {
-                    if (self.has-focus) {
-                        let top = self.absolute-position.y - settings-scroll.absolute-position.y;
-                        let bottom = top + self.height - settings-scroll.height;
-                        if (top < 0px) {
-                            settings-scroll.content-y -= top;
-                        } else if (bottom > 0px) {
-                            settings-scroll.content-y -= bottom;
+            // In a group card like every other setting, so it sits on the same surface.
+            Group {
+                VerticalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    padding-top: 14px;
+                    padding-bottom: 8px;
+                    CompressionPreference {
+                        index: Prefs.compression-preference;
+                        picked(i) => { Prefs.set-compression-preference(i); }
+                        escaped => { root.close-settings(); }
+                        changed has-focus => {
+                            if (self.has-focus) {
+                                let top = self.absolute-position.y - settings-scroll.absolute-position.y;
+                                let bottom = top + self.height - settings-scroll.height;
+                                if (top < 0px) {
+                                    settings-scroll.content-y -= top;
+                                } else if (bottom > 0px) {
+                                    settings-scroll.content-y -= bottom;
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            // An override ignores the preference above, so each row and the title say so.
+            // A pinned format ignores the preference above, so each row and the title say so.
             GroupTitle {
-                text: root.overrides == 0 ? "FORMATS" : root.overrides == 1 ? "FORMATS · 1 OVERRIDE"
-                    : "FORMATS · \{root.overrides} OVERRIDES";
+                text: root.overrides == 0 ? "FORMATS" : root.overrides == 1 ? "FORMATS · 1 PINNED"
+                    : "FORMATS · \{root.overrides} PINNED";
             }
             Group {
                 Cell {
                     label: "Video";
-                    small: Prefs.video-index == 0 ? "From preference: \{Prefs.video-auto}"
-                        : Prefs.video-index == 1 ? "Override · Plays on more devices"
-                        : Prefs.video-index == 2 ? "Override · Smaller files"
-                        : "Override · More detail at the same size";
+                    small: Prefs.video-index == 0 ? "\{Prefs.video-auto} · set by \{root.preference-name}"
+                        : Prefs.video-index == 1 ? "Pinned · Plays on more devices"
+                        : Prefs.video-index == 2 ? "Pinned · Smaller files"
+                        : "Pinned · More detail at the same size";
                     first: true;
                     Dropdown {
-                        options: ["Follow preference", "H.264", "H.265", "AV1"];
+                        options: ["Automatic", "H.264", "H.265", "AV1"];
                         notes: [Prefs.video-auto, "Plays on more devices", "Check recipient support", "Check recipient support"];
                         index: Prefs.video-index;
                         y: (parent.height - self.height) / 2;
@@ -488,12 +521,12 @@ export component SettingsView inherits Rectangle {
                 }
                 Cell {
                     label: "Audio";
-                    small: Prefs.audio-index == 0 ? "From preference: \{Prefs.audio-auto}"
-                        : Prefs.audio-index == 1 ? "Override · MP3, or Opus for tight limits"
-                        : Prefs.audio-index == 2 ? "Override · Plays on more devices"
-                        : "Override · Better sound at the same size";
+                    small: Prefs.audio-index == 0 ? "\{Prefs.audio-auto} · set by \{root.preference-name}"
+                        : Prefs.audio-index == 1 ? "Pinned · MP3, or Opus for tight limits"
+                        : Prefs.audio-index == 2 ? "Pinned · Plays on more devices"
+                        : "Pinned · Better sound at the same size";
                     Dropdown {
-                        options: ["Follow preference", "Auto", "MP3", "Opus"];
+                        options: ["Automatic", "Best fit", "MP3", "Opus"];
                         index: Prefs.audio-index;
                         y: (parent.height - self.height) / 2;
                         picked(i) => { Prefs.set-audio(i); }
@@ -501,12 +534,12 @@ export component SettingsView inherits Rectangle {
                 }
                 Cell {
                     label: "Images";
-                    small: Prefs.image-index == 0 ? "From preference: \{Prefs.image-auto}"
-                        : Prefs.image-index == 1 ? "Override · Lossless first"
-                        : Prefs.image-index == 2 ? "Override · Opens on more devices"
-                        : "Override · Keeps transparency";
+                    small: Prefs.image-index == 0 ? "\{Prefs.image-auto} · set by \{root.preference-name}"
+                        : Prefs.image-index == 1 ? "Pinned · Lossless first"
+                        : Prefs.image-index == 2 ? "Pinned · Opens on more devices"
+                        : "Pinned · Keeps transparency";
                     Dropdown {
-                        options: ["Follow preference", "Auto", "JPEG", "WebP"];
+                        options: ["Automatic", "Best fit", "JPEG", "WebP"];
                         index: Prefs.image-index;
                         y: (parent.height - self.height) / 2;
                         picked(i) => { Prefs.set-image(i); }
@@ -514,19 +547,19 @@ export component SettingsView inherits Rectangle {
                 }
                 Cell {
                     label: "Folders & files";
-                    small: Prefs.archive-index == 0 ? "From preference: \{Prefs.archive-auto}"
-                        : Prefs.archive-index == 1 ? "Override · Opens on more devices"
-                        : "Override · Needs Windows 11 or 7-Zip";
+                    small: Prefs.archive-index == 0 ? "\{Prefs.archive-auto} · set by \{root.preference-name}"
+                        : Prefs.archive-index == 1 ? "Pinned · Opens on more devices"
+                        : "Pinned · Needs Windows 11 or 7-Zip";
                     Dropdown {
-                        options: ["Follow preference", "Zip", "7z"];
+                        options: ["Automatic", "Zip", "7z"];
                         index: Prefs.archive-index;
                         y: (parent.height - self.height) / 2;
                         picked(i) => { Prefs.set-archive(i); }
                     }
                 }
                 if root.overrides > 0: Cell {
-                    label: "Follow preference for all";
-                    small: "Clear the overrides above";
+                    label: "Set all to Automatic";
+                    small: "Let the preference pick every format again";
                     clickable: true;
                     clicked => { Prefs.reset-formats(); }
                 }
@@ -616,10 +649,10 @@ export component SettingsView inherits Rectangle {
             Group {
                 Cell {
                     label: "GPU encoding";
-                    small: Prefs.compression-preference == 2 ? "Efficiency uses software encoding" : "";
+                    small: Prefs.compression-preference == 2 ? "Always on with Efficiency" : "";
                     first: true;
                     Switch {
-                        checked: Prefs.gpu && Prefs.compression-preference != 2;
+                        checked: Prefs.gpu || Prefs.compression-preference == 2;
                         enabled: Prefs.compression-preference != 2;
                         y: (parent.height - self.height) / 2;
                         toggled(on) => { Prefs.set-gpu(on); }

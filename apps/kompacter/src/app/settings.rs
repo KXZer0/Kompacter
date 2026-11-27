@@ -129,7 +129,9 @@ impl Settings {
         options.audio_format = self.audio_format.unwrap_or(options.audio_format);
         options.image_format = self.image_format.unwrap_or(options.image_format);
         options.archive = self.archive_format.unwrap_or(options.archive);
-        options.gpu &= self.gpu;
+        // Efficiency is GPU encoding, so it does not depend on the GPU switch.
+        options.gpu = self.compression_preference == CompressionPreference::Efficiency
+            || (options.gpu && self.gpu);
         options
     }
 }
@@ -211,11 +213,25 @@ mod tests {
             reloaded.compression_preference,
             CompressionPreference::Efficiency
         );
-        assert_eq!(options.speed, Speed::Quality);
+        assert_eq!(options.speed, Speed::Balanced);
         assert_eq!(options.video_codec, VideoCodec::H264);
         assert_eq!(options.audio_format, AudioFormat::Opus);
         assert_eq!(options.image_format, ImageFormat::Webp);
-        assert!(!options.gpu);
+        assert!(options.gpu);
+    }
+
+    #[test]
+    fn efficiency_always_encodes_on_the_gpu() {
+        let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        settings.gpu = false;
+        assert!(!settings.options(10).gpu);
+        settings.compression_preference = CompressionPreference::Compatibility;
+        assert!(!settings.options(10).gpu);
+        settings.compression_preference = CompressionPreference::Efficiency;
+        assert!(settings.options(10).gpu);
+        settings.gpu = true;
+        settings.compression_preference = CompressionPreference::Balanced;
+        assert!(settings.options(10).gpu);
     }
 
     #[test]

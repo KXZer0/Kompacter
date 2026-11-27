@@ -58,7 +58,7 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 ## Features
 
 - Fits files under a target size: Discord 20 / 50 / 500 MB, Slack 1 GB, WhatsApp 2 GB, Telegram 2 GB, Signal 100 MB, email 25 MB, or custom.
-- **Compression preference:** Compatibility (plays everywhere, fastest), Balanced, or Efficiency (smallest files, slower). Any output format can be pinned to override it.
+- **Compression preference:** Compatibility (plays everywhere), Balanced, or Efficiency (encodes on the GPU with newer formats, lightest on your PC). Any output format can be pinned instead of left on Automatic.
 - **Trim + compress** with live size and quality estimates while you drag the handles.
 - Videos are checked after encoding, so a result always plays and is always under the limit. A video that already fits is left untouched; one in a container chat apps dislike (MOV, MKV, WebM) is repackaged to MP4 without re-encoding.
 - Pictures keep their colour profile (Display P3 screenshots, phone photos), their orientation and their transparency. HDR pictures are tone-mapped. iPhone HEIC and AVIF photos become JPEGs (or WebP with the Efficiency preference) that fit.
