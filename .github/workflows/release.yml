@@ -86,7 +86,6 @@ jobs:
         working-directory: packaging/windows
         shell: pwsh
         run: |
-          Move-Item (Get-Item Kompacter-*-setup.exe).FullName Kompacter-windows-setup.exe
           $f = Get-Item Kompacter-windows-setup.exe
           $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
           "$hash  $($f.Name)" | Out-File -Encoding ascii -NoNewline "$($f.FullName).sha256"
