@@ -86,6 +86,8 @@ jobs:
           sleep 0.5
           open "$app"
           wait "$recorder" || true
+          echo "Kompacter processes (expect exactly one):"
+          pgrep -fl 'Kompacter.app/Contents/MacOS/Kompacter' || true
           if [ -s "$shots/dock.mov" ]; then
             # The Dock icon and the panel above it: the bottom-right part of the screen.
             ffmpeg -v error -y -i "$shots/dock.mov" -vf "crop=iw*0.45:ih*0.75:iw*0.55:ih*0.25,fps=12,scale=560:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle" -loop 0 "$shots/macos.gif"

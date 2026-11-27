@@ -38,9 +38,10 @@ pub fn supported() -> bool {
 /// copy the user opened. A second copy finds the first here and steps aside.
 pub fn another_instance() -> Option<objc2::rc::Retained<objc2_app_kit::NSRunningApplication>> {
     use objc2_app_kit::NSRunningApplication;
-    let me = NSRunningApplication::currentApplication();
-    let id = me.bundleIdentifier()?;
-    let pid = me.processIdentifier();
+    // From the bundle's Info.plist: a copy the login agent started isn't registered as
+    // an app yet this early, so asking Launch Services about ourselves can return nothing.
+    let id = objc2_foundation::NSBundle::mainBundle().bundleIdentifier()?;
+    let pid = std::process::id() as i32;
     NSRunningApplication::runningApplicationsWithBundleIdentifier(&id)
         .iter()
         .find(|app| app.processIdentifier() != pid && !app.isTerminated())
