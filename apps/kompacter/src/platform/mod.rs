@@ -465,6 +465,15 @@ pub fn local_data_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
 }
 
+/// The panel's font family. Windows 11's UI font on Windows. Elsewhere none, which Slint
+/// fills with the system UI font (San Francisco on macOS; fontconfig's `system-ui`, then
+/// `sans-serif`, on Linux: the desktop's default sans).
+pub const UI_FONT: &str = if cfg!(windows) {
+    "Segoe UI Variable Text"
+} else {
+    ""
+};
+
 /// Hands memory the allocator holds but no longer uses back to the system, after a
 /// compress or when the panel hides. Allocators keep freed memory for reuse, so a big
 /// job would otherwise leave the idle tray app as large as it was at its peak.

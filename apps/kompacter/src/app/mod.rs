@@ -835,6 +835,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     #[cfg(target_os = "linux")]
     slint::set_xdg_app_id(sys::linux::APP_ID)?;
     let ui = AppWindow::new()?;
+    ui.set_ui_font(sys::UI_FONT.into());
     // Skia (raster or Direct3D 12 through DirectComposition) draws the translucent card.
     // Installing a rendering notifier would disable the raster renderer's partial
     // redraws, even if the callback does nothing.

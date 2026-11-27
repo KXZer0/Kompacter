@@ -157,6 +157,8 @@ export component AppWindow inherits Window {
     in property <int> preset-index;
     in property <string> dash-path;
     in property <float> ambient-turn;
+    // Set from Rust for each system (see `platform::UI_FONT`); empty is the system's own.
+    in property <string> ui-font;
     in property <string> target-text: "20 MB";
 
     in property <string> file-name;
@@ -296,7 +298,7 @@ export component AppWindow inherits Window {
     no-frame: true;
     always-on-top: true;
     background: Fx.glass ? transparent : Theme.bg;
-    default-font-family: "Segoe UI Variable Text";
+    default-font-family: root.ui-font;
     default-font-size: 14px;
     width: 360px + 2 * inset;
     forward-focus: keys;
