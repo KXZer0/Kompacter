@@ -8,6 +8,7 @@ mod news;
 mod output;
 mod quick;
 pub(crate) mod settings;
+mod tray_art;
 mod trim;
 mod trim_cache;
 mod update;
@@ -179,6 +180,8 @@ pub struct App {
     pub motion: motion::Motion,
     pub trim: trim::Trim,
     pub tray: RefCell<Option<Tray>>,
+    /// The tray / Dock icon's mood (see tray_art.rs).
+    pub tray_art: tray_art::TrayArt,
     /// The quick bar is showing (see quick.rs); `quick_real` is the flow's screen.
     pub quick: Cell<bool>,
     pub quick_real: Cell<View>,
@@ -248,6 +251,7 @@ impl App {
             motion: motion::Motion::default(),
             trim: trim::Trim::default(),
             tray: RefCell::new(tray),
+            tray_art: Default::default(),
             quick: Cell::new(false),
             quick_real: Cell::new(View::Idle),
             guard: Cell::new(None),
@@ -423,6 +427,7 @@ impl App {
             _ => system_dark,
         });
         theme.set_style((s.style == "discord") as i32);
+        self.tint_mood(s.style == "discord");
         theme.set_dt(match s.discord_theme.as_str() {
             "light" => 0,
             "ash" => 1,
@@ -882,6 +887,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         cfg!(windows) && !app.settings.borrow().tray_tip_seen && sys::tray_pinned() != Some(true),
     );
     app.sync_settings();
+    app.settle_mood();
     ui.set_dash_path(format::dashed_round_rect(308.0, 300.0, 28.0, 6.0, 7.0, 0.0).into());
 
     // Tidy old outputs. GPU encoders are checked when a video first needs one.
@@ -1395,6 +1401,8 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     linux_desktop::start(&app, linux_launch);
     slint::run_event_loop_until_quit()?;
     app.tray.borrow_mut().take();
+    #[cfg(target_os = "macos")]
+    sys::set_dock_icon(None);
     // A checked update waits for Kompacter to close; the installer reopens it.
     if app.settings.borrow().auto_update {
         if let Some(ready) = app

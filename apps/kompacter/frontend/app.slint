@@ -41,7 +41,9 @@ export component Tray inherits SystemTrayIcon {
     callback quit();
     in property <bool> has-chooser;
     in property <string> tip: "Kompacter";
-    icon: @image-url("tray.png");
+    /// Set from Rust to the mood and size the tray needs (src/app/tray_art.rs).
+    in property <image> art: @image-url("tray.png");
+    icon: root.art;
     tooltip: root.tip;
     clicked => { root.open(); }
     Menu {

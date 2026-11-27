@@ -23,7 +23,7 @@ mod macos_login;
 #[cfg(target_os = "macos")]
 pub use macos::{
     clipboard_files, clipboard_seq, copy_files, focus_application, install_activation, recycle,
-    style_panel,
+    set_dock_icon, style_panel,
 };
 #[cfg(target_os = "macos")]
 pub use macos_login::{activate as activate_instance, another_instance};

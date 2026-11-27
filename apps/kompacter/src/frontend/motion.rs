@@ -200,6 +200,7 @@ impl App {
         if was == View::Busy && self.view() != View::Busy {
             ui.set_squeeze(0.0);
         }
+        self.mood_for_view(was);
         self.sync_window_height();
     }
 
@@ -287,6 +288,9 @@ impl App {
         self.motion.auto_closing.set(None);
         self.auto_hidden.set(None);
         let was_hidden = !ui.window().is_visible();
+        if was_hidden {
+            self.mood_seen();
+        }
         if was_hidden || self.motion.anchor.get().is_none() {
             self.motion.anchor.set(sys::anchor());
         }

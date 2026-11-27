@@ -20,6 +20,7 @@ use crate::platform::{InputEvent, PasteTarget};
 
 use super::format::{bytes, file_name};
 use super::settings::{shortcut_keys, SHORTCUTS};
+use super::tray_art::Mood;
 use super::watch::{self, WatchEvent};
 use super::{output, run, same_rows, App};
 
@@ -193,6 +194,7 @@ impl App {
             return;
         };
         self.auto_busy.set(true);
+        self.set_mood(Mood::Busy);
         let name = file_name(&path);
         self.set_tray_tip(&format!("Kompacter · shrinking {name}"));
         let prefs = self.settings.borrow().clone();
@@ -219,6 +221,7 @@ impl App {
                 app.auto_busy.set(false);
                 match r {
                     Ok((path, out, copied)) => {
+                        app.set_mood(if out.fits { Mood::Done } else { Mood::Error });
                         let done = format!("{} · {}", file_name(&path), bytes(out.output_bytes));
                         app.set_tray_tip(&format!(
                             "Kompacter · {} {done}",
@@ -226,7 +229,10 @@ impl App {
                         ));
                         app.auto_tell(&path, &out, copied);
                     }
-                    Err(e) => app.set_tray_tip(&format!("Kompacter · couldn't shrink {name}: {e}")),
+                    Err(e) => {
+                        app.set_mood(Mood::Error);
+                        app.set_tray_tip(&format!("Kompacter · couldn't shrink {name}: {e}"));
+                    }
                 }
                 app.auto_next();
             },
