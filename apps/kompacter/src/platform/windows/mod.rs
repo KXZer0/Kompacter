@@ -1,5 +1,6 @@
 //! Native Windows shell, input, and window integration.
 
+pub mod clipboard_watch;
 pub(super) mod preview_audio;
 
 use std::ffi::OsStr;
@@ -1017,6 +1018,25 @@ pub fn send_paste() {
             keys.as_ptr(),
             std::mem::size_of::<INPUT>() as i32,
         );
+    }
+}
+
+/// Whether `path` is on a network share (a UNC path or a mapped drive), where
+/// file-change events may miss what other computers write.
+pub fn network_drive(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    const DRIVE_REMOTE: u32 = 4;
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::UNC(..) | Prefix::VerbatimUNC(..) => true,
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                let root = wide(format!("{}:\\", letter as char));
+                unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_REMOTE }
+            }
+            _ => false,
+        },
+        _ => false,
     }
 }
 
