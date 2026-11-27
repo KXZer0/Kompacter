@@ -23,7 +23,7 @@ Every download is built by GitHub Actions; nobody has to build from source.
      the next restart.
    - The Linux AppImage downloads the new `.AppImage`, checks its `.sha256` and replaces itself
      (same file name) on the next restart.
-   - macOS, and copies installed from an older .deb or tarball, offer the update and open the release page.
+   - macOS (in Applications or another folder it can write to) downloads the new `.dmg`, checks it and swaps its app bundle in place on restart, so there is never a second copy. Run from the disk image, Downloads or a read-only folder, and from an older .deb or tarball install, it opens the release page.
 
    The release page only opens when the user clicks the update pill, never on quit.
 

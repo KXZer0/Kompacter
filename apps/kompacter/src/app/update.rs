@@ -9,10 +9,16 @@
 //! - Linux AppImage (`$APPIMAGE` is set): the new `.AppImage` is downloaded and checked the
 //!   same way, then swapped in for the running file (same name, atomic rename) on the next
 //!   restart, and started again.
-//! - Everything else (macOS, the Linux .deb or tarball): nothing is downloaded; "install"
-//!   opens the release page so the user can get the new build for their system (the .deb
-//!   and tarball are no longer published, so on Linux that's the AppImage). Only a
-//!   release that actually has a build for this system counts as an update.
+//! - macOS, from a folder Kompacter can write to (normally Applications): the new `.dmg`
+//!   is downloaded and checked the same way; on the next restart it's mounted out of
+//!   sight, its `Kompacter.app` replaces this one in place (so there's never a second
+//!   copy), and the new version starts. The file comes from Kompacter itself, not a
+//!   browser, so macOS doesn't quarantine it.
+//! - Everything else (macOS running from the disk image, Downloads or a folder it can't
+//!   write to, and the Linux .deb or tarball): nothing is downloaded; "install" opens the
+//!   release page so the user can get the new build for their system (the .deb and
+//!   tarball are no longer published, so on Linux that's the AppImage). Only a release
+//!   that actually has a build for this system counts as an update.
 //!
 //! Only release builds know their version (the release workflow stamps
 //! `KOMPACTER_VERSION`), so dev builds never update. The only host contacted is GitHub.
@@ -52,6 +58,9 @@ enum How {
     Installer,
     /// Replace this AppImage file with the downloaded one.
     AppImage(PathBuf),
+    /// Replace this macOS app bundle with the one in the downloaded disk image; the page
+    /// opens instead if that fails.
+    MacApp { bundle: PathBuf, page: String },
     /// Open the release page in the browser.
     Page(String),
 }
@@ -65,16 +74,17 @@ struct Wanted {
     download: bool,
 }
 
-/// The release file for an `os`/`arch` (as in `std::env::consts`); `appimage` when
-/// running from an AppImage. `None`: no builds are published for this system.
-fn wanted(os: &str, arch: &str, appimage: bool) -> Option<Wanted> {
+/// The release file for an `os`/`arch` (as in `std::env::consts`); `replaceable` when
+/// this copy can replace itself (an AppImage, or a macOS app in a folder it can write
+/// to). `None`: no builds are published for this system.
+fn wanted(os: &str, arch: &str, replaceable: bool) -> Option<Wanted> {
     let (prefix, suffix, download) = match (os, arch) {
         ("windows", _) => ("Kompacter-", "-setup.exe", true),
-        ("linux", "x86_64") if appimage => ("Kompacter-", "-x86_64.AppImage", true),
+        ("linux", "x86_64") if replaceable => ("Kompacter-", "-x86_64.AppImage", true),
         // Installed from a .deb or tarball: those aren't published any more, so the
         // AppImage tells it a new version is out (and the release page has it).
         ("linux", "x86_64") => ("Kompacter-", "-x86_64.AppImage", false),
-        ("macos", "aarch64") => ("Kompacter-", "-macos-arm64.dmg", false),
+        ("macos", "aarch64") => ("Kompacter-", "-macos-arm64.dmg", replaceable),
         ("macos", "x86_64") => ("Kompacter-", "-macos-x86_64.dmg", false),
         _ => return None,
     };
@@ -93,6 +103,30 @@ fn running_appimage() -> Option<PathBuf> {
     std::env::var_os("APPIMAGE")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute() && p.is_file())
+}
+
+/// This macOS app's bundle (`…/Kompacter.app`), if Kompacter can replace it: not when
+/// it runs from the disk image, from App Translocation (macOS runs a quarantined app
+/// opened in place, e.g. from Downloads, from a hidden read-only copy) or from a folder
+/// this user can't write to. Those keep opening the release page.
+fn replaceable_bundle() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let bundle = exe.ancestors().nth(3)?.to_path_buf();
+    let path = bundle.to_string_lossy();
+    if bundle.extension()? != "app"
+        || path.contains("/AppTranslocation/")
+        || path.starts_with("/Volumes/")
+    {
+        return None;
+    }
+    // Can a sibling be made (and removed) in its folder?
+    let probe = bundle.parent()?.join(".Kompacter-update-probe");
+    std::fs::create_dir(&probe).ok()?;
+    std::fs::remove_dir(&probe).ok()?;
+    Some(bundle)
 }
 
 /// "v0.0.7-test" (or "v.0.0.7-test") → (0, 0, 7). Anything after a dash is ignored.
@@ -276,16 +310,28 @@ pub fn check(
     progress: &dyn Fn(&str, f32),
 ) -> Result<Option<Ready>, String> {
     let appimage = running_appimage();
+    let bundle = replaceable_bundle();
     let Some(want) = wanted(
         std::env::consts::OS,
         std::env::consts::ARCH,
-        appimage.is_some(),
+        appimage.is_some() || bundle.is_some(),
     ) else {
         return Ok(None);
     };
     let body = curl(RELEASES)?;
     let list: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
-    let Some((tag, asset)) = newest(&list, want) else {
+    // A Mac release with no checksum can't be installed, but it is still news: offer
+    // its page instead.
+    let found = newest(&list, want).map(|f| (f, want)).or_else(|| {
+        let page_only = Wanted {
+            download: false,
+            ..want
+        };
+        (bundle.is_some() && want.download)
+            .then(|| newest(&list, page_only).map(|f| (f, page_only)))
+            .flatten()
+    });
+    let Some(((tag, asset), want)) = found else {
         return Ok(None);
     };
     if !newer(&tag, current) {
@@ -324,9 +370,13 @@ pub fn check(
             return Err("the download didn't match its checksum".into());
         }
     }
-    let how = match appimage {
-        Some(path) => How::AppImage(path),
-        None => How::Installer,
+    let how = match (appimage, bundle) {
+        (Some(path), _) => How::AppImage(path),
+        (None, Some(bundle)) => How::MacApp {
+            bundle,
+            page: asset.page,
+        },
+        (None, None) => How::Installer,
     };
     Ok(Some(Ready {
         version,
@@ -347,7 +397,8 @@ pub fn clear_downloads() {
 }
 
 impl Ready {
-    /// True when the update is applied as Kompacter quits (Windows installer, AppImage).
+    /// True when the update is applied as Kompacter quits (Windows installer, AppImage,
+    /// macOS app bundle).
     /// Otherwise the release page only opens when the user asks for it.
     pub fn installs_on_quit(&self) -> bool {
         !matches!(self.how, How::Page(_))
@@ -369,8 +420,92 @@ pub fn install(ready: &Ready) -> io::Result<()> {
                 .spawn()
                 .map(drop)
         }
+        How::MacApp { bundle, page } => match replace_bundle(&ready.installer, bundle) {
+            Ok(()) => relaunch_after_exit(bundle),
+            Err(_) => open_url(page),
+        },
         How::Page(url) => open_url(url),
     }
+}
+
+/// Mount the disk image `dmg` out of sight and put its `Kompacter.app` where `bundle`
+/// is: copied next to it first, then two renames, so a failure leaves the old app as it
+/// was. The running process keeps its already-open files until it quits.
+fn replace_bundle(dmg: &Path, bundle: &Path) -> io::Result<()> {
+    let (Some(dir), Some(name)) = (bundle.parent(), bundle.file_name()) else {
+        return Err(io::Error::other("not an app bundle"));
+    };
+    let mount = tempfile::tempdir()?;
+    let ok = |status: io::Result<std::process::ExitStatus>, what: &str| match status {
+        Ok(s) if s.success() => Ok(()),
+        _ => Err(io::Error::other(format!("{what} failed"))),
+    };
+    ok(
+        Command::new("/usr/bin/hdiutil")
+            .args([
+                "attach",
+                "-nobrowse",
+                "-readonly",
+                "-noautoopen",
+                "-quiet",
+                "-mountpoint",
+            ])
+            .arg(mount.path())
+            .arg(dmg)
+            .status(),
+        "mounting the update",
+    )?;
+    let sibling = |suffix: &str| {
+        let mut n = std::ffi::OsString::from(".");
+        n.push(name);
+        n.push(suffix);
+        dir.join(n)
+    };
+    let staged = sibling(".update");
+    let old = sibling(".old");
+    let _ = std::fs::remove_dir_all(&staged);
+    let _ = std::fs::remove_dir_all(&old);
+    let result = (|| {
+        let source = mount.path().join("Kompacter.app");
+        if !source.join("Contents/MacOS/Kompacter").is_file() {
+            return Err(io::Error::other("the update has no Kompacter.app"));
+        }
+        // ditto keeps the bundle's signature, permissions and attributes intact.
+        ok(
+            Command::new("/usr/bin/ditto")
+                .arg(&source)
+                .arg(&staged)
+                .status(),
+            "copying the update",
+        )?;
+        std::fs::rename(bundle, &old)?;
+        if let Err(e) = std::fs::rename(&staged, bundle) {
+            let _ = std::fs::rename(&old, bundle);
+            return Err(e);
+        }
+        Ok(())
+    })();
+    let _ = Command::new("/usr/bin/hdiutil")
+        .args(["detach", "-quiet", "-force"])
+        .arg(mount.path())
+        .status();
+    let _ = std::fs::remove_dir_all(&staged);
+    let _ = std::fs::remove_dir_all(&old);
+    result
+}
+
+/// Start `bundle` again once this process has exited (so the new copy doesn't hand off
+/// to the old one, which is still quitting).
+fn relaunch_after_exit(bundle: &Path) -> io::Result<()> {
+    Command::new("/bin/sh")
+        .args([
+            "-c",
+            "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open \"$0\"",
+        ])
+        .arg(bundle)
+        .arg(std::process::id().to_string())
+        .spawn()
+        .map(drop)
 }
 
 /// Copy `new` next to `target` (same folder, so the final rename is atomic), make it
@@ -548,6 +683,10 @@ mod tests {
         let (a, download) = pick("macos", "aarch64", false).unwrap();
         assert_eq!(a.name, "Kompacter-installer-macos-arm64.dmg");
         assert!(!download);
+        // A Mac app in a folder it can write to downloads and replaces itself.
+        let (a, download) = pick("macos", "aarch64", true).unwrap();
+        assert_eq!(a.name, "Kompacter-installer-macos-arm64.dmg");
+        assert!(download && a.sha.ends_with(".dmg.sha256"));
 
         // No Intel Mac or ARM Linux build in this release: no update for them.
         assert!(pick("macos", "x86_64", false).is_none());

@@ -83,7 +83,7 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 | Paste guard: a too-big paste into Discord, Slack, WhatsApp, Telegram or Signal is shrunk to that app's limit | ✓ | — (not allowed on Wayland) | ✓ (needs Accessibility permission) |
 | Notice when a too-big file is copied | ✓ | ✓ (Wayland on KDE, Sway and other wlroots desktops; not GNOME) | ✓ |
 | Start with the system | ✓ | ✓ (XDG autostart) | ✓ (Open at login) |
-| Updates | Installs itself on restart | Replaces itself on restart | Opens the release page |
+| Updates | Installs itself on restart | Replaces itself on restart | Replaces itself on restart (from Applications) |
 
 ## Repository layout
 
