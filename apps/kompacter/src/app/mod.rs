@@ -743,17 +743,12 @@ fn select_backend(gpu: bool) -> Result<(), slint::PlatformError> {
         .with_winit_window_attributes_hook(move |attrs| {
             #[cfg(windows)]
             {
+                let _ = gpu;
                 use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
-                // The floating card draws its own corners and shadow; the plain GPU
-                // window gets Windows' rounded corners and shadow instead.
                 attrs
                     .with_skip_taskbar(true)
-                    .with_undecorated_shadow(gpu)
-                    .with_corner_preference(if gpu {
-                        CornerPreference::Round
-                    } else {
-                        CornerPreference::DoNotRound
-                    })
+                    .with_undecorated_shadow(false)
+                    .with_corner_preference(CornerPreference::DoNotRound)
             }
             // The rounded card and its shadow are drawn by the UI on a clear window,
             // as on Windows and Linux, so AppKit's square window shadow stays off.
@@ -810,9 +805,9 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     let prefs = settings::load();
     // Windows draws on the CPU (Skia raster: least memory, redraws only what changed)
     // unless GPU drawing is on (Skia on Direct3D 12: less CPU while animating, more
-    // memory). D3D12 can't show a see-through window, so the GPU window is the plain one
-    // with Windows' own rounded corners and shadow. If the GPU renderer can't start,
-    // the CPU one takes over. macOS and Linux already draw on the GPU (FemtoVG).
+    // memory). Slint presents D3D12 through DirectComposition, so the see-through card
+    // looks the same either way. If the GPU renderer can't start, the CPU one takes
+    // over. macOS and Linux already draw on the GPU (FemtoVG).
     #[cfg(windows)]
     let gpu_drawing = prefs.gpu_drawing()
         && select_backend(true)
@@ -830,15 +825,14 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     #[cfg(target_os = "linux")]
     slint::set_xdg_app_id(sys::linux::APP_ID)?;
     let ui = AppWindow::new()?;
-    // Skia raster supports the translucent card. Installing a rendering notifier
-    // would disable its partial redraws, even if the callback does nothing. Skia on the
-    // GPU has every effect but no see-through window, so it gets the plain window.
+    // Skia (raster or Direct3D 12 through DirectComposition) draws the translucent card.
+    // Installing a rendering notifier would disable the raster renderer's partial
+    // redraws, even if the callback does nothing.
     #[cfg(windows)]
-    let (glass, rich) = (!gpu_drawing, sys::animations_enabled());
+    let glass = true;
     // FemtoVG draws the translucent card on macOS and Linux alike.
     #[cfg(not(windows))]
     let glass = ui.window().set_rendering_notifier(|_, _| {}).is_ok();
-    #[cfg(not(windows))]
     let rich = glass && sys::animations_enabled();
     ui.global::<Fx>().set_glass(glass);
     ui.global::<Fx>().set_rich(rich);
