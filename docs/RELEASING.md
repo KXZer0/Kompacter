@@ -13,9 +13,9 @@ Every download is built by GitHub Actions; nobody has to build from source.
 
    | Job | Files (each with a `.sha256`) | Built from |
    |---|---|---|
-   | `windows` | `Kompacter-0.0.3-setup.exe` | NSIS script in `packaging/windows/`, ffmpeg included |
-   | `linux` (Ubuntu 22.04) | `Kompacter-0.0.3-x86_64.AppImage`, `kompacter_0.0.3_amd64.deb`, `Kompacter-0.0.3-linux-x86_64.tar.gz` | `packaging/linux/appimage.sh` and `build.sh`; ffmpeg in the AppImage and tarball, the .deb depends on the distribution's `ffmpeg` |
-   | `macos` (`macos-latest`, Apple silicon; no Intel build because Homebrew no longer supports Intel Macs) | `Kompacter-0.0.3-macos-arm64.dmg` | `packaging/macos/build-app.sh`, `make-dmg.sh` and, with the signing secrets, `notarize.sh`; Homebrew ffmpeg included |
+   | `windows` | `Kompacter-windows-setup.exe` | NSIS script in `packaging/windows/`, ffmpeg included |
+   | `linux` (Ubuntu 22.04) | `Kompacter-linux-x86_64.AppImage` (the .deb and tarball are still built as a check, not published) | `packaging/linux/appimage.sh` and `build.sh`; ffmpeg included |
+   | `macos` (`macos-latest`, Apple silicon; no Intel build because Homebrew no longer supports Intel Macs) | `Kompacter-installer-macos-arm64.dmg` | `packaging/macos/build-app.sh`, `make-dmg.sh` and, with the signing secrets, `notarize.sh`; Homebrew ffmpeg included |
 
 3. Once it's published (pre-releases count; drafts don't), installed copies find it within a
    day:
@@ -23,7 +23,7 @@ Every download is built by GitHub Actions; nobody has to build from source.
      the next restart.
    - The Linux AppImage downloads the new `.AppImage`, checks its `.sha256` and replaces itself
      (same file name) on the next restart.
-   - The .deb, the tarball and macOS offer the update and open the release page.
+   - macOS, and copies installed from an older .deb or tarball, offer the update and open the release page.
 
    The release page only opens when the user clicks the update pill, never on quit.
 

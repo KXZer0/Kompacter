@@ -13,15 +13,13 @@ Copy a file that's too big for Discord (or email, or any app with an upload limi
 
 ## Download
 
-Get Kompacter from [Releases](https://github.com/KXZer0/Kompacter/releases). Every download has a `.sha256` checksum next to it.
-
 | System | Download | Notes |
 |---|---|---|
-| Windows 10/11 | `Kompacter-<version>-setup.exe` | No admin rights needed; ffmpeg is included. Updates itself. |
-| Linux (x86-64) | `Kompacter-<version>-x86_64.AppImage` | ffmpeg is included. `chmod +x` it and run it. Needs glibc 2.35+ (Ubuntu 22.04, Debian 12, Fedora 36 or newer) and the usual desktop OpenGL/Wayland/X11 libraries. |
-| Debian / Ubuntu | `kompacter_<version>_amd64.deb` | `sudo apt install ./kompacter_<version>_amd64.deb` ffmpeg is included. |
-| Linux, portable | `Kompacter-<version>-linux-x86_64.tar.gz` | Extract and run `./Kompacter`; ffmpeg is included; `./install-launcher.sh` adds a menu entry. |
-| macOS 26 or later (Apple silicon; no Intel build) | `Kompacter-<version>-macos-arm64.dmg` | Open it and drag Kompacter to Applications; ffmpeg is included. |
+| Windows 10/11 | **[Download for Windows](https://github.com/KXZer0/Kompacter/releases/latest/download/Kompacter-windows-setup.exe)** | No admin rights needed; ffmpeg is included. Updates itself. |
+| macOS 26 or later (Apple silicon) | **[Download for Mac](https://github.com/KXZer0/Kompacter/releases/latest/download/Kompacter-installer-macos-arm64.dmg)** | Open it and drag Kompacter to Applications; ffmpeg is included. No Intel build. |
+| Linux (x86-64) | **[Download for Linux](https://github.com/KXZer0/Kompacter/releases/latest/download/Kompacter-linux-x86_64.AppImage)** (AppImage) | ffmpeg is included. `chmod +x` it and run it. Updates itself. Needs glibc 2.35+ (Ubuntu 22.04, Debian 12, Fedora 36 or newer) and the usual desktop OpenGL/Wayland/X11 libraries. |
+
+Each link always gets the newest version. Older versions and the `.sha256` checksums are on [Releases](https://github.com/KXZer0/Kompacter/releases).
 
 Until the macOS builds are notarized, macOS blocks the first start: right-click Kompacter in Applications → **Open** → **Open** (or run `xattr -dr com.apple.quarantine /Applications/Kompacter.app`).
 
@@ -85,7 +83,7 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 | Paste guard: a too-big paste into Discord, Slack, WhatsApp, Telegram or Signal is shrunk to that app's limit | ✓ | — (not allowed on Wayland) | ✓ (needs Accessibility permission) |
 | Notice when a too-big file is copied | ✓ | ✓ (Wayland on KDE, Sway and other wlroots desktops; not GNOME) | ✓ |
 | Start with the system | ✓ | ✓ (XDG autostart) | ✓ (Open at login) |
-| Updates | Installs itself on restart | AppImage replaces itself; .deb and tarball open the release page | Opens the release page |
+| Updates | Installs itself on restart | Replaces itself on restart | Opens the release page |
 
 ## Repository layout
 

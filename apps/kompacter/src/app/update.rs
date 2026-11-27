@@ -10,7 +10,8 @@
 //!   same way, then swapped in for the running file (same name, atomic rename) on the next
 //!   restart, and started again.
 //! - Everything else (macOS, the Linux .deb or tarball): nothing is downloaded; "install"
-//!   opens the release page so the user can get the new build for their system. Only a
+//!   opens the release page so the user can get the new build for their system (the .deb
+//!   and tarball are no longer published, so on Linux that's the AppImage). Only a
 //!   release that actually has a build for this system counts as an update.
 //!
 //! Only release builds know their version (the release workflow stamps
@@ -70,7 +71,9 @@ fn wanted(os: &str, arch: &str, appimage: bool) -> Option<Wanted> {
     let (prefix, suffix, download) = match (os, arch) {
         ("windows", _) => ("Kompacter-", "-setup.exe", true),
         ("linux", "x86_64") if appimage => ("Kompacter-", "-x86_64.AppImage", true),
-        ("linux", "x86_64") => ("kompacter_", "_amd64.deb", false),
+        // Installed from a .deb or tarball: those aren't published any more, so the
+        // AppImage tells it a new version is out (and the release page has it).
+        ("linux", "x86_64") => ("Kompacter-", "-x86_64.AppImage", false),
         ("macos", "aarch64") => ("Kompacter-", "-macos-arm64.dmg", false),
         ("macos", "x86_64") => ("Kompacter-", "-macos-x86_64.dmg", false),
         _ => return None,
@@ -403,19 +406,25 @@ mod tests {
         download: true,
     };
 
-    /// A release with every system's files, as the release workflow publishes them.
+    /// A release with every system's files, as the release workflow publishes them: no
+    /// version in the names, so the README can link to releases/latest/download/<name>.
     fn full_release(v: &str) -> Value {
+        release_with(
+            v,
+            &[
+                "Kompacter-windows-setup.exe",
+                "Kompacter-linux-x86_64.AppImage",
+                "Kompacter-installer-macos-arm64.dmg",
+            ],
+        )
+    }
+
+    /// A release with these files, each with its `.sha256`.
+    fn release_with(v: &str, names: &[&str]) -> Value {
         let base = format!("https://github.com/KXZer0/Kompacter/releases/download/v{v}");
-        let names = [
-            format!("Kompacter-{v}-setup.exe"),
-            format!("Kompacter-{v}-x86_64.AppImage"),
-            format!("kompacter_{v}_amd64.deb"),
-            format!("Kompacter-{v}-linux-x86_64.tar.gz"),
-            format!("Kompacter-{v}-macos-arm64.dmg"),
-        ];
         let assets: Vec<Value> = names
             .iter()
-            .flat_map(|n| [n.clone(), format!("{n}.sha256")])
+            .flat_map(|n| [n.to_string(), format!("{n}.sha256")])
             .map(|n| {
                 serde_json::json!({
                     "name": n, "size": 7, "browser_download_url": format!("{base}/{n}")
@@ -507,29 +516,53 @@ mod tests {
             Some((assets(&release, want)?, want.download))
         };
         let (a, download) = pick("windows", "x86_64", false).unwrap();
-        assert_eq!(a.name, "Kompacter-0.2.0-setup.exe");
+        assert_eq!(a.name, "Kompacter-windows-setup.exe");
         assert!(download && a.sha.ends_with("-setup.exe.sha256"));
 
         let (a, download) = pick("linux", "x86_64", true).unwrap();
-        assert_eq!(a.name, "Kompacter-0.2.0-x86_64.AppImage");
+        assert_eq!(a.name, "Kompacter-linux-x86_64.AppImage");
         assert!(download && a.sha.ends_with(".AppImage.sha256"));
 
-        // The .deb and macOS builds only point at the release page.
+        // A .deb / tarball install and macOS only point at the release page.
         let (a, download) = pick("linux", "x86_64", false).unwrap();
-        assert_eq!(a.name, "kompacter_0.2.0_amd64.deb");
+        assert_eq!(a.name, "Kompacter-linux-x86_64.AppImage");
         assert!(!download && a.sha.is_empty());
         assert_eq!(
             a.page,
             "https://github.com/KXZer0/Kompacter/releases/tag/v0.2.0"
         );
         let (a, download) = pick("macos", "aarch64", false).unwrap();
-        assert_eq!(a.name, "Kompacter-0.2.0-macos-arm64.dmg");
+        assert_eq!(a.name, "Kompacter-installer-macos-arm64.dmg");
         assert!(!download);
 
         // No Intel Mac or ARM Linux build in this release: no update for them.
         assert!(pick("macos", "x86_64", false).is_none());
         assert!(pick("linux", "aarch64", true).is_none());
         assert!(pick("freebsd", "x86_64", false).is_none());
+    }
+
+    #[test]
+    fn older_versioned_names_still_match() {
+        // Releases up to 0.1.2 put the version in each name.
+        let old = release_with(
+            "0.1.2",
+            &[
+                "Kompacter-0.1.2-setup.exe",
+                "Kompacter-0.1.2-x86_64.AppImage",
+                "Kompacter-0.1.2-macos-arm64.dmg",
+            ],
+        );
+        for (os, arch, appimage, name) in [
+            ("windows", "x86_64", false, "Kompacter-0.1.2-setup.exe"),
+            ("linux", "x86_64", true, "Kompacter-0.1.2-x86_64.AppImage"),
+            ("macos", "aarch64", false, "Kompacter-0.1.2-macos-arm64.dmg"),
+        ] {
+            let a = assets(&old, wanted(os, arch, appimage).unwrap()).unwrap();
+            assert_eq!(a.name, name);
+        }
+        // And a new release beats it.
+        let list = serde_json::json!([old, full_release("0.2.0")]);
+        assert_eq!(newest(&list, WINDOWS).unwrap().0, "v0.2.0");
     }
 
     #[test]
@@ -551,7 +584,7 @@ mod tests {
         release["assets"]
             .as_array_mut()
             .unwrap()
-            .retain(|a| a["name"].as_str() != Some("Kompacter-0.2.0-x86_64.AppImage.sha256"));
+            .retain(|a| a["name"].as_str() != Some("Kompacter-linux-x86_64.AppImage.sha256"));
         assert!(assets(&release, wanted("linux", "x86_64", true).unwrap()).is_none());
     }
 

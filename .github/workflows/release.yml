@@ -1,13 +1,16 @@
 name: Release
 
 # Push a tag like v0.0.3-test (or run it by hand) to build every download:
-#   Windows  Kompacter-<v>-setup.exe
-#   Linux    Kompacter-<v>-x86_64.AppImage, kompacter_<v>_amd64.deb,
-#            Kompacter-<v>-linux-x86_64.tar.gz
-#   macOS    Kompacter-<v>-macos-arm64.dmg (Apple silicon)
-# each with a .sha256 next to it. The build jobs only upload artifacts; on tags the
-# `publish` job collects them all into one DRAFT GitHub Release (so parallel jobs never
-# race on it): check it, then press Publish. Manual runs keep the artifacts only.
+#   Windows  Kompacter-windows-setup.exe
+#   Linux    Kompacter-linux-x86_64.AppImage
+#   macOS    Kompacter-installer-macos-arm64.dmg (Apple silicon)
+# each with a .sha256 next to it. The names carry no version, so the README links to
+# releases/latest/download/<name> and always gets the newest one. They still match what
+# older copies' updaters look for ("Kompacter-" ... "-setup.exe" / "-x86_64.AppImage" /
+# "-macos-arm64.dmg", plus "<name>.sha256"); the version comes from the release tag.
+# The build jobs only upload artifacts; on tags the `publish` job collects them all into
+# one DRAFT GitHub Release (so parallel jobs never race on it): check it, then press
+# Publish. Manual runs keep the artifacts only.
 on:
   push:
     tags: ["v*"]
@@ -80,7 +83,8 @@ jobs:
         working-directory: packaging/windows
         shell: pwsh
         run: |
-          $f = Get-Item Kompacter-*-setup.exe
+          Move-Item (Get-Item Kompacter-*-setup.exe).FullName Kompacter-windows-setup.exe
+          $f = Get-Item Kompacter-windows-setup.exe
           $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
           "$hash  $($f.Name)" | Out-File -Encoding ascii -NoNewline "$($f.FullName).sha256"
 
@@ -89,8 +93,8 @@ jobs:
         with:
           name: release-windows
           path: |
-            packaging/windows/Kompacter-*-setup.exe
-            packaging/windows/Kompacter-*-setup.exe.sha256
+            packaging/windows/Kompacter-windows-setup.exe
+            packaging/windows/Kompacter-windows-setup.exe.sha256
           if-no-files-found: error
 
   linux:
@@ -176,22 +180,21 @@ jobs:
           rm -rf squashfs-root
           dpkg-deb --info "kompacter_${VERSION}_amd64.deb"
 
-      - name: Checksums
+      # Only the AppImage is published (the .deb and tarball are still built, as a check
+      # of the packaging scripts, but one Linux download is easier to find).
+      - name: Checksum
         working-directory: dist/linux
         run: |
-          for f in Kompacter-*.AppImage kompacter_*.deb Kompacter-*-linux-x86_64.tar.gz; do
-            sha256sum "$f" > "$f.sha256"
-          done
+          mv "Kompacter-$VERSION-x86_64.AppImage" Kompacter-linux-x86_64.AppImage
+          sha256sum Kompacter-linux-x86_64.AppImage > Kompacter-linux-x86_64.AppImage.sha256
 
       - name: Keep the Linux downloads
         uses: actions/upload-artifact@v7
         with:
           name: release-linux
           path: |
-            dist/linux/Kompacter-*.AppImage
-            dist/linux/kompacter_*.deb
-            dist/linux/Kompacter-*-linux-x86_64.tar.gz
-            dist/linux/*.sha256
+            dist/linux/Kompacter-linux-x86_64.AppImage
+            dist/linux/Kompacter-linux-x86_64.AppImage.sha256
           if-no-files-found: error
 
   macos:
@@ -273,7 +276,7 @@ jobs:
 
       - name: Build the DMG
         run: |
-          dmg="target/macos/Kompacter-$VERSION-macos-${{ matrix.arch }}.dmg"
+          dmg="target/macos/Kompacter-installer-macos-${{ matrix.arch }}.dmg"
           packaging/macos/make-dmg.sh target/macos/Kompacter.app "$dmg"
           echo "DMG=$dmg" >> "$GITHUB_ENV"
 
@@ -299,8 +302,8 @@ jobs:
         with:
           name: release-macos-${{ matrix.arch }}
           path: |
-            target/macos/Kompacter-*.dmg
-            target/macos/Kompacter-*.dmg.sha256
+            target/macos/Kompacter-installer-macos-*.dmg
+            target/macos/Kompacter-installer-macos-*.dmg.sha256
           if-no-files-found: error
 
   # One job creates the release from every build's artifacts, so uploads never race.
@@ -320,6 +323,7 @@ jobs:
         working-directory: dist
         run: |
           ls -l
+          test "$(ls | wc -l)" -eq 6 || { echo "expected 3 downloads and 3 checksums" >&2; exit 1; }
           for f in *; do
             case "$f" in *.sha256) continue ;; esac
             test -f "$f.sha256" || { echo "missing $f.sha256" >&2; exit 1; }
