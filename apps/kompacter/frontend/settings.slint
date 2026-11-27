@@ -20,6 +20,12 @@ export global Prefs {
     in property <int> output-index;
     in property <string> output-dir;
     in property <bool> gpu;
+    /// Windows: draw the window on the GPU. Read at start, so a change waits for a restart.
+    in property <bool> gpu-drawing-available;
+    in property <bool> gpu-drawing;
+    /// Not set by hand: follows the preference (on with Efficiency).
+    in property <bool> gpu-drawing-follows: true;
+    in property <bool> gpu-drawing-running;
     in property <bool> windows-integration;
     /// "Replace the original" (needs a Recycle Bin / Trash) and what it's called here.
     in property <bool> replace-available;
@@ -69,6 +75,9 @@ export global Prefs {
     callback choose-folder();
     callback open-outputs();
     callback set-gpu(bool);
+    callback set-gpu-drawing(bool);
+    /// Start Kompacter again (for settings read at start).
+    callback restart();
     callback set-auto-update(bool);
     callback set-auto-hide(bool);
     callback set-start(bool);
@@ -656,6 +665,24 @@ export component SettingsView inherits Rectangle {
                         enabled: Prefs.compression-preference != 2;
                         y: (parent.height - self.height) / 2;
                         toggled(on) => { Prefs.set-gpu(on); }
+                    }
+                }
+                if Prefs.gpu-drawing-available: Cell {
+                    label: "GPU drawing";
+                    small: Prefs.gpu-drawing != Prefs.gpu-drawing-running ? "Restart Kompacter to apply"
+                        : Prefs.gpu-drawing && Prefs.gpu-drawing-follows ? "On with Efficiency · less CPU, more memory"
+                        : Prefs.gpu-drawing ? "Less CPU while animating, more memory"
+                        : "Least memory";
+                    if Prefs.gpu-drawing != Prefs.gpu-drawing-running: Btn {
+                        text: "Restart";
+                        plain: true;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { Prefs.restart(); }
+                    }
+                    Switch {
+                        checked: Prefs.gpu-drawing;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-gpu-drawing(on); }
                     }
                 }
                 Cell {

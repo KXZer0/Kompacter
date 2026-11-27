@@ -22,6 +22,10 @@ pub struct Settings {
     /// "match" | "light" | "ash" | "dark" | "onyx" (Discord style)
     pub discord_theme: String,
     pub gpu: bool,
+    /// Windows: draw the window on the GPU (Skia on Direct3D 12) instead of the CPU.
+    /// `None` follows the preference: on with Efficiency, off otherwise. Read at start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_drawing: Option<bool>,
     /// Where results go: "app" | "beside" | "custom" | "replace" (see output.rs).
     pub output: String,
     /// Folder for `output = "custom"`.
@@ -98,6 +102,7 @@ impl Default for Settings {
             style: "kompacter".into(),
             discord_theme: "match".into(),
             gpu: true,
+            gpu_drawing: None,
             output: "app".into(),
             output_dir: String::new(),
             auto_hide: true,
@@ -123,6 +128,12 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Whether the window is drawn on the GPU (see `gpu_drawing`).
+    pub fn gpu_drawing(&self) -> bool {
+        self.gpu_drawing
+            .unwrap_or(self.compression_preference == CompressionPreference::Efficiency)
+    }
+
     pub fn options(&self, target: u64) -> Options {
         let mut options = self.compression_preference.options(target);
         options.video_codec = self.video_codec.unwrap_or(options.video_codec);
@@ -218,6 +229,19 @@ mod tests {
         assert_eq!(options.audio_format, AudioFormat::Opus);
         assert_eq!(options.image_format, ImageFormat::Webp);
         assert!(options.gpu);
+    }
+
+    #[test]
+    fn gpu_drawing_follows_efficiency_unless_set() {
+        let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.gpu_drawing());
+        settings.compression_preference = CompressionPreference::Efficiency;
+        assert!(settings.gpu_drawing());
+        settings.gpu_drawing = Some(false);
+        assert!(!settings.gpu_drawing());
+        settings.compression_preference = CompressionPreference::Balanced;
+        settings.gpu_drawing = Some(true);
+        assert!(settings.gpu_drawing());
     }
 
     #[test]

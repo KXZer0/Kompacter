@@ -174,6 +174,8 @@ pub struct App {
     pub rich: bool,
     /// Floating see-through card; otherwise a plain window.
     pub glass: bool,
+    /// The window is drawn on the GPU this run (Windows; chosen at start).
+    pub gpu_drawing: bool,
     pub motion: motion::Motion,
     pub trim: trim::Trim,
     pub tray: RefCell<Option<Tray>>,
@@ -198,12 +200,31 @@ pub struct App {
 }
 
 impl App {
+    /// Starts a fresh copy (which waits for this one to close) and quits, so a setting
+    /// that is read at start, like GPU drawing, takes effect.
+    pub fn restart(self: &Rc<Self>) {
+        #[cfg(windows)]
+        {
+            let Ok(exe) = std::env::current_exe() else {
+                return;
+            };
+            if std::process::Command::new(exe)
+                .arg(RESTARTED_ARG)
+                .spawn()
+                .is_ok()
+            {
+                self.trim_quit();
+            }
+        }
+    }
+
     fn new(
         ui: &AppWindow,
         tray: Option<Tray>,
         prefs: Settings,
         rich: bool,
         glass: bool,
+        gpu_drawing: bool,
     ) -> Rc<Self> {
         let prefs_auto_update = prefs.auto_update;
         Rc::new(Self {
@@ -223,6 +244,7 @@ impl App {
             auto_hidden: Cell::new(None),
             rich,
             glass,
+            gpu_drawing,
             motion: motion::Motion::default(),
             trim: trim::Trim::default(),
             tray: RefCell::new(tray),
@@ -361,6 +383,10 @@ impl App {
         prefs.set_replace_available(sys::CAPABILITIES.trash);
         prefs.set_trash_name(sys::TRASH_NAME.into());
         prefs.set_gpu(s.gpu);
+        prefs.set_gpu_drawing_available(cfg!(windows));
+        prefs.set_gpu_drawing(s.gpu_drawing());
+        prefs.set_gpu_drawing_follows(s.gpu_drawing.is_none());
+        prefs.set_gpu_drawing_running(self.gpu_drawing);
         prefs.set_auto_update(s.auto_update);
         prefs.set_auto_hide(s.auto_hide);
         prefs.set_start_available(sys::start_with_system_supported());
@@ -702,6 +728,50 @@ fn with_app(f: impl FnOnce(&Rc<App>) + Send + 'static) {
     });
 }
 
+/// Passed to the copy started by "Restart" in Settings, which waits for this one to close.
+#[cfg(windows)]
+const RESTARTED_ARG: &str = "--restarted";
+
+/// Picks Slint's winit backend and renderer. `gpu`: Skia on the GPU (Windows only).
+fn select_backend(gpu: bool) -> Result<(), slint::PlatformError> {
+    let backend = slint::BackendSelector::new().backend_name("winit".into());
+    #[cfg(windows)]
+    let backend = backend.renderer_name(if gpu { "skia" } else { "skia-software" }.into());
+    #[cfg(not(windows))]
+    let backend = backend.renderer_name("femtovg".into());
+    backend
+        .with_winit_window_attributes_hook(move |attrs| {
+            #[cfg(windows)]
+            {
+                use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
+                // The floating card draws its own corners and shadow; the plain GPU
+                // window gets Windows' rounded corners and shadow instead.
+                attrs
+                    .with_skip_taskbar(true)
+                    .with_undecorated_shadow(gpu)
+                    .with_corner_preference(if gpu {
+                        CornerPreference::Round
+                    } else {
+                        CornerPreference::DoNotRound
+                    })
+            }
+            // The rounded card and its shadow are drawn by the UI on a clear window,
+            // as on Windows and Linux, so AppKit's square window shadow stays off.
+            #[cfg(target_os = "macos")]
+            {
+                let _ = gpu;
+                use winit::platform::macos::WindowAttributesExtMacOS;
+                attrs.with_transparent(true).with_has_shadow(false)
+            }
+            #[cfg(not(any(windows, target_os = "macos")))]
+            {
+                let _ = gpu;
+                attrs
+            }
+        })
+        .select()
+}
+
 pub(crate) fn start() -> Result<(), slint::PlatformError> {
     #[cfg(target_os = "linux")]
     let Some(linux_launch) = sys::linux::launch()
@@ -715,7 +785,13 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     #[cfg(windows)]
     {
         sys::leave_handoff(&sys::file_args(std::env::args()));
-        if !sys::first_instance() {
+        // After "Restart" in Settings the old copy is still closing: wait for it.
+        let restarted = std::env::args().any(|a| a == RESTARTED_ARG);
+        if !(if restarted {
+            sys::wait_first_instance()
+        } else {
+            sys::first_instance()
+        }) {
             return Ok(());
         }
     }
@@ -732,43 +808,37 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     }
 
     let prefs = settings::load();
-    let backend = slint::BackendSelector::new().backend_name("winit".into());
+    // Windows draws on the CPU (Skia raster: least memory, redraws only what changed)
+    // unless GPU drawing is on (Skia on Direct3D 12: less CPU while animating, more
+    // memory). D3D12 can't show a see-through window, so the GPU window is the plain one
+    // with Windows' own rounded corners and shadow. If the GPU renderer can't start,
+    // the CPU one takes over. macOS and Linux already draw on the GPU (FemtoVG).
     #[cfg(windows)]
-    let backend = backend.renderer_name("skia-software".into());
+    let gpu_drawing = prefs.gpu_drawing()
+        && select_backend(true)
+            .inspect_err(|e| eprintln!("GPU drawing unavailable: {e}"))
+            .is_ok();
+    #[cfg(windows)]
+    if !gpu_drawing {
+        select_backend(false)?;
+    }
     #[cfg(not(windows))]
-    let backend = backend.renderer_name("femtovg".into());
-    backend
-        .with_winit_window_attributes_hook(|attrs| {
-            #[cfg(windows)]
-            {
-                use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
-                attrs
-                    .with_skip_taskbar(true)
-                    .with_undecorated_shadow(false)
-                    .with_corner_preference(CornerPreference::DoNotRound)
-            }
-            // The rounded card and its shadow are drawn by the UI on a clear window,
-            // as on Windows and Linux, so AppKit's square window shadow stays off.
-            #[cfg(target_os = "macos")]
-            {
-                use winit::platform::macos::WindowAttributesExtMacOS;
-                attrs.with_transparent(true).with_has_shadow(false)
-            }
-            #[cfg(not(any(windows, target_os = "macos")))]
-            attrs
-        })
-        .select()?;
+    let gpu_drawing = false;
+    #[cfg(not(windows))]
+    select_backend(false)?;
 
     #[cfg(target_os = "linux")]
     slint::set_xdg_app_id(sys::linux::APP_ID)?;
     let ui = AppWindow::new()?;
     // Skia raster supports the translucent card. Installing a rendering notifier
-    // would disable its partial redraws, even if the callback does nothing.
+    // would disable its partial redraws, even if the callback does nothing. Skia on the
+    // GPU has every effect but no see-through window, so it gets the plain window.
     #[cfg(windows)]
-    let glass = true;
+    let (glass, rich) = (!gpu_drawing, sys::animations_enabled());
     // FemtoVG draws the translucent card on macOS and Linux alike.
     #[cfg(not(windows))]
     let glass = ui.window().set_rendering_notifier(|_, _| {}).is_ok();
+    #[cfg(not(windows))]
     let rich = glass && sys::animations_enabled();
     ui.global::<Fx>().set_glass(glass);
     ui.global::<Fx>().set_rich(rich);
@@ -782,7 +852,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     let tray = Some(Tray::new()?);
     #[cfg(not(windows))]
     let tray = None;
-    let app = App::new(&ui, tray, prefs, rich, glass);
+    let app = App::new(&ui, tray, prefs, rich, glass, gpu_drawing);
     APP.with(|a| *a.borrow_mut() = Rc::downgrade(&app));
     #[cfg(target_os = "macos")]
     if !sys::install_activation(|files| with_app(move |app| app.activate(files))) {
@@ -1118,6 +1188,18 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
                 sys::open_folder(&d);
             }
         });
+        let a = app.clone();
+        prefs.on_set_gpu_drawing(move |on| {
+            let mut s = a.settings.borrow_mut();
+            // Back to "follow the preference" when the choice matches what it would pick.
+            let follows = s.compression_preference == CompressionPreference::Efficiency;
+            s.gpu_drawing = (on != follows).then_some(on);
+            drop(s);
+            a.save();
+            a.sync_settings();
+        });
+        let a = app.clone();
+        prefs.on_restart(move || a.restart());
         let a = app.clone();
         prefs.on_set_gpu(move |on| {
             a.settings.borrow_mut().gpu = on;

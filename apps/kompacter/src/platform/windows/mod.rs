@@ -750,6 +750,26 @@ pub fn first_instance() -> bool {
     }
 }
 
+/// Like `first_instance`, for a copy started by "Restart": the old copy is closing, so
+/// wait up to ten seconds for it instead of asking it to show. False if it never closed.
+pub fn wait_first_instance() -> bool {
+    for _ in 0..100 {
+        unsafe {
+            let m = CreateMutexW(null(), 0, wide("Local\\KompacterRunning").as_ptr());
+            if m.is_null() {
+                return false;
+            }
+            if GetLastError() != ERROR_ALREADY_EXISTS {
+                // Ours now; it stays open for the life of the process.
+                return true;
+            }
+            CloseHandle(m);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    false
+}
+
 /// Calls `on_show` whenever a second launch asks this one to open its window.
 pub fn listen_for_show(on_show: impl Fn() + Send + 'static) {
     let e = unsafe { CreateEventW(null(), 0, 0, wide(SHOW_EVENT).as_ptr()) };
