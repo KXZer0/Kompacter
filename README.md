@@ -32,6 +32,8 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 
 <p align="center"><img src="docs/media/linux.gif" alt="Linux: clicking Kompacter's tray icon in the top bar opens the panel right below it" width="720"></p>
 
+<p align="center"><img src="docs/media/macos.gif" alt="macOS: clicking Kompacter's Dock icon opens the panel right above it" width="420"></p>
+
 **Drop a file, press Compress, paste.** It picks the resolution and bitrate that fit, and the result is already on your clipboard.
 
 <p align="center"><img src="docs/media/compress.gif" alt="Dragging a 61 MB video onto Kompacter and compressing it under Discord's 20 MB limit" width="720"></p>
