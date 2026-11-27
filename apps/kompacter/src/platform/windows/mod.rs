@@ -212,16 +212,30 @@ pub fn style_plain_window(hwnd: isize) {
     }
 }
 
-/// False when "Animation effects" is turned off in Windows settings.
-/// The notification area's icon size in pixels for the system DPI (16 at 100 % scaling,
-/// 24 at 150 %, 32 at 200 %). The shell scales whatever the tray gets to this size.
+/// The notification area's icon size in pixels for the primary screen's current scale
+/// (16 at 100 % scaling, 24 at 150 %, 32 at 200 %). The shell scales whatever the tray
+/// gets to this size. The system DPI stays what it was when Kompacter started, so the
+/// screen's own is asked each time the icon is drawn: a new scale applies right away.
 pub fn tray_icon_px() -> u32 {
+    use windows_sys::Win32::Graphics::Gdi::MONITOR_DEFAULTTOPRIMARY;
     use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
     use windows_sys::Win32::UI::WindowsAndMessaging::SM_CXSMICON;
-    let px = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem()) };
+    let px = unsafe {
+        // The tray lives on the primary screen's taskbar, whose corner is (0, 0).
+        let primary = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let (mut dpi, mut dpi_y) = (0u32, 0u32);
+        if primary.is_null()
+            || GetDpiForMonitor(primary, MDT_EFFECTIVE_DPI, &mut dpi, &mut dpi_y) != 0
+            || dpi == 0
+        {
+            dpi = GetDpiForSystem();
+        }
+        GetSystemMetricsForDpi(SM_CXSMICON, dpi)
+    };
     u32::try_from(px).ok().filter(|&px| px > 0).unwrap_or(16)
 }
 
+/// False when "Animation effects" is turned off in Windows settings.
 pub fn animations_enabled() -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION,

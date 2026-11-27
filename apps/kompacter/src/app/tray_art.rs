@@ -37,6 +37,9 @@ pub struct TrayArt {
     frame: Cell<usize>,
     /// The compressing frames for the tray's tint and size; empty unless busy.
     frames: RefCell<Vec<Image>>,
+    /// The size (index into `SIZES`) the frames were cut at.
+    #[cfg(not(target_os = "macos"))]
+    size: Cell<usize>,
     anim: Timer,
 }
 
@@ -111,7 +114,11 @@ impl App {
         let tint = art.discord.get() as usize;
         #[cfg(not(target_os = "macos"))]
         if let Some(tray) = self.tray.borrow().as_ref() {
+            // Picked every time, so a change of display scale applies without a restart.
             let size = tray_size();
+            if art.size.replace(size) != size {
+                art.frames.borrow_mut().clear();
+            }
             let image = if mood == Mood::Busy {
                 let mut frames = art.frames.borrow_mut();
                 if frames.is_empty() {
@@ -172,9 +179,9 @@ fn strip(png: &[u8], count: usize) -> Vec<Image> {
 const SIZES: [u32; 5] = [16, 20, 24, 32, 48];
 
 /// Which drawn size to hand the tray (an index into `SIZES`). Slint takes one image and
-/// the shell scales it, so Windows gets its small-icon size for the system DPI (16 px at
-/// 100 %, 24 at 150 %, 32 at 200 %); Linux tray hosts scale it themselves (22-24 px
-/// usually), so they get 32.
+/// the shell scales it, so Windows gets its small-icon size for the current display scale
+/// (16 px at 100 %, 24 at 150 %, 32 at 200 %); Linux tray hosts scale it themselves
+/// (22-24 px usually), so they get 32.
 #[cfg(not(target_os = "macos"))]
 fn tray_size() -> usize {
     #[cfg(windows)]
