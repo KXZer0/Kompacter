@@ -32,6 +32,26 @@ pub fn supported() -> bool {
     bundled_exe().is_some()
 }
 
+/// Another running copy of Kompacter (same bundle identifier, another process).
+/// Launch Services never starts a second copy, but the login agent starts the program
+/// directly: registering it on first run starts it at once, and at login it can race a
+/// copy the user opened. A second copy finds the first here and steps aside.
+pub fn another_instance() -> Option<objc2::rc::Retained<objc2_app_kit::NSRunningApplication>> {
+    use objc2_app_kit::NSRunningApplication;
+    let me = NSRunningApplication::currentApplication();
+    let id = me.bundleIdentifier()?;
+    let pid = me.processIdentifier();
+    NSRunningApplication::runningApplicationsWithBundleIdentifier(&id)
+        .iter()
+        .find(|app| app.processIdentifier() != pid && !app.isTerminated())
+}
+
+/// Bring a running copy forward (a non-quiet second launch hands over to it).
+pub fn activate(app: &objc2_app_kit::NSRunningApplication) {
+    use objc2_app_kit::NSApplicationActivationOptions;
+    app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+}
+
 /// The agent the bundle ships for Open at login (see packaging/macos/build-app.sh).
 const LOGIN_AGENT: &str = "io.github.KXZer0.Kompacter.login.plist";
 

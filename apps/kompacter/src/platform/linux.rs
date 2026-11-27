@@ -207,10 +207,44 @@ pub fn launch() -> io::Result<Option<Primary>> {
     if matches!(initial.action, Action::Quit) {
         return Ok(None);
     }
+    // No way to talk to another copy, but still only one Kompacter per user: a copy that
+    // finds the lock taken leaves. Only if no lock file can be made at all does it run.
+    if instance_lock() == Some(false) {
+        eprintln!("Kompacter is already running");
+        return Ok(None);
+    }
     Ok(Some(Primary {
         listener: None,
         initial,
     }))
+}
+
+/// Take the per-user instance lock for the life of the process. `Some(true)`: this is the
+/// only copy; `Some(false)`: another copy holds it; `None`: no lock file could be made.
+fn instance_lock() -> Option<bool> {
+    static LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+    let dir = private_socket()
+        .and_then(|socket| socket.parent().map(Path::to_path_buf))
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache/kompacter"))
+        })?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let held = lock_file(&dir.join(format!("{APP_ID}.lock"))).ok()?;
+    Some(held.is_some_and(|file| LOCK.set(file).is_ok()))
+}
+
+/// An exclusive lock on `path` (`Ok(None)`: another open of it holds the lock). The lock
+/// lasts as long as the returned file is open.
+fn lock_file(path: &Path) -> io::Result<Option<std::fs::File>> {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)?;
+    // SAFETY: flock on a file descriptor owned by `file`.
+    let taken = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    Ok(taken.then_some(file))
 }
 
 /// `file`: the address is a socket file, removed when nothing listens on it any more.
@@ -504,6 +538,23 @@ fn x11_anchor(conn: &impl x11rb::connection::Connection, screen: usize) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_copy_holds_the_instance_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kompacter.lock");
+        let first = lock_file(&path).unwrap();
+        assert!(first.is_some(), "the first copy takes the lock");
+        assert!(
+            lock_file(&path).unwrap().is_none(),
+            "a second copy is refused"
+        );
+        drop(first);
+        assert!(
+            lock_file(&path).unwrap().is_some(),
+            "free again once the first exits"
+        );
+    }
 
     fn activation(action: Action) -> Activation {
         Activation {

@@ -721,6 +721,15 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     }
     #[cfg(not(target_os = "linux"))]
     let quiet = std::env::args().any(|a| a == "--tray");
+    // Only one Kompacter on macOS: a copy the login agent started while another runs
+    // (or any other second copy) hands over to it and leaves.
+    #[cfg(target_os = "macos")]
+    if let Some(other) = sys::another_instance() {
+        if !quiet {
+            sys::activate_instance(&other);
+        }
+        return Ok(());
+    }
 
     let prefs = settings::load();
     let backend = slint::BackendSelector::new().backend_name("winit".into());

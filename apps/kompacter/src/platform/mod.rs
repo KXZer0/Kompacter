@@ -26,6 +26,8 @@ pub use macos::{
     style_panel,
 };
 #[cfg(target_os = "macos")]
+pub use macos_login::{activate as activate_instance, another_instance};
+#[cfg(target_os = "macos")]
 pub mod macos_watch;
 
 #[cfg(any(target_os = "macos", test))]
