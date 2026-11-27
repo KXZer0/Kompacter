@@ -3,9 +3,10 @@
 Run on a Mac with Xcode Command Line Tools, Rust, Homebrew, and Python 3. The
 bundle targets the build Mac's architecture: Homebrew's ffmpeg is single-arch, so
 there is no universal build. The **Release** workflow builds
-`Kompacter-<version>-macos-arm64.dmg` on `macos-15` and
-`Kompacter-<version>-macos-x86_64.dmg` on `macos-15-intel`; the
-**macOS review build** workflow builds the Apple Silicon ZIP and DMG for review.
+`Kompacter-<version>-macos-arm64.dmg` on `macos-latest`; there is no Intel build,
+because Homebrew no longer supports Intel Macs. The DMG needs at least the macOS it
+was built on (`LSMinimumSystemVersion`). The **macOS review build** workflow builds
+the Apple silicon ZIP and DMG for review.
 
 ```sh
 brew install ffmpeg

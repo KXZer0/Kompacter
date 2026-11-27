@@ -4,7 +4,7 @@ name: Release
 #   Windows  Kompacter-<v>-setup.exe
 #   Linux    Kompacter-<v>-x86_64.AppImage, kompacter_<v>_amd64.deb,
 #            Kompacter-<v>-linux-x86_64.tar.gz
-#   macOS    Kompacter-<v>-macos-arm64.dmg, Kompacter-<v>-macos-x86_64.dmg
+#   macOS    Kompacter-<v>-macos-arm64.dmg (Apple silicon)
 # each with a .sha256 next to it. The build jobs only upload artifacts; on tags the
 # `publish` job collects them all into one DRAFT GitHub Release (so parallel jobs never
 # race on it): check it, then press Publish. Manual runs keep the artifacts only.
@@ -195,20 +195,26 @@ jobs:
           if-no-files-found: error
 
   macos:
-    # Each architecture is built natively, with the matching Homebrew ffmpeg inside.
+    # Built on the newest macOS (macos-latest, Apple silicon) with Homebrew's ffmpeg
+    # inside. Homebrew builds FFmpeg for the macOS it runs on, so the DMG needs at least
+    # that macOS; build-app.sh writes it into Info.plist. There is no Intel DMG: Homebrew
+    # no longer supports Intel Macs, so there is no Intel ffmpeg to bundle.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
-            arch: arm64
-          - runner: macos-15-intel
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
+          - arch: arm64
+            target: ""
+            brew: brew
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
 
       - name: Version
         run: |
@@ -219,11 +225,13 @@ jobs:
           echo "VERSION=$v" >> "$GITHUB_ENV"
           echo "KOMPACTER_PACKAGE_VERSION=$v" >> "$GITHUB_ENV"
           if [[ "$v" != 0.0.0 ]]; then echo "KOMPACTER_VERSION=$v" >> "$GITHUB_ENV"; fi
+          echo "KOMPACTER_MAC_TARGET=${{ matrix.target }}" >> "$GITHUB_ENV"
+          echo "KOMPACTER_BREW=${{ matrix.brew }}" >> "$GITHUB_ENV"
 
       - name: Install ffmpeg
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
-        run: brew install ffmpeg
+        run: ${{ matrix.brew }} install ffmpeg
 
       # Signing is optional: without these secrets the DMG is ad-hoc signed and users
       # open it with right-click > Open (see packaging/macos/README.md).
