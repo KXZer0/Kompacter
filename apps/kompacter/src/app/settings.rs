@@ -128,6 +128,17 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Changes the preference. Efficiency switches GPU encoding on, but it stays the
+    /// user's switch: they can turn it off again and the preference keeps it that way.
+    pub fn set_preference(&mut self, preference: CompressionPreference) {
+        if preference == CompressionPreference::Efficiency
+            && self.compression_preference != preference
+        {
+            self.gpu = true;
+        }
+        self.compression_preference = preference;
+    }
+
     /// Whether the window is drawn on the GPU (see `gpu_drawing`).
     pub fn gpu_drawing(&self) -> bool {
         self.gpu_drawing
@@ -140,9 +151,8 @@ impl Settings {
         options.audio_format = self.audio_format.unwrap_or(options.audio_format);
         options.image_format = self.image_format.unwrap_or(options.image_format);
         options.archive = self.archive_format.unwrap_or(options.archive);
-        // Efficiency is GPU encoding, so it does not depend on the GPU switch.
-        options.gpu = self.compression_preference == CompressionPreference::Efficiency
-            || (options.gpu && self.gpu);
+        // The switch decides; choosing Efficiency only turns it on (`set_preference`).
+        options.gpu &= self.gpu;
         options
     }
 }
@@ -245,17 +255,18 @@ mod tests {
     }
 
     #[test]
-    fn efficiency_always_encodes_on_the_gpu() {
+    fn efficiency_turns_gpu_encoding_on_but_never_locks_it() {
         let mut settings: Settings = serde_json::from_str("{}").unwrap();
         settings.gpu = false;
-        assert!(!settings.options(10).gpu);
-        settings.compression_preference = CompressionPreference::Compatibility;
-        assert!(!settings.options(10).gpu);
-        settings.compression_preference = CompressionPreference::Efficiency;
+        settings.set_preference(CompressionPreference::Efficiency);
         assert!(settings.options(10).gpu);
-        settings.gpu = true;
-        settings.compression_preference = CompressionPreference::Balanced;
-        assert!(settings.options(10).gpu);
+        // Still the user's switch.
+        settings.gpu = false;
+        assert!(!settings.options(10).gpu);
+        settings.set_preference(CompressionPreference::Efficiency);
+        assert!(!settings.options(10).gpu);
+        settings.set_preference(CompressionPreference::Compatibility);
+        assert!(!settings.options(10).gpu);
     }
 
     #[test]

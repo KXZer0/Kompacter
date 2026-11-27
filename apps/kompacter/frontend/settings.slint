@@ -658,11 +658,10 @@ export component SettingsView inherits Rectangle {
             Group {
                 Cell {
                     label: "GPU encoding";
-                    small: Prefs.compression-preference == 2 ? "Always on with Efficiency" : "";
+                    small: Prefs.compression-preference == 2 && Prefs.gpu ? "On with Efficiency" : "";
                     first: true;
                     Switch {
-                        checked: Prefs.gpu || Prefs.compression-preference == 2;
-                        enabled: Prefs.compression-preference != 2;
+                        checked: Prefs.gpu;
                         y: (parent.height - self.height) / 2;
                         toggled(on) => { Prefs.set-gpu(on); }
                     }

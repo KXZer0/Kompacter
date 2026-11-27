@@ -524,8 +524,7 @@ impl App {
         {
             let mut s = self.settings.borrow_mut();
             s.welcomed = true;
-            s.compression_preference =
-                COMPRESSION_PREFERENCES[ui.get_welcome_preference() as usize];
+            s.set_preference(COMPRESSION_PREFERENCES[ui.get_welcome_preference() as usize]);
             if sys::CAPABILITIES.watch_copies && sys::watch_copies_support().is_ok() {
                 s.watch_copies = ui.get_welcome_copies();
             }
@@ -1238,8 +1237,9 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         ui.on_welcome_done(move || a.welcome_done());
         let a = app.clone();
         prefs.on_set_compression_preference(move |i| {
-            a.settings.borrow_mut().compression_preference =
-                COMPRESSION_PREFERENCES[i.clamp(0, 2) as usize];
+            a.settings
+                .borrow_mut()
+                .set_preference(COMPRESSION_PREFERENCES[i.clamp(0, 2) as usize]);
             a.save();
             a.sync_settings();
         });
