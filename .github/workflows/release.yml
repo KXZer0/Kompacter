@@ -196,11 +196,14 @@ jobs:
 
   macos:
     # Each architecture is built natively, with the matching Homebrew ffmpeg inside.
+    # Homebrew builds FFmpeg for the macOS it runs on, so each DMG needs at least the
+    # macOS it was built on; build-app.sh writes that into Info.plist. Apple silicon
+    # builds on macOS 26; macos-15-intel is GitHub's newest Intel image.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
+          - runner: macos-26
             arch: arm64
           - runner: macos-15-intel
             arch: x86_64

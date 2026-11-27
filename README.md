@@ -21,8 +21,8 @@ Get Kompacter from [Releases](https://github.com/KXZer0/Kompacter/releases). Eve
 | Linux (x86-64) | `Kompacter-<version>-x86_64.AppImage` | ffmpeg is included. `chmod +x` it and run it. Needs glibc 2.35+ (Ubuntu 22.04, Debian 12, Fedora 36 or newer) and the usual desktop OpenGL/Wayland/X11 libraries. |
 | Debian / Ubuntu | `kompacter_<version>_amd64.deb` | `sudo apt install ./kompacter_<version>_amd64.deb` ffmpeg is included. |
 | Linux, portable | `Kompacter-<version>-linux-x86_64.tar.gz` | Extract and run `./Kompacter`; ffmpeg is included; `./install-launcher.sh` adds a menu entry. |
-| macOS (Apple Silicon) | `Kompacter-<version>-macos-arm64.dmg` | Open it and drag Kompacter to Applications; ffmpeg is included. |
-| macOS (Intel) | `Kompacter-<version>-macos-x86_64.dmg` | Same as above. |
+| macOS 26 or later (Apple Silicon) | `Kompacter-<version>-macos-arm64.dmg` | Open it and drag Kompacter to Applications; ffmpeg is included. |
+| macOS 15 or later (Intel) | `Kompacter-<version>-macos-x86_64.dmg` | Same as above. |
 
 Until the macOS builds are notarized, macOS blocks the first start: right-click Kompacter in Applications → **Open** → **Open** (or run `xattr -dr com.apple.quarantine /Applications/Kompacter.app`).
 

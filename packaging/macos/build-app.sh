@@ -32,6 +32,9 @@ mkdir -p "$macos" "$resources"
 cp "$here/Info.plist" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$contents/Info.plist"
+# The bundled Homebrew FFmpeg needs at least the macOS it was built for.
+minimum="$(sw_vers -productVersion | cut -d. -f1).0"
+/usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion $minimum" "$contents/Info.plist"
 plutil -lint "$contents/Info.plist"
 install -m 755 "$target/release/Kompacter" "$macos/Kompacter"
 # Open at login starts the app quietly through this bundled agent (see macos_login.rs).
