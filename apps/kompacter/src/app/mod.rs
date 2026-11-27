@@ -772,6 +772,12 @@ fn select_backend(gpu: bool) -> Result<(), slint::PlatformError> {
 }
 
 pub(crate) fn start() -> Result<(), slint::PlatformError> {
+    // Hiding the panel drops its window and renderer (GPU surface, glyph and image
+    // caches) instead of keeping them for the next show, as Slint already does on
+    // Wayland. Slint's winit backend reads this on every hide; set before any thread
+    // starts. Not on Windows: Skia raster gains little, and the GPU path is untested.
+    #[cfg(not(windows))]
+    std::env::set_var("SLINT_DESTROY_WINDOW_ON_HIDE", "1");
     #[cfg(target_os = "linux")]
     let Some(linux_launch) = sys::linux::launch()
         .map_err(|error| slint::PlatformError::Other(format!("Kompacter activation: {error}")))?
@@ -936,6 +942,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         });
         let a = app.clone();
         ui.window().on_winit_window_event(move |_, event| {
+            a.native_window_event();
             match event {
                 winit::event::WindowEvent::Focused(false) => a.away(),
                 winit::event::WindowEvent::HoveredFile(_) => a.file_hover(true),

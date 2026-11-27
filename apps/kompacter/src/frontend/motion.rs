@@ -38,6 +38,12 @@ pub struct Motion {
     look: Cell<(f32, f32)>,
     ambient_turn: Cell<f32>,
     input_height: Cell<f32>,
+    /// Hiding destroyed the native window (macOS, Linux; see `app::start`). The next
+    /// one is made once the event loop gets to it, after `show` has returned, and
+    /// with Slint's default attributes: Kompacter's own touches wait for its first event.
+    remade: Cell<bool>,
+    /// That window should take the keyboard when it appears.
+    remade_focus: Cell<bool>,
 }
 
 /// Content height of the screen showing (the paste guard's quick bar has one more row).
@@ -320,7 +326,13 @@ impl App {
         if focus {
             #[cfg(target_os = "macos")]
             sys::focus_application();
-            ui.window().with_winit_window(|w| w.focus_window());
+            if ui
+                .window()
+                .with_winit_window(|w| w.focus_window())
+                .is_none()
+            {
+                self.motion.remade_focus.set(true);
+            }
             // Linux compositors may show the panel without granting focus.
             // Their actual focus-loss event still starts auto-hide.
             #[cfg(not(target_os = "linux"))]
@@ -349,6 +361,44 @@ impl App {
             if animate && cfg!(windows) {
                 self.slide(true, generation);
             }
+        }
+    }
+
+    /// Called for every native window event. A window made again after a hide gets what
+    /// Slint doesn't carry over (on macOS: always on top, no AppKit shadow or the panel
+    /// style) and the focus its show asked for.
+    pub fn native_window_event(&self) {
+        if !self.motion.remade.get() {
+            return;
+        }
+        let ui = self.ui();
+        let made = ui.window().with_winit_window(|_w| {
+            // Slint remembers the level it last set and only sets it again on a change,
+            // so the new window would be an ordinary one. (On X11 winit asks for the
+            // level before the window is mapped, which window managers ignore, so the
+            // first window isn't above others either; left as it was.)
+            #[cfg(target_os = "macos")]
+            {
+                use slint::winit_030::winit::platform::macos::WindowExtMacOS;
+                _w.set_window_level(slint::winit_030::winit::window::WindowLevel::AlwaysOnTop);
+                // Set when the backend was chosen (see `app::select_backend`).
+                if self.glass {
+                    _w.set_has_shadow(false);
+                }
+            }
+        });
+        if made.is_none() {
+            return;
+        }
+        self.motion.remade.set(false);
+        #[cfg(target_os = "macos")]
+        if !self.glass {
+            style_mac_panel(&ui);
+        }
+        if self.motion.remade_focus.take() && ui.window().is_visible() {
+            #[cfg(target_os = "macos")]
+            sys::focus_application();
+            ui.window().with_winit_window(|w| w.focus_window());
         }
     }
 
@@ -515,6 +565,12 @@ impl App {
     fn hide_now(self: &Rc<Self>) {
         let ui = self.ui();
         let _ = ui.hide();
+        // Slint drops the window and its renderer on hide outside Windows (see
+        // `app::start`), so the next show makes a new one.
+        if !cfg!(windows) {
+            self.motion.remade.set(true);
+            self.motion.remade_focus.set(false);
+        }
         if ui.get_view() == View::Settings {
             self.close_settings();
         }
