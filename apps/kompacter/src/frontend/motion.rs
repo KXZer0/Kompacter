@@ -515,6 +515,7 @@ impl App {
     fn hide_now(self: &Rc<Self>) {
         let ui = self.ui();
         let _ = ui.hide();
+        self.mood_hidden();
         if ui.get_view() == View::Settings {
             self.close_settings();
         }

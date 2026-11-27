@@ -9,7 +9,7 @@
 use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
-use slint::{Image, Timer, TimerMode};
+use slint::{ComponentHandle, Image, Timer, TimerMode};
 #[cfg(not(target_os = "macos"))]
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
@@ -29,8 +29,6 @@ const FRAMES: usize = 16;
 const FRAME_TIME: Duration = Duration::from_millis(100);
 /// Shown when animations are off: the press closed, the blob squished.
 const STILL_FRAME: usize = 6;
-const DONE_FOR: Duration = Duration::from_secs(4);
-const ERROR_FOR: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub struct TrayArt {
@@ -40,7 +38,8 @@ pub struct TrayArt {
     /// The compressing frames for the tray's tint and size; empty unless busy.
     frames: RefCell<Vec<Image>>,
     anim: Timer,
-    revert: Timer,
+    /// Done / error happened while the panel was open, so it was seen there.
+    seen: Cell<bool>,
 }
 
 impl App {
@@ -60,24 +59,9 @@ impl App {
 
     pub(super) fn set_mood(&self, mood: Mood) {
         let art = &self.tray_art;
-        match mood {
-            Mood::Done | Mood::Error => {
-                art.revert.start(
-                    TimerMode::SingleShot,
-                    if mood == Mood::Done {
-                        DONE_FOR
-                    } else {
-                        ERROR_FOR
-                    },
-                    || {
-                        if let Some(app) = APP.with(|a| a.borrow().upgrade()) {
-                            app.settle_mood();
-                        }
-                    },
-                );
-            }
-            Mood::Busy | Mood::Idle => art.revert.stop(),
-        }
+        // Done and error stay in the icon until the panel has shown them (see
+        // `mood_seen` / `mood_hidden`), however long that takes.
+        art.seen.set(self.ui().window().is_visible());
         if art.mood.get() == Some(mood) {
             return;
         }
@@ -104,9 +88,17 @@ impl App {
         self.set_mood(if busy { Mood::Busy } else { Mood::Idle });
     }
 
-    /// The panel opened: it shows what went wrong, so the icon can stop saying it.
+    /// The panel opened from hidden: it shows the result, so the icon can stop saying it.
     pub(crate) fn mood_seen(&self) {
-        if self.tray_art.mood.get() == Some(Mood::Error) {
+        if matches!(self.tray_art.mood.get(), Some(Mood::Done | Mood::Error)) {
+            self.settle_mood();
+        }
+    }
+
+    /// The panel hid. A result that came in while it was open has been seen there.
+    pub(crate) fn mood_hidden(&self) {
+        let art = &self.tray_art;
+        if art.seen.get() && matches!(art.mood.get(), Some(Mood::Done | Mood::Error)) {
             self.settle_mood();
         }
     }
