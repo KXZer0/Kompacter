@@ -11,8 +11,9 @@ export component CompressionPreference inherits Rectangle {
     callback confirmed;
     callback escaped;
 
-    min-height: 88px;
-    preferred-height: 88px;
+    // Exactly as tall as its content: no empty band under a one-line explanation.
+    min-height: 58px + explain.preferred-height;
+    preferred-height: self.min-height;
 
     property <[string]> labels: ["Compatibility", "Balanced", "Efficiency"];
     property <string> explanation: root.index == 0
@@ -193,17 +194,16 @@ export component CompressionPreference inherits Rectangle {
         }
     }
 
-    Text {
+    explain := Text {
         x: 0;
         y: 58px;
         width: root.width;
-        height: 30px;
+        height: self.preferred-height;
         text: root.explanation;
         color: Theme.label-2;
         font-size: 12px;
         horizontal-alignment: center;
         vertical-alignment: top;
         wrap: word-wrap;
-        overflow: elide;
     }
 }
