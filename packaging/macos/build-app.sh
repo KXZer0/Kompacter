@@ -34,6 +34,11 @@ cp "$here/Info.plist" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$contents/Info.plist"
 plutil -lint "$contents/Info.plist"
 install -m 755 "$target/release/Kompacter" "$macos/Kompacter"
+# Open at login starts the app quietly through this bundled agent (see macos_login.rs).
+mkdir -p "$contents/Library/LaunchAgents"
+install -m 644 "$here/io.github.KXZer0.Kompacter.login.plist" \
+    "$contents/Library/LaunchAgents/io.github.KXZer0.Kompacter.login.plist"
+plutil -lint "$contents/Library/LaunchAgents/io.github.KXZer0.Kompacter.login.plist"
 cp LICENSE "$resources/Kompacter-LICENSE.txt"
 
 # macOS accepts an ICNS containing the existing 256 px app artwork.

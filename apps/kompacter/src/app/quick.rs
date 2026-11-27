@@ -16,8 +16,7 @@ use slint::ComponentHandle;
 
 use crate::frontend::{Prefs, View};
 use crate::platform as sys;
-#[cfg(windows)]
-use crate::platform::InputEvent;
+use crate::platform::{InputEvent, PasteTarget};
 
 use super::format::{bytes, file_name};
 use super::settings::{shortcut_keys, SHORTCUTS};
@@ -35,8 +34,8 @@ impl App {
     }
 
     /// Open the quick bar for these files (nothing copied: says so). `guard` is the
-    /// chat window whose paste was held back (and `guard_app` says which app it is).
-    pub fn quick_open(self: &Rc<Self>, files: Vec<PathBuf>, guard: Option<isize>) {
+    /// chat app whose paste was held back (and `guard_app` says which app it is).
+    pub fn quick_open(self: &Rc<Self>, files: Vec<PathBuf>, guard: Option<PasteTarget>) {
         if self.view() == View::Busy {
             // Already compressing: show that instead.
             self.quick_expand();
@@ -93,22 +92,17 @@ impl App {
         }
     }
 
-    /// Fold away, bring `window` (the chat app) back to the front and press Ctrl+V there.
-    pub fn paste_into(self: &Rc<Self>, window: isize, delay_ms: u64) {
+    /// Fold away, bring `target` (the chat app) back to the front and paste there.
+    pub fn paste_into(self: &Rc<Self>, target: PasteTarget, delay_ms: u64) {
         self.guard.set(None);
         self.guard_app.set(None);
         self.ui().set_guard(false);
         let weak = Rc::downgrade(self);
         slint::Timer::single_shot(Duration::from_millis(delay_ms), move || {
             let Some(app) = weak.upgrade() else { return };
-            sys::focus_window(window);
+            sys::focus_target(target);
             app.close();
-            // Only if the chat app really is in front: never paste into something else.
-            slint::Timer::single_shot(Duration::from_millis(140), move || {
-                if sys::is_foreground(window) {
-                    sys::send_paste();
-                }
-            });
+            paste_when_front(target, 140, 6);
         });
     }
 
@@ -142,7 +136,6 @@ impl App {
         }
     }
 
-    #[cfg(windows)]
     pub fn on_input(self: &Rc<Self>, e: InputEvent) {
         match e {
             InputEvent::Shortcut => {
@@ -154,12 +147,23 @@ impl App {
                     self.quick_open(sys::clipboard_files(), None);
                 }
             }
-            InputEvent::Guard { files, window, app } => {
+            InputEvent::Guard { files, target, app } => {
                 self.guard_app.set(Some(app));
-                self.quick_open(files, Some(window));
+                self.quick_open(files, Some(target));
             }
             InputEvent::ShortcutTaken(taken) => {
                 self.ui().global::<Prefs>().set_shortcut_taken(taken);
+            }
+            InputEvent::ShortcutUnsupported => {
+                self.ui()
+                    .global::<Prefs>()
+                    .set_shortcut_note(SYSTEM_SHORTCUT_NOTE.into());
+            }
+            InputEvent::GuardNeedsPermission(needed) => {
+                let note = if needed { PERMISSION_NOTE } else { "" };
+                self.ui()
+                    .global::<Prefs>()
+                    .set_paste_guard_note(note.into());
             }
         }
     }
@@ -277,10 +281,19 @@ impl App {
             .position(|(id, _)| *id == s.shortcut)
             .unwrap_or(0);
         prefs.set_shortcut_index(index as i32);
+        let labels: Vec<slint::SharedString> = SHORTCUTS
+            .iter()
+            .map(|(id, label)| shortcut_label(id, label).into())
+            .collect();
+        if !same_rows(&prefs.get_shortcut_options(), &labels) {
+            prefs.set_shortcut_options(slint::ModelRc::new(slint::VecModel::from(labels)));
+        }
         let capabilities = &sys::CAPABILITIES;
         prefs.set_global_shortcut_available(capabilities.global_shortcut);
         prefs.set_paste_guard_available(capabilities.paste_guard);
+        let copies = sys::watch_copies_support();
         prefs.set_watch_copies_available(capabilities.watch_copies);
+        prefs.set_watch_copies_note(copies.err().unwrap_or_default().into());
         prefs.set_watch_folders_available(capabilities.watch_folders);
         prefs.set_paste_guard(s.paste_guard);
         prefs.set_watch_copies(s.watch_copies);
@@ -303,7 +316,7 @@ impl App {
             sys::set_guard(s.paste_guard, self.chat_limit("discord"));
         }
         self.watch.set(watch::Config {
-            copies: capabilities.watch_copies && s.watch_copies,
+            copies: capabilities.watch_copies && copies.is_ok() && s.watch_copies,
             folders_on: capabilities.watch_folders && s.watch_folders,
             folders: s.clip_folders.iter().map(PathBuf::from).collect(),
             limit,
@@ -361,6 +374,36 @@ impl App {
         self.save();
         self.sync_settings();
     }
+}
+
+/// Press paste once `target` is in front, checking again a few times (macOS brings an
+/// app forward a moment after it's asked). Only if the chat app really is in front:
+/// never paste into something else.
+fn paste_when_front(target: PasteTarget, wait_ms: u64, tries: u32) {
+    slint::Timer::single_shot(Duration::from_millis(wait_ms), move || {
+        if sys::is_front(target) {
+            sys::send_paste();
+        } else if tries > 1 {
+            paste_when_front(target, 100, tries - 1);
+        }
+    });
+}
+
+/// Linux without the global shortcuts portal: what to do instead. A second launch opens
+/// the panel (see `linux_desktop`), so a system shortcut that runs Kompacter works.
+const SYSTEM_SHORTCUT_NOTE: &str = "Set a shortcut in your system settings that runs: kompacter";
+/// macOS: the paste guard is on, but can't see Cmd+V yet.
+const PERMISSION_NOTE: &str =
+    "Allow Kompacter in System Settings \u{2192} Privacy & Security \u{2192} Accessibility";
+
+/// How Settings shows a shortcut: Mac symbols on macOS ("\u{2303}\u{2325}K"), else as listed.
+fn shortcut_label(id: &str, label: &str) -> String {
+    #[cfg(target_os = "macos")]
+    if let Some((mods, vk)) = shortcut_keys(id) {
+        return sys::mac_shortcut_label(mods, vk);
+    }
+    let _ = id;
+    label.to_string()
 }
 
 /// "Videos\Medal" instead of the whole path.

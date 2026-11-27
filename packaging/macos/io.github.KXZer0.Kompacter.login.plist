@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- Open at login: registered by the app with SMAppService (macOS 13+) from
+     Contents/Library/LaunchAgents, so a login start passes the same quiet tray
+     flag as the other systems' autostart entries. -->
+<dict>
+    <key>Label</key>
+    <string>io.github.KXZer0.Kompacter.login</string>
+    <key>BundleProgram</key>
+    <string>Contents/MacOS/Kompacter</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>Contents/MacOS/Kompacter</string>
+        <string>--tray</string>
+    </array>
+    <key>AssociatedBundleIdentifiers</key>
+    <array>
+        <string>io.github.kxzer0.kompacter</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>

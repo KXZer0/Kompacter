@@ -7,7 +7,7 @@ mod linux_desktop;
 mod news;
 mod output;
 mod quick;
-mod settings;
+pub(crate) mod settings;
 mod trim;
 mod trim_cache;
 mod update;
@@ -180,8 +180,8 @@ pub struct App {
     /// The quick bar is showing (see quick.rs); `quick_real` is the flow's screen.
     pub quick: Cell<bool>,
     pub quick_real: Cell<View>,
-    /// Paste guard: the chat window whose Ctrl+V was held back.
-    pub guard: Cell<Option<isize>>,
+    /// Paste guard: the chat app whose paste was held back.
+    pub guard: Cell<Option<sys::PasteTarget>>,
     /// Paste guard: which chat app that was (its preset id); its limit is the target
     /// while the guard's bar is open.
     pub guard_app: Cell<Option<&'static str>>,
@@ -363,6 +363,8 @@ impl App {
         prefs.set_gpu(s.gpu);
         prefs.set_auto_update(s.auto_update);
         prefs.set_auto_hide(s.auto_hide);
+        prefs.set_start_available(sys::start_with_system_supported());
+        prefs.set_start_label(sys::START_WITH_SYSTEM_NAME.into());
         prefs.set_start_with_windows(s.start_with_windows);
         prefs.set_explorer_menu(s.explorer_menu);
         prefs.set_compression_preference(choice_index(
@@ -410,7 +412,10 @@ impl App {
         let ui = self.ui();
         let s = self.settings.borrow();
         let features: Vec<i32> = [
-            (sys::CAPABILITIES.watch_copies, 0),
+            (
+                sys::CAPABILITIES.watch_copies && sys::watch_copies_support().is_ok(),
+                0,
+            ),
             (sys::CAPABILITIES.paste_guard, 1),
             (sys::CAPABILITIES.watch_folders, 2),
         ]
@@ -447,7 +452,7 @@ impl App {
         std::thread::spawn(move || {
             // The installer of the update that just ran (or an old one) isn't needed.
             update::clear_downloads();
-            // Let startup (and Start with Windows) settle first.
+            // Let startup (and starting with the system) settle first.
             std::thread::sleep(Duration::from_secs(90));
             loop {
                 if on.load(Ordering::Relaxed) {
@@ -495,7 +500,7 @@ impl App {
             s.welcomed = true;
             s.compression_preference =
                 COMPRESSION_PREFERENCES[ui.get_welcome_preference() as usize];
-            if sys::CAPABILITIES.watch_copies {
+            if sys::CAPABILITIES.watch_copies && sys::watch_copies_support().is_ok() {
                 s.watch_copies = ui.get_welcome_copies();
             }
             if sys::CAPABILITIES.paste_guard {
@@ -716,6 +721,15 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     }
     #[cfg(not(target_os = "linux"))]
     let quiet = std::env::args().any(|a| a == "--tray");
+    // Only one Kompacter on macOS: a copy the login agent started while another runs
+    // (or any other second copy) hands over to it and leaves.
+    #[cfg(target_os = "macos")]
+    if let Some(other) = sys::another_instance() {
+        if !quiet {
+            sys::activate_instance(&other);
+        }
+        return Ok(());
+    }
 
     let prefs = settings::load();
     let backend = slint::BackendSelector::new().backend_name("winit".into());
@@ -774,16 +788,19 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     if !sys::install_activation(|files| with_app(move |app| app.activate(files))) {
         eprintln!("Kompacter could not register all macOS activation events");
     }
-    #[cfg(windows)]
     sys::start_input(|e| with_app(move |a| a.on_input(e)));
-    // A tray app is only useful if it's running, so it starts with Windows unless the
+    // A tray app is only useful if it's running, so it starts with the system unless the
     // user says otherwise: switched on once here, and theirs to switch off from then on.
     // (Never from a dev build, which would register its target\debug exe.)
-    if cfg!(windows) && !cfg!(debug_assertions) {
+    if sys::start_with_system_supported() && !cfg!(debug_assertions) {
         let first = !app.settings.borrow().start_default_done;
-        if first || sys::starts_with_windows() {
-            // Also keeps the entry pointing at this exe if the app was moved.
-            sys::set_start_with_windows(true);
+        let entry = sys::start_entry();
+        // An entry switched off in the system's own settings stays off.
+        if (first && entry != sys::StartEntry::Disabled)
+            || matches!(entry, sys::StartEntry::Here | sys::StartEntry::Elsewhere)
+        {
+            // Also keeps the entry pointing at this copy if the app was moved.
+            sys::set_start_with_system(true);
         }
         if first {
             app.settings.borrow_mut().start_default_done = true;
@@ -794,8 +811,9 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     if cfg!(windows) && !cfg!(debug_assertions) && app.settings.borrow().explorer_menu {
         sys::set_explorer_menu(true);
     }
-    // The Run entry is the truth (it can be turned off in Task Manager).
-    app.settings.borrow_mut().start_with_windows = sys::starts_with_windows();
+    // The system's entry is the truth (it can be turned off in Task Manager, System
+    // Settings or the desktop's startup apps).
+    app.settings.borrow_mut().start_with_windows = sys::start_entry() == sys::StartEntry::Here;
     // Windows tucks new tray icons into the "^" overflow: offer once to keep it in view.
     ui.set_tray_tip(
         cfg!(windows) && !app.settings.borrow().tray_tip_seen && sys::tray_pinned() != Some(true),
@@ -1127,8 +1145,9 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         });
         let a = app.clone();
         prefs.on_set_start(move |on| {
-            sys::set_start_with_windows(on);
-            a.settings.borrow_mut().start_with_windows = sys::starts_with_windows();
+            sys::set_start_with_system(on);
+            a.settings.borrow_mut().start_with_windows =
+                sys::start_entry() == sys::StartEntry::Here;
             a.save();
             a.sync_settings();
         });
@@ -1255,7 +1274,9 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     // Dev builds only: the quick bar (or the paste guard's) for this file.
     #[cfg(debug_assertions)]
     if let Ok(p) = std::env::var("KOMPACTER_QUICK") {
-        let guard = std::env::var("KOMPACTER_GUARD").is_ok().then_some(0);
+        let guard = std::env::var("KOMPACTER_GUARD")
+            .is_ok()
+            .then_some(sys::PasteTarget::Window(0));
         if guard.is_some() {
             app.guard_app.set(Some(demo_guard_app()));
         }
@@ -1476,7 +1497,8 @@ fn demo(app: &Rc<App>, which: &str) {
         "quick" | "quick-busy" | "quick-done" | "guard" | "quick-empty" => {
             app.quick.set(true);
             ui.set_guard(which == "guard");
-            app.guard.set((which == "guard").then_some(1));
+            app.guard
+                .set((which == "guard").then_some(sys::PasteTarget::Window(1)));
             ui.set_sum_after("≤ 20 MB".into());
             if which == "guard" {
                 let id = demo_guard_app();

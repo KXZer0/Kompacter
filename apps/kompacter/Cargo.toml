@@ -38,6 +38,8 @@ url = "2"
 x11rb = { version = "0.13", features = ["randr", "resource_manager"] }
 wayland-client = { version = "0.31", features = ["system", "dlopen"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+# Clipboard managers on wlroots desktops and older KDE (noticing copied files).
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # Share the D-Bus dependency used by the Slint tray backend.
 zbus = "5"
 
@@ -62,16 +64,27 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
   "NSEvent",
   "NSPasteboard",
   "NSResponder",
+  "NSRunningApplication",
   "NSScreen",
   "NSView",
   "NSWindow",
+  "NSWorkspace",
+  "libc",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
+  "NSBundle",
   "NSError",
   "NSFileManager",
   "NSPathUtilities",
   "NSString",
   "NSURL",
+] }
+# Open at login (SMAppService, macOS 13+).
+objc2-service-management = { version = "0.3", default-features = false, features = [
+  "std",
+  "objc2",
+  "objc2-foundation",
+  "SMAppService",
 ] }
 
 # Same Windows bindings Slint already uses (no extra copy).

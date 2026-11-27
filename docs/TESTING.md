@@ -67,3 +67,77 @@ Ctrl+V. The paste should be held and the quick bar should show the app's logo an
 - [ ] Settings → Apps → Kompacter → Uninstall removes the app, the Start menu entry, the
       right-click menu, start-with-Windows, `%APPDATA%\app.kompacter.desktop` and the
       `Kompacted` folder.
+
+## Start with the system on Linux and macOS
+
+Use a release build (`cargo build --release`, a package or the AppImage): debug builds never
+switch it on by themselves.
+
+Linux (Settings → General → "Start with the system"):
+
+- [ ] The first start of a release build creates
+      `~/.config/autostart/io.github.KXZer0.Kompacter.desktop` (or under `$XDG_CONFIG_HOME`).
+      Its `Exec=` is `kompacter --tray` for the .deb, the `.AppImage` file's path for the
+      AppImage, and the `Kompacter` program's path for the tarball, each followed by `--tray`.
+- [ ] Log out and in: Kompacter is running in the tray with no window open.
+- [ ] Turning the switch off removes the file; it stays off after restarting Kompacter.
+- [ ] Move the AppImage or tarball folder and start it again: `Exec=` follows the new path.
+- [ ] Switching it off in the desktop's own startup settings (GNOME Tweaks, KDE
+      Autostart) shows the switch off in Kompacter, and Kompacter doesn't switch it back on.
+
+macOS (Settings → General → "Open at login"), with the `.app` from the DMG:
+
+- [ ] The first start adds Kompacter to System Settings → General → Login Items (macOS 13
+      and later; macOS 12 and earlier get `~/Library/LaunchAgents/io.github.KXZer0.Kompacter.plist`).
+- [ ] Log out and in: Kompacter is running.
+- [ ] Turning the switch off removes it from Login Items. Switching it off in Login Items
+      shows the switch off in Kompacter; switching it on again opens Login Items.
+- [ ] `cargo run` (not a bundle) shows no "Open at login" switch and registers nothing.
+
+## macOS: shortcut and paste guard
+
+- [ ] Settings → Automatic → Shortcut lists ⌃⌥K, ⌃⇧K and ⌃⇧Space. With a big file copied in
+      Finder, ⌃⌥K opens the quick bar from any app (no permission prompt); pressing it
+      again folds the bar away. Each of the other choices works, and "Off" stops it.
+- [ ] Pick a shortcut another app already registered (for example one set in another
+      hotkey utility): Settings says "Used by another app, pick another".
+- [ ] Turn on "When I paste into a chat" without Accessibility allowed: macOS shows its
+      Accessibility prompt, Settings shows "Allow Kompacter in System Settings → Privacy &
+      Security → Accessibility", and Cmd+V everywhere still pastes normally.
+- [ ] Allow Kompacter there (no restart): within a few seconds the note goes away and
+      the guard works.
+- [ ] For each app you have (Discord, PTB or Canary, Slack, WhatsApp, Telegram, Signal):
+      copy a file over its limit in Finder, click in a chat, press Cmd+V. The paste is held
+      and the quick bar shows the app's logo and limit. **Compress & paste** switches back
+      to that app and pastes the small file; **Paste anyway** pastes the original.
+- [ ] Discord, Slack, WhatsApp or Telegram in Safari, Chrome or Firefox: the same, found
+      by the window title.
+- [ ] A file under the limit, Cmd+V in a non-chat app (TextEdit, Finder), and holding
+      Cmd+V all paste normally with no bar.
+- [ ] Turn the guard off: Cmd+V is never held back again (no restart).
+
+## Linux (Wayland): shortcut
+
+- [ ] GNOME 48+ or KDE Plasma 6: on first start the desktop asks to confirm Kompacter's
+      shortcut (Ctrl+Alt+K by default). With a big file copied, the shortcut opens the
+      quick bar from any app; picking another shortcut in Settings asks again and works.
+- [ ] Restart Kompacter: the shortcut still works (note whether the desktop asks again).
+- [ ] Older GNOME / no global shortcuts portal (check with `busctl --user introspect
+      org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop | grep
+      GlobalShortcuts`): Settings → Shortcut shows "Set a shortcut in your system settings
+      that runs: kompacter". A system shortcut running `kompacter` opens the panel.
+- [ ] Settings has no paste guard row on Linux.
+
+## Noticing copies on macOS and Linux (Settings → Automatic → "When I copy a big file")
+
+Turn the setting on and copy a file bigger than your limit, then a small one, then some
+text. Only the big file should bring up the bar, once per copy.
+
+- [ ] macOS: copy in Finder (Cmd+C); the bar appears within about a second, and nothing
+      happens while the setting is off.
+- [ ] KDE Plasma (Wayland): copy in Dolphin.
+- [ ] Sway or another wlroots desktop: copy in a file manager (Nautilus, Thunar, PCManFM),
+      and with `wl-copy --type text/uri-list file:///path/to/big.mp4`.
+- [ ] A path with spaces or accents (`My Clips/été.mp4`) is noticed.
+- [ ] GNOME (Wayland) and any X11 session: the setting is greyed out with a short reason,
+      and first start doesn't offer it.

@@ -118,6 +118,8 @@ jobs:
 
       - name: Install build tools
         run: |
+          # Not needed, and an unavailable Microsoft source makes the update fail.
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/microsoft-prod.sources
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libfontconfig-dev desktop-file-utils dpkg-dev appstream xz-utils file

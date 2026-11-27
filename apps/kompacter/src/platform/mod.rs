@@ -1,24 +1,42 @@
 //! The few things that talk to the operating system directly: files on the clipboard,
 //! the screen corner above the taskbar, the Recycle Bin, start with Windows, making sure
-//! only one Kompacter runs, the global shortcut and the paste guard. Windows today; other systems get their own version later.
+//! only one Kompacter runs, the global shortcut and the paste guard. Each system has its
+//! own module; what one system lacks has a stub in `imp`.
 
 use std::path::{Path, PathBuf};
 
 mod capabilities;
-pub use capabilities::{CAPABILITIES, TRASH_NAME};
+pub use capabilities::{watch_copies_support, CAPABILITIES, TRASH_NAME};
 
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::{clipboard_files, copy_files, recycle};
 
+#[cfg(target_os = "linux")]
+#[path = "linux/autostart.rs"]
+mod linux_autostart;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod macos_login;
 #[cfg(target_os = "macos")]
 pub use macos::{
     clipboard_files, clipboard_seq, copy_files, focus_application, install_activation, recycle,
     style_panel,
 };
+#[cfg(target_os = "macos")]
+pub use macos_login::{activate as activate_instance, another_instance};
+#[cfg(target_os = "macos")]
+pub mod macos_watch;
+
+#[cfg(any(target_os = "macos", test))]
+mod macos_input;
+#[cfg(target_os = "macos")]
+pub use macos_input::{mac_shortcut_label, send_paste, set_guard, set_shortcut, start_input};
+
+#[cfg(target_os = "linux")]
+pub use linux::{set_shortcut, start_input};
 
 #[cfg(windows)]
 mod windows;
@@ -69,6 +87,67 @@ pub fn anchor() -> Option<Anchor> {
         at: At::BottomRight,
     });
 }
+
+/// Kompacter's entry among the programs the system starts at login.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartEntry {
+    /// No entry.
+    Absent,
+    /// An entry the user switched off in the system's own settings: left that way.
+    Disabled,
+    /// An entry that starts another copy of Kompacter (or this one before it moved).
+    Elsewhere,
+    /// An entry that starts this copy.
+    Here,
+}
+
+/// Start Kompacter quietly (in the tray) when the user logs in, or stop doing so: the
+/// Run key on Windows, a login item on macOS, an XDG autostart entry on Linux.
+pub fn set_start_with_system(on: bool) {
+    #[cfg(windows)]
+    windows::set_start_with_windows(on);
+    #[cfg(target_os = "macos")]
+    macos_login::set(on);
+    #[cfg(target_os = "linux")]
+    linux_autostart::set(on);
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    let _ = on;
+}
+
+/// Kompacter's start-at-login entry as it is now (it can be changed in the system's
+/// settings: Task Manager, System Settings, the desktop's startup apps).
+pub fn start_entry() -> StartEntry {
+    #[cfg(windows)]
+    return if windows::starts_with_windows() {
+        StartEntry::Here
+    } else {
+        StartEntry::Absent
+    };
+    #[cfg(target_os = "macos")]
+    return macos_login::state();
+    #[cfg(target_os = "linux")]
+    return linux_autostart::state();
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    return StartEntry::Absent;
+}
+
+/// Whether this copy can start with the system: macOS only registers the app bundle.
+pub fn start_with_system_supported() -> bool {
+    #[cfg(target_os = "macos")]
+    return CAPABILITIES.start_with_system && macos_login::supported();
+    #[cfg(not(target_os = "macos"))]
+    return CAPABILITIES.start_with_system;
+}
+
+/// What the system calls starting with it, for the Settings switch.
+pub const START_WITH_SYSTEM_NAME: &str = if cfg!(windows) {
+    "Start with Windows"
+} else if cfg!(target_os = "macos") {
+    "Open at login"
+} else {
+    "Start with the system"
+};
 
 /// Play a preview against the sound device's sample clock. If audio is
 /// unavailable, start a monotonic clock when video has its first frame.
@@ -154,21 +233,70 @@ pub fn play_preview(
     })
 }
 
-/// Keyboard events from outside Kompacter (Windows).
-#[cfg(windows)]
+/// Keyboard events from outside Kompacter: the global shortcut (Windows, macOS, Linux
+/// through the desktop portal) and the paste guard (Windows, macOS).
+#[derive(Debug, PartialEq)]
 pub enum InputEvent {
     /// The global shortcut was pressed.
     Shortcut,
-    /// Ctrl+V in a chat app while the clipboard holds files over that app's limit. The
-    /// paste was held back; `window` is the chat window, to paste into later, and `app`
-    /// the chat app's preset id ("discord", "slack", ...).
+    /// Ctrl+V (Cmd+V on macOS) in a chat app while the clipboard holds files over that
+    /// app's limit. The paste was held back; `target` is the chat app, to paste into
+    /// later, and `app` the chat app's preset id ("discord", "slack", ...).
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     Guard {
         files: Vec<PathBuf>,
-        window: isize,
+        target: PasteTarget,
         app: &'static str,
     },
     /// Whether the shortcut is taken by another app (true) or registered / off (false).
     ShortcutTaken(bool),
+    /// This desktop can't give Kompacter a global shortcut (Linux without the global
+    /// shortcuts portal): the user sets one up in the system settings instead.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    ShortcutUnsupported,
+    /// The paste guard is on but waits for a permission (macOS: Accessibility), or
+    /// no longer does.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    GuardNeedsPermission(bool),
+}
+
+/// Where a held-back paste goes once the files are small enough: the chat app that was
+/// in front when the paste guard caught the paste.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasteTarget {
+    /// A window handle (an HWND on Windows).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Window(isize),
+    /// An application, by process id (macOS).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    App(i32),
+}
+
+/// The paste target in front right now (None: unknown on this system).
+pub fn front_target() -> Option<PasteTarget> {
+    #[cfg(windows)]
+    return Some(PasteTarget::Window(windows::foreground_window()));
+    #[cfg(target_os = "macos")]
+    return macos_input::front_app().map(PasteTarget::App);
+    #[cfg(not(any(windows, target_os = "macos")))]
+    return None;
+}
+
+/// Bring the paste target back to the front.
+pub fn focus_target(target: PasteTarget) {
+    match target {
+        #[cfg(windows)]
+        PasteTarget::Window(w) => windows::focus_window(w),
+        #[cfg(target_os = "macos")]
+        PasteTarget::App(pid) => macos_input::activate_app(pid),
+        #[allow(unreachable_patterns)]
+        _ => {}
+    }
+}
+
+/// `target` is in front, so a paste goes there and nowhere else.
+pub fn is_front(target: PasteTarget) -> bool {
+    front_target() == Some(target)
 }
 
 /// The chat app a window belongs to, as its preset id: by its program, or for a browser,
@@ -193,7 +321,13 @@ pub fn chat_app(exe: &str, title: &str) -> Option<&'static str> {
     if !BROWSERS.contains(&exe) {
         return None;
     }
-    // Tab titles like "#general | Server - Discord - Google Chrome".
+    chat_tab(title)
+}
+
+/// The web chat app a browser tab belongs to, by its window title. Titles look like
+/// "#general | Server - Discord - Google Chrome".
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub fn chat_tab(title: &str) -> Option<&'static str> {
     [
         ("Discord", "discord"),
         ("Slack", "slack"),
@@ -376,7 +510,6 @@ mod imp {
     pub fn clip_flyout_input(_hwnd: isize, _height: f32, _scale: f32) -> bool {
         false
     }
-    pub fn set_start_with_windows(_on: bool) {}
     pub fn set_explorer_menu(_on: bool) {}
     pub fn tray_pinned() -> Option<bool> {
         None
@@ -385,23 +518,18 @@ mod imp {
         false
     }
     pub fn open_taskbar_settings() {}
-    pub fn starts_with_windows() -> bool {
-        false
-    }
     pub fn system_dark() -> bool {
         false
     }
     pub fn videos_dir() -> Option<PathBuf> {
         std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Videos"))
     }
-    pub fn set_shortcut(_key: Option<(u32, u32)>) {}
-    pub fn set_guard(_on: bool, _discord_limit: u64) {}
-    pub fn focus_window(_window: isize) {}
-    pub fn is_foreground(_window: isize) -> bool {
-        true
-    }
-    pub fn send_paste() {}
     #[cfg(not(target_os = "macos"))]
+    pub fn set_guard(_on: bool, _discord_limit: u64) {}
+    #[cfg(not(target_os = "macos"))]
+    pub fn send_paste() {}
+    // macOS and Linux: the watch reads copies from their own watchers instead.
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     pub fn clipboard_seq() -> u32 {
         0
     }
@@ -435,6 +563,32 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_held_paste_goes_back_only_to_its_own_target() {
+        // A window handle and a process id never stand for each other.
+        assert_ne!(PasteTarget::Window(42), PasteTarget::App(42));
+        assert_eq!(PasteTarget::App(7), PasteTarget::App(7));
+        // Where the system can't tell what's in front, nothing is pasted anywhere.
+        if cfg!(not(any(windows, target_os = "macos"))) {
+            assert_eq!(front_target(), None);
+            assert!(!is_front(PasteTarget::Window(1)));
+            assert!(!is_front(PasteTarget::App(1)));
+        }
+        let held = InputEvent::Guard {
+            files: vec![PathBuf::from("/clips/big.mp4")],
+            target: PasteTarget::App(501),
+            app: "discord",
+        };
+        assert!(matches!(
+            held,
+            InputEvent::Guard {
+                target: PasteTarget::App(501),
+                app: "discord",
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn files_left_by_several_launches_arrive_once_each() {

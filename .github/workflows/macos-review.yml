@@ -52,12 +52,47 @@ jobs:
           app="$RUNNER_TEMP/Kompacter review/Kompacter.app"
           ffmpeg -v error -y -f lavfi -i testsrc2=size=1920x1080:rate=60:duration=30 \
             -f lavfi -i sine=duration=30 -c:v libx264 -b:v 12M -c:a aac "$shots/gameclip.mp4"
-          # Put the mouse where Kompacter's Dock icon sits, as a click on it would.
+          # Start on the main screen (onboarding finished) so the recording shows the panel.
+          prefs="$HOME/Library/Application Support/app.kompacter.desktop"
+          mkdir -p "$prefs"
+          echo '{"welcomed": true}' > "$prefs/settings.json"
+          # A desktop picture instead of the runner's black background.
+          picture=$(ls /System/Library/Desktop\ Pictures/*.heic 2>/dev/null | head -n 1)
+          if [ -n "$picture" ]; then
+            osascript -e "tell application \"System Events\" to tell every desktop to set picture to \"$picture\"" || true
+          fi
+          sleep 2
+          # Start Kompacter first (a fresh Mac checks a new app for several seconds), then
+          # hide the panel by switching to Finder, so the recording shows a Dock click.
+          open "$app"
+          sleep 12
+          osascript -e 'tell application "Finder" to activate' || true
+          sleep 3
+          # Record the mouse travelling to Kompacter's Dock icon and the panel opening above
+          # it. Opening the running app again sends the same reopen event as a Dock click.
+          screencapture -v -C -V 14 -x "$shots/dock.mov" &
+          recorder=$!
+          sleep 1
           swift -e 'import AppKit
           let f = NSScreen.main!.frame
-          CGWarpMouseCursorPosition(CGPoint(x: f.width * 0.84, y: f.height - 30))' || true
+          let from = CGPoint(x: f.width * 0.6, y: f.height * 0.45)
+          let to = CGPoint(x: f.width * 0.84, y: f.height - 30)
+          for i in 0...40 {
+            let t = Double(i) / 40
+            let e = 1 - pow(1 - t, 3)
+            CGWarpMouseCursorPosition(CGPoint(x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e))
+            usleep(20000)
+          }' || true
+          sleep 0.5
           open "$app"
-          sleep 10
+          wait "$recorder" || true
+          echo "Kompacter processes (expect exactly one):"
+          pgrep -fl 'Kompacter.app/Contents/MacOS/Kompacter' || true
+          if [ -s "$shots/dock.mov" ]; then
+            # The Dock icon and the panel above it: the bottom-right part of the screen.
+            ffmpeg -v error -y -i "$shots/dock.mov" -vf "crop=iw*0.45:ih*0.75:iw*0.55:ih*0.25,fps=12,mpdecimate=hi=1536:lo=640:frac=0.5,setpts=N/12/TB,scale=560:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle" -loop 0 "$shots/macos.gif"
+            rm "$shots/dock.mov"
+          fi
           screencapture -x "$shots/1-launch.png"
           screencapture -x -R 0,0,1920,40 "$shots/2-menu-bar.png" || true
           open -a "$app" "$shots/gameclip.mp4"
@@ -71,12 +106,21 @@ jobs:
             echo "SHOT-END"
           done
           osascript -e 'quit app "Kompacter"' || pkill -x Kompacter || true
+          # Last in the log, so even a shortened log keeps all of it.
+          if [ -s "$shots/macos.gif" ]; then
+            ls -l "$shots/macos.gif"
+            echo "GIF-BEGIN macos"
+            base64 -i "$shots/macos.gif" | fold -w 900 | sed 's/^/GIF:/'
+            echo "GIF-END"
+          fi
       - name: Keep the screenshots
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: kompacter-macos-screenshots
-          path: ${{ runner.temp }}/screenshots/*.png
+          path: |
+            ${{ runner.temp }}/screenshots/*.png
+            ${{ runner.temp }}/screenshots/*.gif
           if-no-files-found: warn
       - name: Keep the review bundle
         uses: actions/upload-artifact@v7

@@ -14,8 +14,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 mod activation;
+pub mod clipboard_watch;
+mod shortcut;
 mod trash;
 pub use activation::activate_window;
+pub use shortcut::{set_shortcut, start_input};
 pub use trash::recycle;
 
 pub const APP_ID: &str = "io.github.KXZer0.Kompacter";
@@ -204,10 +207,44 @@ pub fn launch() -> io::Result<Option<Primary>> {
     if matches!(initial.action, Action::Quit) {
         return Ok(None);
     }
+    // No way to talk to another copy, but still only one Kompacter per user: a copy that
+    // finds the lock taken leaves. Only if no lock file can be made at all does it run.
+    if instance_lock() == Some(false) {
+        eprintln!("Kompacter is already running");
+        return Ok(None);
+    }
     Ok(Some(Primary {
         listener: None,
         initial,
     }))
+}
+
+/// Take the per-user instance lock for the life of the process. `Some(true)`: this is the
+/// only copy; `Some(false)`: another copy holds it; `None`: no lock file could be made.
+fn instance_lock() -> Option<bool> {
+    static LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+    let dir = private_socket()
+        .and_then(|socket| socket.parent().map(Path::to_path_buf))
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache/kompacter"))
+        })?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let held = lock_file(&dir.join(format!("{APP_ID}.lock"))).ok()?;
+    Some(held.is_some_and(|file| LOCK.set(file).is_ok()))
+}
+
+/// An exclusive lock on `path` (`Ok(None)`: another open of it holds the lock). The lock
+/// lasts as long as the returned file is open.
+fn lock_file(path: &Path) -> io::Result<Option<std::fs::File>> {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)?;
+    // SAFETY: flock on a file descriptor owned by `file`.
+    let taken = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    Ok(taken.then_some(file))
 }
 
 /// `file`: the address is a socket file, removed when nothing listens on it any more.
@@ -299,12 +336,17 @@ pub fn clipboard_files() -> Vec<PathBuf> {
     .unwrap_or_default()
 }
 
+/// Local paths in a `text/uri-list` (RFC 2483: CRLF lines, `#` comments) or GNOME's
+/// `x-special/gnome-copied-files` (a `copy`/`cut` line first). Anything that isn't a
+/// local `file://` URI is skipped.
 fn paths_from_uris(bytes: &[u8]) -> Vec<PathBuf> {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Vec::new();
     };
     text.trim_end_matches('\0')
         .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .filter_map(|line| url::Url::parse(line).ok()?.to_file_path().ok())
         .collect()
 }
@@ -497,6 +539,23 @@ fn x11_anchor(conn: &impl x11rb::connection::Connection, screen: usize) -> Optio
 mod tests {
     use super::*;
 
+    #[test]
+    fn only_one_copy_holds_the_instance_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kompacter.lock");
+        let first = lock_file(&path).unwrap();
+        assert!(first.is_some(), "the first copy takes the lock");
+        assert!(
+            lock_file(&path).unwrap().is_none(),
+            "a second copy is refused"
+        );
+        drop(first);
+        assert!(
+            lock_file(&path).unwrap().is_some(),
+            "free again once the first exits"
+        );
+    }
+
     fn activation(action: Action) -> Activation {
         Activation {
             action,
@@ -527,6 +586,31 @@ mod tests {
         let delivered = elect(&address, Some(&path), activation(Action::Choose)).unwrap();
         assert!(matches!(delivered, Elected::Delivered));
         assert!(rx.recv_timeout(IO_TIMEOUT).unwrap());
+    }
+
+    #[test]
+    fn copied_file_lists_become_local_paths() {
+        let list = b"# copied by a file manager\r\n\
+            file:///home/me/My%20Clips/game%23one.mp4\r\n\
+            https://example.com/video.mp4\r\n\
+            file://otherhost/share/a.mp4\r\n\
+            file://localhost/tmp/b.mkv\r\n\
+            not a uri\r\n\
+            file:///tmp/%C3%A9t%C3%A9.mov\r\n\0";
+        assert_eq!(
+            paths_from_uris(list),
+            [
+                PathBuf::from("/home/me/My Clips/game#one.mp4"),
+                PathBuf::from("/tmp/b.mkv"),
+                PathBuf::from("/tmp/été.mov"),
+            ]
+        );
+        assert_eq!(
+            paths_from_uris(b"copy\nfile:///tmp/a.mp4\nfile:///tmp/b.mp4"),
+            [PathBuf::from("/tmp/a.mp4"), PathBuf::from("/tmp/b.mp4")]
+        );
+        assert!(paths_from_uris(b"hello").is_empty());
+        assert!(paths_from_uris(&[0xff, 0xfe]).is_empty());
     }
 
     #[test]
