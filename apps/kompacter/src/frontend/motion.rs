@@ -519,6 +519,7 @@ impl App {
             self.close_settings();
         }
         self.trim_halt();
+        self.trim_drop_later();
         self.quick_hidden();
         self.motion.last.set(None);
         self.motion.slide.stop();
