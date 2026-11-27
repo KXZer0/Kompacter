@@ -195,23 +195,29 @@ jobs:
           if-no-files-found: error
 
   macos:
-    # Each architecture is built natively, with the matching Homebrew ffmpeg inside.
-    # Homebrew builds FFmpeg for the macOS it runs on, so each DMG needs at least the
-    # macOS it was built on; build-app.sh writes that into Info.plist. Apple silicon
-    # builds on macOS 26; macos-15-intel is GitHub's newest Intel image.
+    # Both architectures build on the newest macOS (macos-latest, Apple silicon). The
+    # Intel app is cross-compiled and bundles the x86_64 ffmpeg from an Intel Homebrew
+    # running under Rosetta. Homebrew builds FFmpeg for the macOS it runs on, so each
+    # DMG needs at least that macOS; build-app.sh writes it into Info.plist.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-26
-            arch: arm64
-          - runner: macos-15-intel
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
+          - arch: arm64
+            target: ""
+            brew: brew
+          - arch: x86_64
+            target: x86_64-apple-darwin
+            brew: arch -x86_64 /usr/local/bin/brew
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
 
       - name: Version
         run: |
@@ -222,11 +228,21 @@ jobs:
           echo "VERSION=$v" >> "$GITHUB_ENV"
           echo "KOMPACTER_PACKAGE_VERSION=$v" >> "$GITHUB_ENV"
           if [[ "$v" != 0.0.0 ]]; then echo "KOMPACTER_VERSION=$v" >> "$GITHUB_ENV"; fi
+          echo "KOMPACTER_MAC_TARGET=${{ matrix.target }}" >> "$GITHUB_ENV"
+          echo "KOMPACTER_BREW=${{ matrix.brew }}" >> "$GITHUB_ENV"
+
+      - name: Install an Intel Homebrew under Rosetta
+        if: matrix.arch == 'x86_64'
+        env:
+          NONINTERACTIVE: "1"
+        run: |
+          softwareupdate --install-rosetta --agree-to-license || true
+          arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
       - name: Install ffmpeg
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
-        run: brew install ffmpeg
+        run: ${{ matrix.brew }} install ffmpeg
 
       # Signing is optional: without these secrets the DMG is ad-hoc signed and users
       # open it with right-click > Open (see packaging/macos/README.md).

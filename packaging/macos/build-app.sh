@@ -19,7 +19,17 @@ if [[ -z "$version" ]]; then
 fi
 version="${version%%-*}"
 
-cargo build --locked --release -p kompacter
+# KOMPACTER_MAC_TARGET builds another architecture (x86_64-apple-darwin on Apple
+# silicon), and KOMPACTER_BREW is the Homebrew whose ffmpeg matches it.
+mac_target="${KOMPACTER_MAC_TARGET:-}"
+read -r -a brew <<< "${KOMPACTER_BREW:-brew}"
+if [[ -n "$mac_target" ]]; then
+    cargo build --locked --release -p kompacter --target "$mac_target"
+    built="$target/$mac_target/release/Kompacter"
+else
+    cargo build --locked --release -p kompacter
+    built="$target/release/Kompacter"
+fi
 mkdir -p "$destination"
 stage="$(mktemp -d "$destination/.kompacter.XXXXXXXX")"
 trap 'rm -rf "$stage"' EXIT
@@ -36,7 +46,7 @@ cp "$here/Info.plist" "$contents/Info.plist"
 minimum="$(sw_vers -productVersion | cut -d. -f1).0"
 /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion $minimum" "$contents/Info.plist"
 plutil -lint "$contents/Info.plist"
-install -m 755 "$target/release/Kompacter" "$macos/Kompacter"
+install -m 755 "$built" "$macos/Kompacter"
 # Open at login starts the app quietly through this bundled agent (see macos_login.rs).
 mkdir -p "$contents/Library/LaunchAgents"
 install -m 644 "$here/io.github.KXZer0.Kompacter.login.plist" \
@@ -47,9 +57,9 @@ cp LICENSE "$resources/Kompacter-LICENSE.txt"
 # macOS accepts an ICNS containing the existing 256 px app artwork.
 python3 "$here/make_icon.py" "$repo/apps/kompacter/icon.ico" "$resources/Kompacter.icns"
 
-formula="$(brew --prefix ffmpeg)"
+formula="$("${brew[@]}" --prefix ffmpeg)"
 python3 "$here/bundle_ffmpeg.py" "$formula/bin" "$macos" "$contents/Frameworks"
-brew info --json=v2 ffmpeg > "$resources/FFmpeg-Homebrew.json"
+"${brew[@]}" info --json=v2 ffmpeg > "$resources/FFmpeg-Homebrew.json"
 
 # Replacing install names invalidates the original signatures. Sign the Mach-O
 # files (dylibs, ffmpeg, ffprobe, then Kompacter), then the outer bundle.
@@ -75,7 +85,7 @@ codesign --verify --deep --strict --verbose=2 "$app"
 # Replace just the generated app and archive in the selected output directory.
 rm -rf "$destination/Kompacter.app"
 mv "$app" "$destination/Kompacter.app"
-archive="Kompacter-$(uname -m).zip"
+archive="Kompacter-$(lipo -archs "$destination/Kompacter.app/Contents/MacOS/Kompacter").zip"
 rm -f "$destination/$archive"
 ditto -c -k --keepParent "$destination/Kompacter.app" "$destination/$archive"
 (cd "$destination" && shasum -a 256 "$archive" > SHA256SUMS)
