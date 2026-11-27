@@ -465,6 +465,34 @@ pub fn local_data_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
 }
 
+/// Hands memory the allocator holds but no longer uses back to the system, after a
+/// compress or when the panel hides. Allocators keep freed memory for reuse, so a big
+/// job would otherwise leave the idle tray app as large as it was at its peak.
+pub fn release_memory() {
+    // glibc: also trims the worker threads' arenas, not just the top of the heap.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: malloc_trim only reorganises the allocator's own free lists.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        }
+        // SAFETY: a null zone means every zone; goal 0 means as much as possible.
+        unsafe {
+            malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+        }
+    }
+    #[cfg(windows)]
+    // SAFETY: compacts the process heap, which is always valid.
+    unsafe {
+        use windows_sys::Win32::System::Memory::{GetProcessHeap, HeapCompact};
+        HeapCompact(GetProcessHeap(), 0);
+    }
+}
+
 #[cfg(not(windows))]
 mod imp {
     use std::path::{Path, PathBuf};

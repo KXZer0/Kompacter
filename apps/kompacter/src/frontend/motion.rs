@@ -582,6 +582,7 @@ impl App {
         self.motion.away.stop();
         self.motion.result_hide.stop();
         self.motion.reveal.set(0.0);
+        sys::release_memory();
     }
 
     #[cfg(windows)]

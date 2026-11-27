@@ -217,6 +217,7 @@ impl App {
                 Ok::<_, String>((path, out, copied))
             },
             move |r| {
+                sys::release_memory();
                 let Some(app) = weak.upgrade() else { return };
                 app.auto_busy.set(false);
                 match r {

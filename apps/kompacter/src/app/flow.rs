@@ -213,6 +213,8 @@ impl App {
                 Ok((made, failed, copied))
             },
             move |r| {
+                // The job's buffers are free now, however it ended.
+                sys::release_memory();
                 let Some(app) = weak.upgrade() else { return };
                 ETA.with(|e| *e.borrow_mut() = None);
                 let ui = app.ui();
@@ -500,6 +502,8 @@ impl App {
                 Ok::<_, String>((out, copied))
             },
             move |r| {
+                // The job's buffers are free now, however it ended.
+                sys::release_memory();
                 let Some(app) = weak.upgrade() else { return };
                 ETA.with(|e| *e.borrow_mut() = None);
                 match r {
