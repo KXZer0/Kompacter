@@ -186,13 +186,16 @@ fn sha256_hex(path: &Path) -> io::Result<String> {
         .collect())
 }
 
-/// A release's file for this system, its checksum file (only when Kompacter downloads
-/// it) and the release's page.
+/// A release's file for this system, its checksum (only when Kompacter downloads it)
+/// and the release's page.
 #[derive(Debug)]
 struct Asset {
     name: String,
     exe: String,
+    /// The `.sha256` file's address, when there's one and GitHub gave no digest.
     sha: String,
+    /// The file's SHA-256 as GitHub reports it (the asset's `digest`, lowercase hex).
+    digest: Option<String>,
     size: u64,
     page: String,
 }
@@ -218,7 +221,14 @@ fn assets(release: &Value, want: Wanted) -> Option<Asset> {
         })?
         .to_string();
     let exe = find(&name)?;
-    let sha = if want.download {
+    // GitHub records every asset's SHA-256 itself, so no `.sha256` file is needed; it is
+    // still read where GitHub gives none (releases from before it did).
+    let digest = exe["digest"]
+        .as_str()
+        .and_then(|d| d.strip_prefix("sha256:"))
+        .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase);
+    let sha = if want.download && digest.is_none() {
         find(&format!("{name}.sha256"))?["browser_download_url"]
             .as_str()?
             .to_string()
@@ -237,6 +247,7 @@ fn assets(release: &Value, want: Wanted) -> Option<Asset> {
         exe: exe["browser_download_url"].as_str()?.to_string(),
         sha,
         size: exe["size"].as_u64().unwrap_or(0),
+        digest: digest.filter(|_| want.download),
         name,
         page,
     })
@@ -289,11 +300,14 @@ pub fn check(
             how: How::Page(asset.page),
         }));
     }
-    let want_sha = String::from_utf8_lossy(&curl(&asset.sha)?)
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let want_sha = match &asset.digest {
+        Some(digest) => digest.clone(),
+        None => String::from_utf8_lossy(&curl(&asset.sha)?)
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase(),
+    };
     if want_sha.len() != 64 {
         return Err("the checksum file is broken".into());
     }
@@ -539,6 +553,28 @@ mod tests {
         assert!(pick("macos", "x86_64", false).is_none());
         assert!(pick("linux", "aarch64", true).is_none());
         assert!(pick("freebsd", "x86_64", false).is_none());
+    }
+
+    #[test]
+    fn githubs_digest_replaces_the_checksum_file() {
+        let base = "https://github.com/KXZer0/Kompacter/releases/download/v0.3.0";
+        let hex = "ab".repeat(32);
+        let release = serde_json::json!({"tag_name": "v0.3.0", "assets": [
+            {"name": "Kompacter-windows-setup.exe", "size": 7, "digest": format!("sha256:{}", hex.to_uppercase()),
+             "browser_download_url": format!("{base}/Kompacter-windows-setup.exe")}
+        ]});
+        let a = assets(&release, WINDOWS).unwrap();
+        assert_eq!(a.digest.as_deref(), Some(hex.as_str()));
+        assert!(a.sha.is_empty());
+        // No digest and no checksum file: not offered.
+        let mut bare = release.clone();
+        bare["assets"][0].as_object_mut().unwrap().remove("digest");
+        assert!(assets(&bare, WINDOWS).is_none());
+        // A broken digest falls back to the checksum file.
+        let mut odd = full_release("0.3.0");
+        odd["assets"][0]["digest"] = "sha256:nothex".into();
+        let a = assets(&odd, WINDOWS).unwrap();
+        assert!(a.digest.is_none() && a.sha.ends_with(".sha256"));
     }
 
     #[test]

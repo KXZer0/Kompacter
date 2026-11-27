@@ -4,10 +4,13 @@ name: Release
 #   Windows  Kompacter-windows-setup.exe
 #   Linux    Kompacter-linux-x86_64.AppImage
 #   macOS    Kompacter-installer-macos-arm64.dmg (Apple silicon)
-# each with a .sha256 next to it. The names carry no version, so the README links to
+# GitHub shows each file's SHA-256 on the release page and gives it to the updater.
+# Windows and Linux also get a .sha256 file, only for copies up to 0.1.2, whose updater
+# needs it: drop those two once a release with the digest-reading updater is out.
+# The names carry no version, so the README links to
 # releases/latest/download/<name> and always gets the newest one. They still match what
 # older copies' updaters look for ("Kompacter-" ... "-setup.exe" / "-x86_64.AppImage" /
-# "-macos-arm64.dmg", plus "<name>.sha256"); the version comes from the release tag.
+# "-macos-arm64.dmg"); the version comes from the release tag.
 # The build jobs only upload artifacts; on tags the `publish` job collects them all into
 # one DRAFT GitHub Release (so parallel jobs never race on it): check it, then press
 # Publish. Manual runs keep the artifacts only.
@@ -292,18 +295,12 @@ jobs:
           fi
           packaging/macos/notarize.sh "$DMG"
 
-      - name: Checksum
-        run: |
-          cd "$(dirname "$DMG")"
-          shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256"
-
       - name: Keep the DMG
         uses: actions/upload-artifact@v7
         with:
           name: release-macos-${{ matrix.arch }}
           path: |
             target/macos/Kompacter-installer-macos-*.dmg
-            target/macos/Kompacter-installer-macos-*.dmg.sha256
           if-no-files-found: error
 
   # One job creates the release from every build's artifacts, so uploads never race.
@@ -318,16 +315,17 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # Every download must have its checksum (the updater refuses files without one).
+      # Three downloads; Windows and Linux keep a .sha256 for updaters up to 0.1.2.
       - name: Check the downloads
         working-directory: dist
         run: |
           ls -l
-          test "$(ls | wc -l)" -eq 6 || { echo "expected 3 downloads and 3 checksums" >&2; exit 1; }
-          for f in *; do
-            case "$f" in *.sha256) continue ;; esac
-            test -f "$f.sha256" || { echo "missing $f.sha256" >&2; exit 1; }
+          for f in Kompacter-windows-setup.exe Kompacter-windows-setup.exe.sha256 \
+                   Kompacter-linux-x86_64.AppImage Kompacter-linux-x86_64.AppImage.sha256 \
+                   Kompacter-installer-macos-arm64.dmg; do
+            test -f "$f" || { echo "missing $f" >&2; exit 1; }
           done
+          test "$(ls | wc -l)" -eq 5 || { echo "unexpected files" >&2; exit 1; }
 
       - name: Create draft release
         uses: softprops/action-gh-release@v3

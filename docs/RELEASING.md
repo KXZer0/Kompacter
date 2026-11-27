@@ -11,7 +11,7 @@ Every download is built by GitHub Actions; nobody has to build from source.
 2. The **Release** workflow builds every download in parallel, then its `publish` job creates
    one **draft** release with all of them. Check it, then press **Publish**.
 
-   | Job | Files (each with a `.sha256`) | Built from |
+   | Job | Files | Built from |
    |---|---|---|
    | `windows` | `Kompacter-windows-setup.exe` | NSIS script in `packaging/windows/`, ffmpeg included |
    | `linux` (Ubuntu 22.04) | `Kompacter-linux-x86_64.AppImage` (the .deb and tarball are still built as a check, not published) | `packaging/linux/appimage.sh` and `build.sh`; ffmpeg included |
@@ -86,3 +86,11 @@ stapled.
 - The macOS review workflow builds an application bundle with FFmpeg and ffprobe,
   runs a compression fixture, builds a DMG and uploads the bundle archive, DMG and checksum.
   See [macOS packaging](../packaging/macos/README.md).
+
+## Checksums
+
+GitHub records every release file's SHA-256 (shown on the release page, and in the API as
+the asset's `digest`), and the updater checks downloads against it. Windows and Linux still
+publish a `.sha256` file next to their download, only because updaters up to 0.1.2 need it.
+Once a release with the digest-reading updater has been out for a while, remove those two
+from `release.yml` (the Checksum steps and the `publish` check), leaving three files.

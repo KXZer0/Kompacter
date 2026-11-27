@@ -19,7 +19,7 @@ Copy a file that's too big for Discord (or email, or any app with an upload limi
 | macOS 26 or later (Apple silicon) | **[Download for Mac](https://github.com/KXZer0/Kompacter/releases/latest/download/Kompacter-installer-macos-arm64.dmg)** | Open it and drag Kompacter to Applications; ffmpeg is included. No Intel build. |
 | Linux (x86-64) | **[Download for Linux](https://github.com/KXZer0/Kompacter/releases/latest/download/Kompacter-linux-x86_64.AppImage)** (AppImage) | ffmpeg is included. `chmod +x` it and run it. Updates itself. Needs glibc 2.35+ (Ubuntu 22.04, Debian 12, Fedora 36 or newer) and the usual desktop OpenGL/Wayland/X11 libraries. |
 
-Each link always gets the newest version. Older versions and the `.sha256` checksums are on [Releases](https://github.com/KXZer0/Kompacter/releases).
+Each link always gets the newest version. Older versions, and each file's SHA-256 checksum, are on [Releases](https://github.com/KXZer0/Kompacter/releases).
 
 Until the macOS builds are notarized, macOS blocks the first start: right-click Kompacter in Applications → **Open** → **Open** (or run `xattr -dr com.apple.quarantine /Applications/Kompacter.app`).
 
