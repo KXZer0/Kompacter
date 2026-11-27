@@ -6,7 +6,7 @@ Compress any file, any time. With better quality and more for those apps. All lo
 
 Copy a file that's too big for Discord (or email, or any app with an upload limit), and Kompacter shrinks it to fit, puts it back on your clipboard, and you paste. Videos, audio, images, documents, 3D models, whole folders. Nothing is uploaded anywhere: every byte stays on your computer. Runs on Windows, Linux and macOS.
 
-> Status: early development. One app and one compression engine on Windows, Linux and macOS. Windows draws with Skia, Linux and macOS with FemtoVG (OpenGL) or the software renderer. Media jobs run in FFmpeg, with hardware encoding on supported GPUs. The automatic features work on all three, within what each system allows (see the table under Features).
+> Status: early development. One app and one compression engine on Windows, Linux and macOS. Windows draws with Skia on the CPU by default, or on the GPU (Direct3D 12) with the GPU drawing setting; Linux and macOS draw with FemtoVG (OpenGL) or the software renderer. Media jobs run in FFmpeg, with hardware encoding on supported GPUs. The automatic features work on all three, within what each system allows (see the table under Features).
 
 > [!WARNING]
 > **Linux and macOS are untested on real machines.** Both versions build and pass the automated tests on every change (CI on Ubuntu and macOS), but nobody has used them day to day yet: expect rough edges, especially in the automatic features. Windows is the tested version. Please [report what you find](https://github.com/KXZer0/Kompacter/issues), and if you use Linux or a Mac and would like to help maintain those versions, say so in an issue.
