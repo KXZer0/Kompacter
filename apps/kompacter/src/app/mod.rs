@@ -1692,7 +1692,14 @@ mod tests {
     fn hover_cancel_preserves_trim_and_drop_replaces_it() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = AppWindow::new().unwrap();
-        let app = App::new(&ui, Default::default(), Settings::default(), false, false);
+        let app = App::new(
+            &ui,
+            Default::default(),
+            Settings::default(),
+            false,
+            false,
+            false,
+        );
         ui.set_view(View::Trim);
         ui.set_trim_a(0.25);
         ui.set_trim_b(0.75);
