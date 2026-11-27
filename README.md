@@ -28,12 +28,6 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 
 ## See it
 
-**Where it lives.** On Windows it sits in the tray above the clock. On Linux it opens right beside the tray icon. On macOS it opens right above its Dock icon, and you can drop files on that icon.
-
-<p align="center"><img src="docs/media/linux.gif" alt="Linux: clicking Kompacter's tray icon in the top bar opens the panel right below it" width="720"></p>
-
-<p align="center"><img src="docs/media/macos.gif" alt="macOS: clicking Kompacter's Dock icon opens the panel right above it" width="420"></p>
-
 **Drop a file, press Compress, paste.** It picks the resolution and bitrate that fit, and the result is already on your clipboard.
 
 <p align="center"><img src="docs/media/compress.gif" alt="Dragging a 61 MB video onto Kompacter and compressing it under Discord's 20 MB limit" width="720"></p>
@@ -49,6 +43,12 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 **Settings.** Pick the limit (Discord, Nitro, email, custom), the look, where results go, a compression preference (Compatibility, Balanced or Efficiency) with optional per-format overrides, and what Kompacter may do on its own. Hover a feature to see it in action.
 
 <p align="center"><img src="docs/media/settings.gif" alt="Kompacter's Settings: choosing a target size and hovering the automatic features to preview them" width="720"></p>
+
+**Where it lives.** On Windows it sits in the tray above the clock. On Linux it opens right beside the tray icon. On macOS it opens right above its Dock icon, and you can drop files on that icon.
+
+<p align="center"><img src="docs/media/linux.gif" alt="Linux: clicking Kompacter's tray icon in the top bar opens the panel right below it" width="720"></p>
+
+<p align="center"><img src="docs/media/macos.gif" alt="macOS: clicking Kompacter's Dock icon opens the panel right above it" width="720"></p>
 
 ## Why
 
