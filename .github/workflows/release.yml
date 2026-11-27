@@ -4,7 +4,7 @@ name: Release
 #   Windows  Kompacter-<v>-setup.exe
 #   Linux    Kompacter-<v>-x86_64.AppImage, kompacter_<v>_amd64.deb,
 #            Kompacter-<v>-linux-x86_64.tar.gz
-#   macOS    Kompacter-<v>-macos-arm64.dmg, Kompacter-<v>-macos-x86_64.dmg
+#   macOS    Kompacter-<v>-macos-arm64.dmg (Apple silicon)
 # each with a .sha256 next to it. The build jobs only upload artifacts; on tags the
 # `publish` job collects them all into one DRAFT GitHub Release (so parallel jobs never
 # race on it): check it, then press Publish. Manual runs keep the artifacts only.
@@ -195,10 +195,10 @@ jobs:
           if-no-files-found: error
 
   macos:
-    # Both architectures build on the newest macOS (macos-latest, Apple silicon). The
-    # Intel app is cross-compiled and bundles the x86_64 ffmpeg from an Intel Homebrew
-    # running under Rosetta. Homebrew builds FFmpeg for the macOS it runs on, so each
-    # DMG needs at least that macOS; build-app.sh writes it into Info.plist.
+    # Built on the newest macOS (macos-latest, Apple silicon) with Homebrew's ffmpeg
+    # inside. Homebrew builds FFmpeg for the macOS it runs on, so the DMG needs at least
+    # that macOS; build-app.sh writes it into Info.plist. There is no Intel DMG: Homebrew
+    # no longer supports Intel Macs, so there is no Intel ffmpeg to bundle.
     strategy:
       fail-fast: false
       matrix:
@@ -206,9 +206,6 @@ jobs:
           - arch: arm64
             target: ""
             brew: brew
-          - arch: x86_64
-            target: x86_64-apple-darwin
-            brew: arch -x86_64 /usr/local/bin/brew
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -230,14 +227,6 @@ jobs:
           if [[ "$v" != 0.0.0 ]]; then echo "KOMPACTER_VERSION=$v" >> "$GITHUB_ENV"; fi
           echo "KOMPACTER_MAC_TARGET=${{ matrix.target }}" >> "$GITHUB_ENV"
           echo "KOMPACTER_BREW=${{ matrix.brew }}" >> "$GITHUB_ENV"
-
-      - name: Install an Intel Homebrew under Rosetta
-        if: matrix.arch == 'x86_64'
-        env:
-          NONINTERACTIVE: "1"
-        run: |
-          softwareupdate --install-rosetta --agree-to-license || true
-          arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
       - name: Install ffmpeg
         env:
