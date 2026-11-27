@@ -70,7 +70,7 @@ jobs:
           sleep 3
           # Record the mouse travelling to Kompacter's Dock icon and the panel opening above
           # it. Opening the running app again sends the same reopen event as a Dock click.
-          screencapture -v -C -V 7 -x "$shots/dock.mov" &
+          screencapture -v -C -V 14 -x "$shots/dock.mov" &
           recorder=$!
           sleep 1
           swift -e 'import AppKit
@@ -90,7 +90,7 @@ jobs:
           pgrep -fl 'Kompacter.app/Contents/MacOS/Kompacter' || true
           if [ -s "$shots/dock.mov" ]; then
             # The Dock icon and the panel above it: the bottom-right part of the screen.
-            ffmpeg -v error -y -i "$shots/dock.mov" -vf "crop=iw*0.45:ih*0.75:iw*0.55:ih*0.25,fps=12,scale=560:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle" -loop 0 "$shots/macos.gif"
+            ffmpeg -v error -y -i "$shots/dock.mov" -vf "crop=iw*0.45:ih*0.75:iw*0.55:ih*0.25,fps=12,mpdecimate=hi=1536:lo=640:frac=0.5,setpts=N/12/TB,scale=560:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle" -loop 0 "$shots/macos.gif"
             rm "$shots/dock.mov"
           fi
           screencapture -x "$shots/1-launch.png"
