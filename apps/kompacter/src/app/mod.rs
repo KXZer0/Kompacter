@@ -1415,6 +1415,13 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     if let Ok(v) = std::env::var("KOMPACTER_DEMO") {
         demo(&app, &v);
     }
+    // Dev builds only: `KOMPACTER_SNAPSHOT=<file.png>` saves what the window shows once it
+    // has settled (with KOMPACTER_DEMO for any screen) and quits. CI collects these from
+    // every system for review (tools/selftest/screens.sh).
+    #[cfg(debug_assertions)]
+    if let Ok(out) = std::env::var("KOMPACTER_SNAPSHOT") {
+        snapshot_and_quit(&app, PathBuf::from(out));
+    }
     // Dev builds only: the memory self-test CI runs (see selftest.rs).
     #[cfg(debug_assertions)]
     if let Ok(list) = std::env::var("KOMPACTER_SELFTEST") {
@@ -1535,6 +1542,43 @@ fn demo_guard_app() -> &'static str {
         Ok("signal") => "signal",
         _ => "discord",
     }
+}
+
+/// Dev builds only: after the opening animation, write the window's contents to `out`
+/// as a PNG and quit (exit code 3 if the snapshot or the file fails).
+#[cfg(debug_assertions)]
+fn snapshot_and_quit(app: &Rc<App>, out: PathBuf) {
+    app.show_with(false);
+    let weak = Rc::downgrade(app);
+    slint::Timer::single_shot(Duration::from_millis(2500), move || {
+        let Some(app) = weak.upgrade() else { return };
+        let result = app
+            .ui()
+            .window()
+            .take_snapshot()
+            .map_err(|e| e.to_string())
+            .and_then(|shot| {
+                let file = std::fs::File::create(&out).map_err(|e| e.to_string())?;
+                let mut png =
+                    png::Encoder::new(std::io::BufWriter::new(file), shot.width(), shot.height());
+                png.set_color(png::ColorType::Rgba);
+                png.set_depth(png::BitDepth::Eight);
+                let mut writer = png.write_header().map_err(|e| e.to_string())?;
+                writer
+                    .write_image_data(shot.as_bytes())
+                    .map_err(|e| e.to_string())
+            });
+        match result {
+            Ok(()) => {
+                println!("snapshot: {}", out.display());
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("snapshot failed: {e}");
+                std::process::exit(3);
+            }
+        }
+    });
 }
 
 /// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord|welcome(-2|-3|-4|-preference)|news|update|update-screen|update-settings`

@@ -156,5 +156,11 @@ What CI catches without a person, on every pull request that touches the app:
   drawing on Windows).
 - **Updates** (`update-test.yml`, and the release workflow before publishing): see
   docs/RELEASING.md.
+- **Screenshots** (`screenshots.yml`, Linux, Windows with CPU and with GPU drawing,
+  macOS): every screen in dark, light and Discord style, as the app draws it there, as an
+  artifact to look through. Locally: `tools/selftest/screens.sh [out-dir]` after
+  `cargo build -p kompacter`.
+- **Download sizes** (release workflow): the installer, AppImage and DMG each have a limit
+  (80, 105 and 40 MB), raised on purpose when something is added.
 - **Commit authors** (`commit-hygiene.yml`): every commit must be authored by the PR's
   author, with no `Co-authored-by:` lines, so no one else shows up as a contributor.

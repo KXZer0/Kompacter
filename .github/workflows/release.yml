@@ -100,6 +100,15 @@ jobs:
           $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
           "$hash  $($f.Name)" | Out-File -Encoding ascii -NoNewline "$($f.FullName).sha256"
 
+      # A size limit, so a packaging change (like ffmpeg doubling in size) shows up here
+      # instead of in users' downloads. Raise it on purpose when something is added.
+      - name: Size limit
+        shell: pwsh
+        run: |
+          $size = (Get-Item packaging/windows/Kompacter-windows-setup.exe).Length
+          Write-Host ("installer: {0:N1} MB (limit 80 MB)" -f ($size / 1MB))
+          if ($size -gt 80MB) { throw "the installer grew past 80 MB" }
+
       # Install it the way the app updates itself (silently, into a temp folder) before
       # anyone gets it.
       - name: Update with this installer
@@ -220,6 +229,12 @@ jobs:
           mv "Kompacter-$VERSION-x86_64.AppImage" Kompacter-linux-x86_64.AppImage
           sha256sum Kompacter-linux-x86_64.AppImage > Kompacter-linux-x86_64.AppImage.sha256
 
+      - name: Size limit
+        run: |
+          size=$(stat -c %s dist/linux/Kompacter-linux-x86_64.AppImage)
+          echo "AppImage: $((size / 1048576)) MB (limit 105 MB)"
+          [ "$size" -le $((105 * 1048576)) ] || { echo "the AppImage grew past 105 MB" >&2; exit 1; }
+
       - name: Update with this AppImage
         env:
           KOMPACTER_UPDATE_FILE: dist/linux/Kompacter-linux-x86_64.AppImage
@@ -328,6 +343,12 @@ jobs:
             exit 0
           fi
           packaging/macos/notarize.sh "$DMG"
+
+      - name: Size limit
+        run: |
+          size=$(stat -f %z "$DMG")
+          echo "DMG: $((size / 1048576)) MB (limit 40 MB)"
+          [ "$size" -le $((40 * 1048576)) ] || { echo "the DMG grew past 40 MB" >&2; exit 1; }
 
       - name: Update with this DMG
         run: KOMPACTER_UPDATE_FILE="$DMG" cargo test --locked -p kompacter update_end_to_end -- --ignored --nocapture
