@@ -614,7 +614,13 @@ mod tests {
     fn update_end_to_end() {
         let dir = tempfile::tempdir().unwrap();
         let file = match std::env::var_os("KOMPACTER_UPDATE_FILE") {
-            Some(path) => PathBuf::from(path),
+            // Relative to the repository root (cargo runs tests in the package folder).
+            Some(path) => {
+                let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+                let path = root.join(path);
+                assert!(path.is_file(), "no file at {}", path.display());
+                path
+            }
             None => {
                 let want = wanted(std::env::consts::OS, std::env::consts::ARCH, true)
                     .expect("no builds are published for this system");
