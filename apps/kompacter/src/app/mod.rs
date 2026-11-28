@@ -851,9 +851,16 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     // Hiding the panel drops its window and renderer (GPU surface, glyph and image
     // caches) instead of keeping them for the next show, as Slint already does on
     // Wayland. Slint's winit backend reads this on every hide; set before any thread
-    // starts. Not on Windows: Skia raster gains little, and the GPU path is untested.
+    // starts. On Windows only with GPU drawing: Direct3D 12 (through wgpu) keeps its
+    // graphics memory pools across resizes and reopenings and grows to hundreds of MB,
+    // so the window and its device are released while the panel is hidden. Skia raster
+    // (the default) holds almost nothing and keeps its window.
     #[cfg(not(windows))]
     std::env::set_var("SLINT_DESTROY_WINDOW_ON_HIDE", "1");
+    #[cfg(windows)]
+    if settings::load().gpu_drawing() {
+        std::env::set_var("SLINT_DESTROY_WINDOW_ON_HIDE", "1");
+    }
     #[cfg(target_os = "linux")]
     let Some(linux_launch) = sys::linux::launch()
         .map_err(|error| slint::PlatformError::Other(format!("Kompacter activation: {error}")))?

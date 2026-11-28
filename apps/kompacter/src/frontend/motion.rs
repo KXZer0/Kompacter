@@ -319,6 +319,8 @@ impl App {
             self.set_flyout_input_height(view_height(&ui));
         }
         let _ = ui.show();
+        #[cfg(windows)]
+        self.restyle_remade_window();
         self.trim_activate();
         place(&ui, &self.motion, self.glass, was_hidden);
         if self.glass && cfg!(windows) {
@@ -368,6 +370,25 @@ impl App {
     /// Called for every native window event. A window made again after a hide gets what
     /// Slint doesn't carry over (on macOS: always on top, no AppKit shadow or the panel
     /// style) and the focus its show asked for.
+    /// Windows, GPU drawing: Slint rebuilds a window it dropped on hide from default
+    /// attributes, without what `app::select_backend` asked for, so put that back on the
+    /// new window right away: no taskbar button, no Windows shadow or rounded corners
+    /// (the card draws its own), above other windows.
+    #[cfg(windows)]
+    fn restyle_remade_window(&self) {
+        if !self.gpu_drawing || !self.motion.remade.get() {
+            return;
+        }
+        let ui = self.ui();
+        ui.window().with_winit_window(|w| {
+            use slint::winit_030::winit::platform::windows::{CornerPreference, WindowExtWindows};
+            w.set_skip_taskbar(true);
+            w.set_undecorated_shadow(false);
+            w.set_corner_preference(CornerPreference::DoNotRound);
+            w.set_window_level(slint::winit_030::winit::window::WindowLevel::AlwaysOnTop);
+        });
+    }
+
     pub fn native_window_event(&self) {
         if !self.motion.remade.get() {
             return;
@@ -566,9 +587,9 @@ impl App {
     fn hide_now(self: &Rc<Self>) {
         let ui = self.ui();
         let _ = ui.hide();
-        // Slint drops the window and its renderer on hide outside Windows (see
-        // `app::start`), so the next show makes a new one.
-        if !cfg!(windows) {
+        // Slint drops the window and its renderer on hide outside Windows, and on Windows
+        // with GPU drawing (see `app::start`), so the next show makes a new one.
+        if !cfg!(windows) || self.gpu_drawing {
             self.motion.remade.set(true);
             self.motion.remade_focus.set(false);
         }
