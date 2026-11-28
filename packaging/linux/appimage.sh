@@ -3,7 +3,8 @@
 #
 #   KOMPACTER_FFMPEG_DIR=/path/with/ffmpeg-ffprobe-LICENSE packaging/linux/appimage.sh [out]
 #
-# KOMPACTER_FFMPEG_DIR   (required) a folder with static ffmpeg and ffprobe builds and
+# KOMPACTER_FFMPEG_DIR   (required) a folder with ffmpeg and ffprobe builds (static, or
+#                        shared with their libraries in ffmpeg-libs/ next to them) and
 #                        their LICENSE (or LICENSE.txt).
 # KOMPACTER_LINUX_BINARY a built Kompacter binary (default: cargo build --release).
 # KOMPACTER_PACKAGE_VERSION / KOMPACTER_VERSION  the version in the file name (default:
@@ -62,6 +63,10 @@ install -Dm755 "$here/AppRun" "$appdir/AppRun"
 # platform::ffmpeg() picks up ffmpeg and ffprobe next to the Kompacter binary.
 install -Dm755 "$binary" "$appdir/usr/bin/Kompacter"
 install -m755 "$ffmpeg_dir/ffmpeg" "$ffmpeg_dir/ffprobe" "$appdir/usr/bin/"
+# A shared build's libraries (see release.yml): next to the programs, which look there.
+if [ -d "$ffmpeg_dir/ffmpeg-libs" ]; then
+    cp -a "$ffmpeg_dir/ffmpeg-libs" "$appdir/usr/bin/"
+fi
 install -Dm644 "$here/$app_id.desktop" "$appdir/usr/share/applications/$app_id.desktop"
 install -Dm644 "$here/$app_id.metainfo.xml" "$appdir/usr/share/metainfo/$app_id.appdata.xml"
 install -d "$(dirname "$icon")"
