@@ -95,3 +95,19 @@ the asset's `digest`), and the updater checks downloads against it. Windows and 
 publish a `.sha256` file next to their download, only because updaters up to 0.1.2 need it.
 Once a release with the digest-reading updater has been out for a while, remove those two
 from `release.yml` (the Checksum steps and the `publish` check), leaving three files.
+
+## Update test
+
+`update_end_to_end` (in `apps/kompacter/src/app/update.rs`) runs the app's own update on
+a real file in a temp folder: Windows runs the installer silently, Linux swaps an AppImage,
+macOS mounts the disk image and replaces a stand-in `Kompacter.app`.
+
+- `release.yml` runs it on each freshly built file before upload, so a packaging change
+  that would break updating stops the release.
+- `macos-review.yml` runs it on the review DMG for every pull request.
+- `update-test.yml` runs it against the newest *published* release (download, SHA-256
+  check, install) on pull requests that touch the updater or packaging, weekly, and by
+  hand. A system with no published file yet is skipped (drafts don't count).
+
+Locally: `cargo test -p kompacter update_end_to_end -- --ignored --nocapture`, optionally
+with `KOMPACTER_UPDATE_FILE=<a built file>`.
