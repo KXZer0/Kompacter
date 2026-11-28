@@ -70,8 +70,11 @@ jobs:
           Copy-Item "$bin/ffmpeg.exe", "$bin/ffprobe.exe" $dist
           Copy-Item "$bin/*.dll" $dist
           # The DLLs are found next to the programs; check they really run.
-          & "$dist/ffprobe.exe" -hide_banner -version | Select-Object -First 1
+          # (Read all of its output first: cutting a pipe short makes PowerShell report a
+          # failed exit code for a program that ran fine.)
+          $version = & "$dist/ffprobe.exe" -hide_banner -version
           if ($LASTEXITCODE -ne 0) { throw "the bundled ffprobe doesn't start" }
+          $version | Select-Object -First 1
           Get-ChildItem $dist | Format-Table Name, Length
           $license = Get-ChildItem ffmpeg-dl -Recurse -Filter LICENSE.txt | Select-Object -First 1
           Copy-Item $license.FullName "$dist/FFMPEG-LICENSE.txt"
