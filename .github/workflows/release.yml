@@ -1,13 +1,19 @@
 name: Release
 
 # Push a tag like v0.0.3-test (or run it by hand) to build every download:
-#   Windows  Kompacter-<v>-setup.exe
-#   Linux    Kompacter-<v>-x86_64.AppImage, kompacter_<v>_amd64.deb,
-#            Kompacter-<v>-linux-x86_64.tar.gz
-#   macOS    Kompacter-<v>-macos-arm64.dmg (Apple silicon)
-# each with a .sha256 next to it. The build jobs only upload artifacts; on tags the
-# `publish` job collects them all into one DRAFT GitHub Release (so parallel jobs never
-# race on it): check it, then press Publish. Manual runs keep the artifacts only.
+#   Windows  Kompacter-windows-setup.exe
+#   Linux    Kompacter-linux-x86_64.AppImage
+#   macOS    Kompacter-installer-macos-arm64.dmg (Apple silicon)
+# GitHub shows each file's SHA-256 on the release page and gives it to the updater.
+# Windows and Linux also get a .sha256 file, only for copies up to 0.1.2, whose updater
+# needs it: drop those two once a release with the digest-reading updater is out.
+# The names carry no version, so the README links to
+# releases/latest/download/<name> and always gets the newest one. They still match what
+# older copies' updaters look for ("Kompacter-" ... "-setup.exe" / "-x86_64.AppImage" /
+# "-macos-arm64.dmg"); the version comes from the release tag.
+# The build jobs only upload artifacts; on tags the `publish` job collects them all into
+# one DRAFT GitHub Release (so parallel jobs never race on it): check it, then press
+# Publish. Manual runs keep the artifacts only.
 on:
   push:
     tags: ["v*"]
@@ -80,17 +86,24 @@ jobs:
         working-directory: packaging/windows
         shell: pwsh
         run: |
-          $f = Get-Item Kompacter-*-setup.exe
+          $f = Get-Item Kompacter-windows-setup.exe
           $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
           "$hash  $($f.Name)" | Out-File -Encoding ascii -NoNewline "$($f.FullName).sha256"
+
+      # Install it the way the app updates itself (silently, into a temp folder) before
+      # anyone gets it.
+      - name: Update with this installer
+        env:
+          KOMPACTER_UPDATE_FILE: packaging/windows/Kompacter-windows-setup.exe
+        run: cargo test --locked -p kompacter update_end_to_end -- --ignored --nocapture
 
       - name: Keep the installer
         uses: actions/upload-artifact@v7
         with:
           name: release-windows
           path: |
-            packaging/windows/Kompacter-*-setup.exe
-            packaging/windows/Kompacter-*-setup.exe.sha256
+            packaging/windows/Kompacter-windows-setup.exe
+            packaging/windows/Kompacter-windows-setup.exe.sha256
           if-no-files-found: error
 
   linux:
@@ -176,22 +189,26 @@ jobs:
           rm -rf squashfs-root
           dpkg-deb --info "kompacter_${VERSION}_amd64.deb"
 
-      - name: Checksums
+      # Only the AppImage is published (the .deb and tarball are still built, as a check
+      # of the packaging scripts, but one Linux download is easier to find).
+      - name: Checksum
         working-directory: dist/linux
         run: |
-          for f in Kompacter-*.AppImage kompacter_*.deb Kompacter-*-linux-x86_64.tar.gz; do
-            sha256sum "$f" > "$f.sha256"
-          done
+          mv "Kompacter-$VERSION-x86_64.AppImage" Kompacter-linux-x86_64.AppImage
+          sha256sum Kompacter-linux-x86_64.AppImage > Kompacter-linux-x86_64.AppImage.sha256
+
+      - name: Update with this AppImage
+        env:
+          KOMPACTER_UPDATE_FILE: dist/linux/Kompacter-linux-x86_64.AppImage
+        run: cargo test --locked -p kompacter update_end_to_end -- --ignored --nocapture
 
       - name: Keep the Linux downloads
         uses: actions/upload-artifact@v7
         with:
           name: release-linux
           path: |
-            dist/linux/Kompacter-*.AppImage
-            dist/linux/kompacter_*.deb
-            dist/linux/Kompacter-*-linux-x86_64.tar.gz
-            dist/linux/*.sha256
+            dist/linux/Kompacter-linux-x86_64.AppImage
+            dist/linux/Kompacter-linux-x86_64.AppImage.sha256
           if-no-files-found: error
 
   macos:
@@ -273,7 +290,7 @@ jobs:
 
       - name: Build the DMG
         run: |
-          dmg="target/macos/Kompacter-$VERSION-macos-${{ matrix.arch }}.dmg"
+          dmg="target/macos/Kompacter-installer-macos-${{ matrix.arch }}.dmg"
           packaging/macos/make-dmg.sh target/macos/Kompacter.app "$dmg"
           echo "DMG=$dmg" >> "$GITHUB_ENV"
 
@@ -289,18 +306,15 @@ jobs:
           fi
           packaging/macos/notarize.sh "$DMG"
 
-      - name: Checksum
-        run: |
-          cd "$(dirname "$DMG")"
-          shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256"
+      - name: Update with this DMG
+        run: KOMPACTER_UPDATE_FILE="$DMG" cargo test --locked -p kompacter update_end_to_end -- --ignored --nocapture
 
       - name: Keep the DMG
         uses: actions/upload-artifact@v7
         with:
           name: release-macos-${{ matrix.arch }}
           path: |
-            target/macos/Kompacter-*.dmg
-            target/macos/Kompacter-*.dmg.sha256
+            target/macos/Kompacter-installer-macos-*.dmg
           if-no-files-found: error
 
   # One job creates the release from every build's artifacts, so uploads never race.
@@ -315,15 +329,17 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # Every download must have its checksum (the updater refuses files without one).
+      # Three downloads; Windows and Linux keep a .sha256 for updaters up to 0.1.2.
       - name: Check the downloads
         working-directory: dist
         run: |
           ls -l
-          for f in *; do
-            case "$f" in *.sha256) continue ;; esac
-            test -f "$f.sha256" || { echo "missing $f.sha256" >&2; exit 1; }
+          for f in Kompacter-windows-setup.exe Kompacter-windows-setup.exe.sha256 \
+                   Kompacter-linux-x86_64.AppImage Kompacter-linux-x86_64.AppImage.sha256 \
+                   Kompacter-installer-macos-arm64.dmg; do
+            test -f "$f" || { echo "missing $f" >&2; exit 1; }
           done
+          test "$(ls | wc -l)" -eq 5 || { echo "unexpected files" >&2; exit 1; }
 
       - name: Create draft release
         uses: softprops/action-gh-release@v3

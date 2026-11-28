@@ -22,6 +22,10 @@ pub struct Settings {
     /// "match" | "light" | "ash" | "dark" | "onyx" (Discord style)
     pub discord_theme: String,
     pub gpu: bool,
+    /// Windows: draw the window on the GPU (Skia on Direct3D 12) instead of the CPU.
+    /// `None` follows the preference: on with Efficiency, off otherwise. Read at start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_drawing: Option<bool>,
     /// Where results go: "app" | "beside" | "custom" | "replace" (see output.rs).
     pub output: String,
     /// Folder for `output = "custom"`.
@@ -62,8 +66,10 @@ pub struct Settings {
     /// Shrink new clips that land in `clip_folders` on their own.
     pub watch_folders: bool,
     pub clip_folders: Vec<String>,
-    /// Check GitHub for a new version once a day and install it on the next restart.
+    /// Check GitHub for a new version once a day (it installs only when the user says so).
     pub auto_update: bool,
+    /// Offer pre-releases too, not only stable releases.
+    pub prereleases: bool,
     /// The last version whose "What's new" was shown (or that was installed fresh).
     pub seen_version: String,
 }
@@ -98,6 +104,7 @@ impl Default for Settings {
             style: "kompacter".into(),
             discord_theme: "match".into(),
             gpu: true,
+            gpu_drawing: None,
             output: "app".into(),
             output_dir: String::new(),
             auto_hide: true,
@@ -114,6 +121,7 @@ impl Default for Settings {
             shortcut: "ctrl+alt+k".into(),
             paste_guard: false,
             auto_update: true,
+            prereleases: false,
             seen_version: String::new(),
             watch_copies: false,
             watch_folders: false,
@@ -123,12 +131,30 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Changes the preference. Efficiency switches GPU encoding on, but it stays the
+    /// user's switch: they can turn it off again and the preference keeps it that way.
+    pub fn set_preference(&mut self, preference: CompressionPreference) {
+        if preference == CompressionPreference::Efficiency
+            && self.compression_preference != preference
+        {
+            self.gpu = true;
+        }
+        self.compression_preference = preference;
+    }
+
+    /// Whether the window is drawn on the GPU (see `gpu_drawing`).
+    pub fn gpu_drawing(&self) -> bool {
+        self.gpu_drawing
+            .unwrap_or(self.compression_preference == CompressionPreference::Efficiency)
+    }
+
     pub fn options(&self, target: u64) -> Options {
         let mut options = self.compression_preference.options(target);
         options.video_codec = self.video_codec.unwrap_or(options.video_codec);
         options.audio_format = self.audio_format.unwrap_or(options.audio_format);
         options.image_format = self.image_format.unwrap_or(options.image_format);
         options.archive = self.archive_format.unwrap_or(options.archive);
+        // The switch decides; choosing Efficiency only turns it on (`set_preference`).
         options.gpu &= self.gpu;
         options
     }
@@ -211,11 +237,39 @@ mod tests {
             reloaded.compression_preference,
             CompressionPreference::Efficiency
         );
-        assert_eq!(options.speed, Speed::Quality);
+        assert_eq!(options.speed, Speed::Balanced);
         assert_eq!(options.video_codec, VideoCodec::H264);
         assert_eq!(options.audio_format, AudioFormat::Opus);
         assert_eq!(options.image_format, ImageFormat::Webp);
-        assert!(!options.gpu);
+        assert!(options.gpu);
+    }
+
+    #[test]
+    fn gpu_drawing_follows_efficiency_unless_set() {
+        let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.gpu_drawing());
+        settings.compression_preference = CompressionPreference::Efficiency;
+        assert!(settings.gpu_drawing());
+        settings.gpu_drawing = Some(false);
+        assert!(!settings.gpu_drawing());
+        settings.compression_preference = CompressionPreference::Balanced;
+        settings.gpu_drawing = Some(true);
+        assert!(settings.gpu_drawing());
+    }
+
+    #[test]
+    fn efficiency_turns_gpu_encoding_on_but_never_locks_it() {
+        let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        settings.gpu = false;
+        settings.set_preference(CompressionPreference::Efficiency);
+        assert!(settings.options(10).gpu);
+        // Still the user's switch.
+        settings.gpu = false;
+        assert!(!settings.options(10).gpu);
+        settings.set_preference(CompressionPreference::Efficiency);
+        assert!(!settings.options(10).gpu);
+        settings.set_preference(CompressionPreference::Compatibility);
+        assert!(!settings.options(10).gpu);
     }
 
     #[test]

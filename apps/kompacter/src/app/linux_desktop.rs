@@ -58,6 +58,7 @@ fn install_tray(app: &Rc<App>) -> Result<(), slint::PlatformError> {
         }
     });
     *app.tray.borrow_mut() = Some(tray);
+    app.show_mood();
     Ok(())
 }
 

@@ -1,5 +1,6 @@
 //! Native Windows shell, input, and window integration.
 
+pub mod clipboard_watch;
 pub(super) mod preview_audio;
 
 use std::ffi::OsStr;
@@ -209,6 +210,29 @@ pub fn style_plain_window(hwnd: isize) {
             4,
         );
     }
+}
+
+/// The notification area's icon size in pixels for the primary screen's current scale
+/// (16 at 100 % scaling, 24 at 150 %, 32 at 200 %). The shell scales whatever the tray
+/// gets to this size. The system DPI stays what it was when Kompacter started, so the
+/// screen's own is asked each time the icon is drawn: a new scale applies right away.
+pub fn tray_icon_px() -> u32 {
+    use windows_sys::Win32::Graphics::Gdi::MONITOR_DEFAULTTOPRIMARY;
+    use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
+    use windows_sys::Win32::UI::WindowsAndMessaging::SM_CXSMICON;
+    let px = unsafe {
+        // The tray lives on the primary screen's taskbar, whose corner is (0, 0).
+        let primary = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let (mut dpi, mut dpi_y) = (0u32, 0u32);
+        if primary.is_null()
+            || GetDpiForMonitor(primary, MDT_EFFECTIVE_DPI, &mut dpi, &mut dpi_y) != 0
+            || dpi == 0
+        {
+            dpi = GetDpiForSystem();
+        }
+        GetSystemMetricsForDpi(SM_CXSMICON, dpi)
+    };
+    u32::try_from(px).ok().filter(|&px| px > 0).unwrap_or(16)
 }
 
 /// False when "Animation effects" is turned off in Windows settings.
@@ -749,6 +773,26 @@ pub fn first_instance() -> bool {
     }
 }
 
+/// Like `first_instance`, for a copy started by "Restart": the old copy is closing, so
+/// wait up to ten seconds for it instead of asking it to show. False if it never closed.
+pub fn wait_first_instance() -> bool {
+    for _ in 0..100 {
+        unsafe {
+            let m = CreateMutexW(null(), 0, wide("Local\\KompacterRunning").as_ptr());
+            if m.is_null() {
+                return false;
+            }
+            if GetLastError() != ERROR_ALREADY_EXISTS {
+                // Ours now; it stays open for the life of the process.
+                return true;
+            }
+            CloseHandle(m);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    false
+}
+
 /// Calls `on_show` whenever a second launch asks this one to open its window.
 pub fn listen_for_show(on_show: impl Fn() + Send + 'static) {
     let e = unsafe { CreateEventW(null(), 0, 0, wide(SHOW_EVENT).as_ptr()) };
@@ -1017,6 +1061,25 @@ pub fn send_paste() {
             keys.as_ptr(),
             std::mem::size_of::<INPUT>() as i32,
         );
+    }
+}
+
+/// Whether `path` is on a network share (a UNC path or a mapped drive), where
+/// file-change events may miss what other computers write.
+pub fn network_drive(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    const DRIVE_REMOTE: u32 = 4;
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::UNC(..) | Prefix::VerbatimUNC(..) => true,
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                let root = wide(format!("{}:\\", letter as char));
+                unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_REMOTE }
+            }
+            _ => false,
+        },
+        _ => false,
     }
 }
 

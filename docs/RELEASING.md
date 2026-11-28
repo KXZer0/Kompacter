@@ -11,19 +11,20 @@ Every download is built by GitHub Actions; nobody has to build from source.
 2. The **Release** workflow builds every download in parallel, then its `publish` job creates
    one **draft** release with all of them. Check it, then press **Publish**.
 
-   | Job | Files (each with a `.sha256`) | Built from |
+   | Job | Files | Built from |
    |---|---|---|
-   | `windows` | `Kompacter-0.0.3-setup.exe` | NSIS script in `packaging/windows/`, ffmpeg included |
-   | `linux` (Ubuntu 22.04) | `Kompacter-0.0.3-x86_64.AppImage`, `kompacter_0.0.3_amd64.deb`, `Kompacter-0.0.3-linux-x86_64.tar.gz` | `packaging/linux/appimage.sh` and `build.sh`; ffmpeg in the AppImage and tarball, the .deb depends on the distribution's `ffmpeg` |
-   | `macos` (`macos-latest`, Apple silicon; no Intel build because Homebrew no longer supports Intel Macs) | `Kompacter-0.0.3-macos-arm64.dmg` | `packaging/macos/build-app.sh`, `make-dmg.sh` and, with the signing secrets, `notarize.sh`; Homebrew ffmpeg included |
+   | `windows` | `Kompacter-windows-setup.exe` | NSIS script in `packaging/windows/`, ffmpeg included |
+   | `linux` (Ubuntu 22.04) | `Kompacter-linux-x86_64.AppImage` (the .deb and tarball are still built as a check, not published) | `packaging/linux/appimage.sh` and `build.sh`; ffmpeg included |
+   | `macos` (`macos-latest`, Apple silicon; no Intel build because Homebrew no longer supports Intel Macs) | `Kompacter-installer-macos-arm64.dmg` | `packaging/macos/build-app.sh`, `make-dmg.sh` and, with the signing secrets, `notarize.sh`; Homebrew ffmpeg included |
 
-3. Once it's published (pre-releases count; drafts don't), installed copies find it within a
-   day:
-   - Windows downloads the installer in the background, checks its `.sha256` and installs it on
-     the next restart.
-   - The Linux AppImage downloads the new `.AppImage`, checks its `.sha256` and replaces itself
-     (same file name) on the next restart.
-   - The .deb, the tarball and macOS offer the update and open the release page.
+3. Once it's published (drafts don't count; pre-releases only for users who turned on "Use
+   pre-release versions"), installed copies find it within a day and show "Update available".
+   Nothing installs until the user presses Update:
+   - Windows downloads the installer in the background, checks its SHA-256, and runs it when
+     the user presses Update (Kompacter restarts).
+   - The Linux AppImage downloads the new `.AppImage`, checks it and replaces itself (same
+     file name) when the user presses Update.
+   - macOS (in Applications or another folder it can write to) downloads the new `.dmg`, checks it and swaps its app bundle in place when the user presses Update, so there is never a second copy. Run from the disk image, Downloads or a read-only folder, and from an older .deb or tarball install, it opens the release page.
 
    The release page only opens when the user clicks the update pill, never on quit.
 
@@ -86,3 +87,27 @@ stapled.
 - The macOS review workflow builds an application bundle with FFmpeg and ffprobe,
   runs a compression fixture, builds a DMG and uploads the bundle archive, DMG and checksum.
   See [macOS packaging](../packaging/macos/README.md).
+
+## Checksums
+
+GitHub records every release file's SHA-256 (shown on the release page, and in the API as
+the asset's `digest`), and the updater checks downloads against it. Windows and Linux still
+publish a `.sha256` file next to their download, only because updaters up to 0.1.2 need it.
+Once a release with the digest-reading updater has been out for a while, remove those two
+from `release.yml` (the Checksum steps and the `publish` check), leaving three files.
+
+## Update test
+
+`update_end_to_end` (in `apps/kompacter/src/app/update.rs`) runs the app's own update on
+a real file in a temp folder: Windows runs the installer silently, Linux swaps an AppImage,
+macOS mounts the disk image and replaces a stand-in `Kompacter.app`.
+
+- `release.yml` runs it on each freshly built file before upload, so a packaging change
+  that would break updating stops the release.
+- `macos-review.yml` runs it on the review DMG for every pull request.
+- `update-test.yml` runs it against the newest *published* release (download, SHA-256
+  check, install) on pull requests that touch the updater or packaging, weekly, and by
+  hand. A system with no published file yet is skipped (drafts don't count).
+
+Locally: `cargo test -p kompacter update_end_to_end -- --ignored --nocapture`, optionally
+with `KOMPACTER_UPDATE_FILE=<a built file>`.

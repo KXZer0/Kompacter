@@ -2,9 +2,9 @@
 
 use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, ProtocolObject, Sel};
-use objc2::{ffi, sel, ClassType, MainThreadMarker};
-use objc2_app_kit::{NSApplication, NSApplicationDelegateReply, NSPasteboard};
-use objc2_foundation::{NSArray, NSFileManager, NSObjectProtocol, NSString, NSURL};
+use objc2::{ffi, sel, AnyThread, ClassType, MainThreadMarker};
+use objc2_app_kit::{NSApplication, NSApplicationDelegateReply, NSImage, NSPasteboard};
+use objc2_foundation::{NSArray, NSData, NSFileManager, NSObjectProtocol, NSString, NSURL};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -308,6 +308,20 @@ pub fn style_panel(view: NonNull<std::ffi::c_void>) {
     }
     window.setHasShadow(true);
     window.invalidateShadow();
+}
+
+/// Shows `png` as the Dock icon, or the app bundle's own icon for `None`.
+pub fn set_dock_icon(png: Option<&[u8]>) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let image =
+        png.and_then(|png| NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(png)));
+    if png.is_some() && image.is_none() {
+        return;
+    }
+    // SAFETY: `nil` is documented to restore the bundle's icon.
+    unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(image.as_deref()) };
 }
 
 pub fn focus_application() {

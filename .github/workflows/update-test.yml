@@ -1,0 +1,44 @@
+name: Update test
+
+# The app's whole update path on each system, against the newest published release:
+# find it, download this system's file, check it against GitHub's SHA-256 and install it
+# into a temp folder (Windows: silent installer run; Linux: AppImage swap; macOS: the disk
+# image mounted and a stand-in Kompacter.app replaced). Systems with no published file yet
+# are skipped; the release workflow also runs this on every freshly built file before
+# publishing. See `update_end_to_end` in apps/kompacter/src/app/update.rs.
+on:
+  pull_request:
+    paths:
+      - apps/kompacter/src/app/update.rs
+      - packaging/**
+      - .github/workflows/release.yml
+      - .github/workflows/update-test.yml
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    name: Update (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-26.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/microsoft-prod.sources
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig-dev
+      - name: Update from the newest published release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: cargo test --locked -p kompacter update_end_to_end -- --ignored --nocapture

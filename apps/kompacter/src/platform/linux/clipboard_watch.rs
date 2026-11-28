@@ -92,6 +92,8 @@ fn offered(globals: &GlobalList) -> (bool, bool) {
 struct Shared {
     seq: AtomicU32,
     files: Mutex<Vec<PathBuf>>,
+    /// Called after each new copy, so the caller needn't poll `seq`.
+    on_copy: Box<dyn Fn() + Send + Sync>,
 }
 
 /// Watches the clipboard until dropped.
@@ -102,8 +104,9 @@ pub struct Watcher {
 }
 
 impl Watcher {
-    /// `None` where the session has no data-control manager or no seat.
-    pub fn start() -> Option<Self> {
+    /// `None` where the session has no data-control manager or no seat. `on_copy` runs
+    /// on the watcher's thread after each new copy.
+    pub fn start(on_copy: impl Fn() + Send + Sync + 'static) -> Option<Self> {
         let (conn, globals, mut queue) = connect()?;
         let qh = queue.handle();
         let protocol = decide(Some(offered(&globals)), "").ok()?;
@@ -133,6 +136,7 @@ impl Watcher {
         let shared = Arc::new(Shared {
             seq: AtomicU32::new(0),
             files: Mutex::new(Vec::new()),
+            on_copy: Box::new(on_copy),
         });
         let watching = shared.clone();
         std::thread::Builder::new()
@@ -186,6 +190,7 @@ fn run(
                 *latest = files;
             }
             shared.seq.fetch_add(1, Ordering::Release);
+            (shared.on_copy)();
         }
         if conn.flush().is_err() {
             return;
@@ -498,7 +503,7 @@ mod tests {
     fn sees_files_copied_in_another_app() {
         // wl-copy stays in the background to serve the copy; don't let it hold our output.
         use std::process::Stdio;
-        let watcher = Watcher::start().expect("a compositor with data-control");
+        let watcher = Watcher::start(|| {}).expect("a compositor with data-control");
         let before = watcher.seq();
         let status = std::process::Command::new("wl-copy")
             .args([

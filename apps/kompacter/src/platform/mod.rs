@@ -23,7 +23,7 @@ mod macos_login;
 #[cfg(target_os = "macos")]
 pub use macos::{
     clipboard_files, clipboard_seq, copy_files, focus_application, install_activation, recycle,
-    style_panel,
+    set_dock_icon, style_panel,
 };
 #[cfg(target_os = "macos")]
 pub use macos_login::{activate as activate_instance, another_instance};
@@ -463,6 +463,43 @@ pub fn local_data_dir() -> Option<PathBuf> {
     return std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
+}
+
+/// The panel's font family. Windows 11's UI font on Windows. Elsewhere none, which Slint
+/// fills with the system UI font (San Francisco on macOS; fontconfig's `system-ui`, then
+/// `sans-serif`, on Linux: the desktop's default sans).
+pub const UI_FONT: &str = if cfg!(windows) {
+    "Segoe UI Variable Text"
+} else {
+    ""
+};
+
+/// Hands memory the allocator holds but no longer uses back to the system, after a
+/// compress or when the panel hides. Allocators keep freed memory for reuse, so a big
+/// job would otherwise leave the idle tray app as large as it was at its peak.
+pub fn release_memory() {
+    // glibc: also trims the worker threads' arenas, not just the top of the heap.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: malloc_trim only reorganises the allocator's own free lists.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        }
+        // SAFETY: a null zone means every zone; goal 0 means as much as possible.
+        unsafe {
+            malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+        }
+    }
+    #[cfg(windows)]
+    // SAFETY: compacts the process heap, which is always valid.
+    unsafe {
+        use windows_sys::Win32::System::Memory::{GetProcessHeap, HeapCompact};
+        HeapCompact(GetProcessHeap(), 0);
+    }
 }
 
 #[cfg(not(windows))]

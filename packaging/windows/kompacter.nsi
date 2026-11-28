@@ -1,6 +1,7 @@
 ; Kompacter installer: per-user (no admin prompt). Default folder
 ; %LOCALAPPDATA%\Programs\Kompacter; you can pick another one (remembered for updates).
 ; Built by .github/workflows/release.yml:  makensis /DVERSION=0.0.3 kompacter.nsi
+; Writes Kompacter-windows-setup.exe (no version in the name; it is in the properties).
 
 Unicode true
 !include "MUI2.nsh"
@@ -10,7 +11,7 @@ Unicode true
 !endif
 
 Name "Kompacter"
-OutFile "Kompacter-${VERSION}-setup.exe"
+OutFile "Kompacter-windows-setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\Kompacter"
 InstallDirRegKey HKCU "Software\Kompacter" "InstallDir"
 RequestExecutionLevel user
@@ -28,6 +29,15 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
+
+; The file name has no version (so the README can link to the latest download), so the
+; version goes in the file's properties: right-click > Properties > Details.
+VIProductVersion "${VERSION}.0"
+VIAddVersionKey "ProductName" "Kompacter"
+VIAddVersionKey "FileDescription" "Kompacter installer"
+VIAddVersionKey "ProductVersion" "${VERSION}"
+VIAddVersionKey "FileVersion" "${VERSION}"
+VIAddVersionKey "LegalCopyright" "AGPL-3.0-only"
 
 Section "Install"
   ; Close a running copy so its files can be replaced.

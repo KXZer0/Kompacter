@@ -405,24 +405,77 @@ fn reveal(file: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Track host availability off the UI thread. Slint's SNI service retries
 /// registrations once it is running, but needs a host for its initial start.
+///
+/// One session-bus connection listens for the watcher appearing (`NameOwnerChanged`)
+/// and for a host registering with it, and asks again only when one of those happens.
 pub fn watch_tray_host(on_available: impl FnOnce() + Send + 'static) {
-    std::thread::spawn(move || loop {
-        if tray_host_available() {
-            on_available();
-            break;
+    std::thread::spawn(move || {
+        // Only without a usable session bus: try again, more slowly each time.
+        let mut retry = Duration::from_secs(1);
+        while wait_for_tray_host().is_err() {
+            std::thread::sleep(retry);
+            retry = (retry * 2).min(Duration::from_secs(30));
         }
-        std::thread::sleep(Duration::from_secs(1));
+        on_available();
     });
 }
 
-fn tray_host_available() -> bool {
-    let Ok(session) = zbus::blocking::Connection::session() else {
-        return false;
-    };
-    zbus::blocking::proxy::Builder::<zbus::blocking::Proxy<'_>>::new(&session)
-        .destination("org.kde.StatusNotifierWatcher")
-        .and_then(|builder| builder.path("/StatusNotifierWatcher"))
-        .and_then(|builder| builder.interface("org.kde.StatusNotifierWatcher"))
+const SNI_WATCHER: &str = "org.kde.StatusNotifierWatcher";
+const SNI_WATCHER_PATH: &str = "/StatusNotifierWatcher";
+
+/// Blocks until a tray host is registered. `Err` when the bus can't be reached or the
+/// connection closes.
+fn wait_for_tray_host() -> zbus::Result<()> {
+    use zbus::message::Type;
+    use zbus::MatchRule;
+
+    let session = zbus::blocking::Connection::session()?;
+    let bus = zbus::blocking::fdo::DBusProxy::new(&session)?;
+    // Listen before asking, so a host that registers in between isn't missed.
+    let messages = zbus::blocking::MessageIterator::from(&session);
+    let rules = [
+        MatchRule::builder()
+            .msg_type(Type::Signal)
+            .sender("org.freedesktop.DBus")?
+            .interface("org.freedesktop.DBus")?
+            .member("NameOwnerChanged")?
+            .arg(0, SNI_WATCHER)?
+            .build(),
+        MatchRule::builder()
+            .msg_type(Type::Signal)
+            .sender(SNI_WATCHER)?
+            .interface(SNI_WATCHER)?
+            .member("StatusNotifierHostRegistered")?
+            .build(),
+        MatchRule::builder()
+            .msg_type(Type::Signal)
+            .sender(SNI_WATCHER)?
+            .interface("org.freedesktop.DBus.Properties")?
+            .member("PropertiesChanged")?
+            .path(SNI_WATCHER_PATH)?
+            .build(),
+    ];
+    for rule in rules {
+        bus.add_match_rule(rule)?;
+    }
+    if tray_host_available(&session) {
+        return Ok(());
+    }
+    for message in messages {
+        if message?.message_type() == Type::Signal && tray_host_available(&session) {
+            return Ok(());
+        }
+    }
+    Err(zbus::Error::InputOutput(
+        io::Error::new(io::ErrorKind::BrokenPipe, "session bus closed").into(),
+    ))
+}
+
+fn tray_host_available(session: &zbus::blocking::Connection) -> bool {
+    zbus::blocking::proxy::Builder::<zbus::blocking::Proxy<'_>>::new(session)
+        .destination(SNI_WATCHER)
+        .and_then(|builder| builder.path(SNI_WATCHER_PATH))
+        .and_then(|builder| builder.interface(SNI_WATCHER))
         .and_then(|builder| {
             builder
                 .cache_properties(zbus::proxy::CacheProperties::No)
@@ -538,6 +591,35 @@ fn x11_anchor(conn: &impl x11rb::connection::Connection, screen: usize) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct MockWatcher;
+
+    #[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
+    impl MockWatcher {
+        #[zbus(property)]
+        fn is_status_notifier_host_registered(&self) -> bool {
+            true
+        }
+    }
+
+    /// Needs a session bus to itself: `dbus-run-session -- cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn notices_a_tray_host_that_appears_later() {
+        let (done, waited) = std::sync::mpsc::channel();
+        watch_tray_host(move || {
+            let _ = done.send(());
+        });
+        assert!(waited.recv_timeout(Duration::from_millis(500)).is_err());
+        let _watcher = zbus::blocking::connection::Builder::session()
+            .and_then(|b| b.serve_at(SNI_WATCHER_PATH, MockWatcher))
+            .and_then(|b| b.name(SNI_WATCHER))
+            .and_then(|b| b.build())
+            .expect("a session bus");
+        waited
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the new host is noticed");
+    }
 
     #[test]
     fn only_one_copy_holds_the_instance_lock() {

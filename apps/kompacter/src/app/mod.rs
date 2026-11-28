@@ -8,6 +8,7 @@ mod news;
 mod output;
 mod quick;
 pub(crate) mod settings;
+mod tray_art;
 mod trim;
 mod trim_cache;
 mod update;
@@ -62,7 +63,7 @@ const ARCHIVE_OVERRIDES: [Option<ArchiveFormat>; 3] =
 
 fn audio_label(format: AudioFormat) -> &'static str {
     match format {
-        AudioFormat::Auto => "Auto",
+        AudioFormat::Auto => "Best fit",
         AudioFormat::Mp3 => "MP3",
         AudioFormat::Opus => "Opus",
     }
@@ -70,7 +71,7 @@ fn audio_label(format: AudioFormat) -> &'static str {
 
 fn image_label(format: ImageFormat) -> &'static str {
     match format {
-        ImageFormat::Auto => "Auto",
+        ImageFormat::Auto => "Best fit",
         ImageFormat::Jpeg => "JPEG",
         ImageFormat::Webp => "WebP",
     }
@@ -174,9 +175,13 @@ pub struct App {
     pub rich: bool,
     /// Floating see-through card; otherwise a plain window.
     pub glass: bool,
+    /// The window is drawn on the GPU this run (Windows; chosen at start).
+    pub gpu_drawing: bool,
     pub motion: motion::Motion,
     pub trim: trim::Trim,
     pub tray: RefCell<Option<Tray>>,
+    /// The tray / Dock icon's mood (see tray_art.rs).
+    pub tray_art: tray_art::TrayArt,
     /// The quick bar is showing (see quick.rs); `quick_real` is the flow's screen.
     pub quick: Cell<bool>,
     pub quick_real: Cell<View>,
@@ -191,21 +196,50 @@ pub struct App {
     /// New clips waiting to shrink on their own, one at a time.
     pub auto_queue: RefCell<std::collections::VecDeque<PathBuf>>,
     pub auto_busy: Cell<bool>,
-    /// "Install updates" (read by the background check).
+    /// "Check for updates" (read by the background check).
     pub update_on: Arc<AtomicBool>,
-    /// A downloaded, checked update; installed when Kompacter quits.
+    /// "Use pre-release versions" (read by the background check).
+    pub update_pre: Arc<AtomicBool>,
+    /// Wakes the background check now (a setting changed) instead of tomorrow.
+    pub update_wake: RefCell<Option<std::sync::mpsc::Sender<()>>>,
+    /// A downloaded, checked update (or a newer release's page). Nothing is installed
+    /// until the user presses Update.
     pub update_ready: RefCell<Option<update::Ready>>,
+    /// The "Update available" screen was closed with its ✕ (asks again next start).
+    pub update_dismissed: Cell<bool>,
+    /// The user pressed Update: install as Kompacter quits.
+    pub update_go: Cell<bool>,
 }
 
 impl App {
+    /// Starts a fresh copy (which waits for this one to close) and quits, so a setting
+    /// that is read at start, like GPU drawing, takes effect.
+    pub fn restart(self: &Rc<Self>) {
+        #[cfg(windows)]
+        {
+            let Ok(exe) = std::env::current_exe() else {
+                return;
+            };
+            if std::process::Command::new(exe)
+                .arg(RESTARTED_ARG)
+                .spawn()
+                .is_ok()
+            {
+                self.trim_quit();
+            }
+        }
+    }
+
     fn new(
         ui: &AppWindow,
         tray: Option<Tray>,
         prefs: Settings,
         rich: bool,
         glass: bool,
+        gpu_drawing: bool,
     ) -> Rc<Self> {
         let prefs_auto_update = prefs.auto_update;
+        let prefs_prereleases = prefs.prereleases;
         Rc::new(Self {
             ui: ui.as_weak(),
             engine: Arc::new(Engine::new(sys::ffmpeg())),
@@ -223,9 +257,11 @@ impl App {
             auto_hidden: Cell::new(None),
             rich,
             glass,
+            gpu_drawing,
             motion: motion::Motion::default(),
             trim: trim::Trim::default(),
             tray: RefCell::new(tray),
+            tray_art: Default::default(),
             quick: Cell::new(false),
             quick_real: Cell::new(View::Idle),
             guard: Cell::new(None),
@@ -235,7 +271,11 @@ impl App {
             auto_queue: RefCell::new(Default::default()),
             auto_busy: Cell::new(false),
             update_on: Arc::new(AtomicBool::new(prefs_auto_update)),
+            update_pre: Arc::new(AtomicBool::new(prefs_prereleases)),
+            update_wake: RefCell::new(None),
             update_ready: RefCell::new(None),
+            update_dismissed: Cell::new(false),
+            update_go: Cell::new(false),
         })
     }
 
@@ -361,7 +401,14 @@ impl App {
         prefs.set_replace_available(sys::CAPABILITIES.trash);
         prefs.set_trash_name(sys::TRASH_NAME.into());
         prefs.set_gpu(s.gpu);
+        prefs.set_gpu_drawing_available(cfg!(windows));
+        prefs.set_gpu_drawing(s.gpu_drawing());
+        prefs.set_gpu_drawing_follows(s.gpu_drawing.is_none());
+        prefs.set_gpu_drawing_running(self.gpu_drawing);
         prefs.set_auto_update(s.auto_update);
+        prefs.set_prereleases(s.prereleases);
+        prefs.set_app_version(update::VERSION.unwrap_or("").into());
+        ui.set_app_version(update::VERSION.unwrap_or("").into());
         prefs.set_auto_hide(s.auto_hide);
         prefs.set_start_available(sys::start_with_system_supported());
         prefs.set_start_label(sys::START_WITH_SYSTEM_NAME.into());
@@ -397,6 +444,7 @@ impl App {
             _ => system_dark,
         });
         theme.set_style((s.style == "discord") as i32);
+        self.tint_mood(s.style == "discord");
         theme.set_dt(match s.discord_theme.as_str() {
             "light" => 0,
             "ash" => 1,
@@ -449,11 +497,14 @@ impl App {
     /// "Update ready" line.
     fn start_update_checks(&self, current: &'static str) {
         let on = self.update_on.clone();
+        let pre = self.update_pre.clone();
+        let (wake, woken) = std::sync::mpsc::channel::<()>();
+        *self.update_wake.borrow_mut() = Some(wake);
         std::thread::spawn(move || {
             // The installer of the update that just ran (or an old one) isn't needed.
             update::clear_downloads();
             // Let startup (and starting with the system) settle first.
-            std::thread::sleep(Duration::from_secs(90));
+            let _ = woken.recv_timeout(Duration::from_secs(90));
             loop {
                 if on.load(Ordering::Relaxed) {
                     // The pill shows the download filling a ring (only whole-percent steps
@@ -470,14 +521,10 @@ impl App {
                             });
                         }
                     };
-                    match update::check(current, &update::download_dir(), &progress) {
+                    let prereleases = pre.load(Ordering::Relaxed);
+                    match update::check(current, prereleases, &update::download_dir(), &progress) {
                         Ok(Some(ready)) => {
-                            with_app(move |a| {
-                                let ui = a.ui();
-                                ui.set_update_version(ready.version.as_str().into());
-                                ui.set_update_progress(1.0);
-                                *a.update_ready.borrow_mut() = Some(ready);
-                            });
+                            with_app(move |a| a.update_found(ready));
                             return;
                         }
                         // A failed download: hide the pill until the next try.
@@ -487,9 +534,69 @@ impl App {
                         _ => {}
                     }
                 }
-                std::thread::sleep(Duration::from_secs(24 * 60 * 60));
+                // Tomorrow, or now when a setting changes. A closed channel means the
+                // app is gone.
+                if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) =
+                    woken.recv_timeout(Duration::from_secs(24 * 60 * 60))
+                {
+                    return;
+                }
             }
         });
+    }
+
+    /// Check again now (an update setting changed).
+    fn wake_update_check(&self) {
+        if let Some(wake) = self.update_wake.borrow().as_ref() {
+            let _ = wake.send(());
+        }
+    }
+
+    /// A newer version is ready: the pill, the Settings row, and the "Update available"
+    /// screen next time the panel opens (or now, if it's open on the start screen).
+    fn update_found(&self, ready: update::Ready) {
+        let ui = self.ui();
+        ui.set_update_version(ready.version.as_str().into());
+        ui.set_update_progress(1.0);
+        ui.set_update_installs(ready.installs_on_quit());
+        let prefs = ui.global::<Prefs>();
+        prefs.set_update_version(ready.version.as_str().into());
+        *self.update_ready.borrow_mut() = Some(ready);
+        if ui.window().is_visible() {
+            self.offer_update();
+        }
+    }
+
+    /// Show the "Update available" screen if there's an update the user hasn't closed it
+    /// for, and nothing else is going on.
+    pub(crate) fn offer_update(&self) {
+        if self.update_ready.borrow().is_some()
+            && !self.update_dismissed.get()
+            && self.view() == View::Idle
+            && !self.quick.get()
+        {
+            self.set_view(View::Update);
+        }
+    }
+
+    /// Update pressed: install now. Where Kompacter replaces itself it quits and the
+    /// update runs on the way out (see the end of `start`); elsewhere the download page
+    /// opens and Kompacter keeps running.
+    fn update_now(&self) {
+        let Some(ready) = self.update_ready.borrow().clone() else {
+            return;
+        };
+        if ready.installs_on_quit() {
+            self.update_go.set(true);
+            if let Some(app) = APP.with(|a| a.borrow().upgrade()) {
+                app.trim_quit();
+            }
+        } else {
+            let _ = update::install(&ready);
+            if self.view() == View::Update {
+                self.set_view(View::Idle);
+            }
+        }
     }
 
     /// "Done" on the first-run screen: save the available choices and never ask again.
@@ -498,8 +605,7 @@ impl App {
         {
             let mut s = self.settings.borrow_mut();
             s.welcomed = true;
-            s.compression_preference =
-                COMPRESSION_PREFERENCES[ui.get_welcome_preference() as usize];
+            s.set_preference(COMPRESSION_PREFERENCES[ui.get_welcome_preference() as usize]);
             if sys::CAPABILITIES.watch_copies && sys::watch_copies_support().is_ok() {
                 s.watch_copies = ui.get_welcome_copies();
             }
@@ -702,7 +808,52 @@ fn with_app(f: impl FnOnce(&Rc<App>) + Send + 'static) {
     });
 }
 
+/// Passed to the copy started by "Restart" in Settings, which waits for this one to close.
+#[cfg(windows)]
+const RESTARTED_ARG: &str = "--restarted";
+
+/// Picks Slint's winit backend and renderer. `gpu`: Skia on the GPU (Windows only).
+fn select_backend(gpu: bool) -> Result<(), slint::PlatformError> {
+    let backend = slint::BackendSelector::new().backend_name("winit".into());
+    #[cfg(windows)]
+    let backend = backend.renderer_name(if gpu { "skia" } else { "skia-software" }.into());
+    #[cfg(not(windows))]
+    let backend = backend.renderer_name("femtovg".into());
+    backend
+        .with_winit_window_attributes_hook(move |attrs| {
+            #[cfg(windows)]
+            {
+                let _ = gpu;
+                use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
+                attrs
+                    .with_skip_taskbar(true)
+                    .with_undecorated_shadow(false)
+                    .with_corner_preference(CornerPreference::DoNotRound)
+            }
+            // The rounded card and its shadow are drawn by the UI on a clear window,
+            // as on Windows and Linux, so AppKit's square window shadow stays off.
+            #[cfg(target_os = "macos")]
+            {
+                let _ = gpu;
+                use winit::platform::macos::WindowAttributesExtMacOS;
+                attrs.with_transparent(true).with_has_shadow(false)
+            }
+            #[cfg(not(any(windows, target_os = "macos")))]
+            {
+                let _ = gpu;
+                attrs
+            }
+        })
+        .select()
+}
+
 pub(crate) fn start() -> Result<(), slint::PlatformError> {
+    // Hiding the panel drops its window and renderer (GPU surface, glyph and image
+    // caches) instead of keeping them for the next show, as Slint already does on
+    // Wayland. Slint's winit backend reads this on every hide; set before any thread
+    // starts. Not on Windows: Skia raster gains little, and the GPU path is untested.
+    #[cfg(not(windows))]
+    std::env::set_var("SLINT_DESTROY_WINDOW_ON_HIDE", "1");
     #[cfg(target_os = "linux")]
     let Some(linux_launch) = sys::linux::launch()
         .map_err(|error| slint::PlatformError::Other(format!("Kompacter activation: {error}")))?
@@ -715,7 +866,13 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     #[cfg(windows)]
     {
         sys::leave_handoff(&sys::file_args(std::env::args()));
-        if !sys::first_instance() {
+        // After "Restart" in Settings the old copy is still closing: wait for it.
+        let restarted = std::env::args().any(|a| a == RESTARTED_ARG);
+        if !(if restarted {
+            sys::wait_first_instance()
+        } else {
+            sys::first_instance()
+        }) {
             return Ok(());
         }
     }
@@ -732,38 +889,32 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     }
 
     let prefs = settings::load();
-    let backend = slint::BackendSelector::new().backend_name("winit".into());
+    // Windows draws on the CPU (Skia raster: least memory, redraws only what changed)
+    // unless GPU drawing is on (Skia on Direct3D 12: less CPU while animating, more
+    // memory). Slint presents D3D12 through DirectComposition, so the see-through card
+    // looks the same either way. If the GPU renderer can't start, the CPU one takes
+    // over. macOS and Linux already draw on the GPU (FemtoVG).
     #[cfg(windows)]
-    let backend = backend.renderer_name("skia-software".into());
+    let gpu_drawing = prefs.gpu_drawing()
+        && select_backend(true)
+            .inspect_err(|e| eprintln!("GPU drawing unavailable: {e}"))
+            .is_ok();
+    #[cfg(windows)]
+    if !gpu_drawing {
+        select_backend(false)?;
+    }
     #[cfg(not(windows))]
-    let backend = backend.renderer_name("femtovg".into());
-    backend
-        .with_winit_window_attributes_hook(|attrs| {
-            #[cfg(windows)]
-            {
-                use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
-                attrs
-                    .with_skip_taskbar(true)
-                    .with_undecorated_shadow(false)
-                    .with_corner_preference(CornerPreference::DoNotRound)
-            }
-            // The rounded card and its shadow are drawn by the UI on a clear window,
-            // as on Windows and Linux, so AppKit's square window shadow stays off.
-            #[cfg(target_os = "macos")]
-            {
-                use winit::platform::macos::WindowAttributesExtMacOS;
-                attrs.with_transparent(true).with_has_shadow(false)
-            }
-            #[cfg(not(any(windows, target_os = "macos")))]
-            attrs
-        })
-        .select()?;
+    let gpu_drawing = false;
+    #[cfg(not(windows))]
+    select_backend(false)?;
 
     #[cfg(target_os = "linux")]
     slint::set_xdg_app_id(sys::linux::APP_ID)?;
     let ui = AppWindow::new()?;
-    // Skia raster supports the translucent card. Installing a rendering notifier
-    // would disable its partial redraws, even if the callback does nothing.
+    ui.set_ui_font(sys::UI_FONT.into());
+    // Skia (raster or Direct3D 12 through DirectComposition) draws the translucent card.
+    // Installing a rendering notifier would disable the raster renderer's partial
+    // redraws, even if the callback does nothing.
     #[cfg(windows)]
     let glass = true;
     // FemtoVG draws the translucent card on macOS and Linux alike.
@@ -782,7 +933,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     let tray = Some(Tray::new()?);
     #[cfg(not(windows))]
     let tray = None;
-    let app = App::new(&ui, tray, prefs, rich, glass);
+    let app = App::new(&ui, tray, prefs, rich, glass, gpu_drawing);
     APP.with(|a| *a.borrow_mut() = Rc::downgrade(&app));
     #[cfg(target_os = "macos")]
     if !sys::install_activation(|files| with_app(move |app| app.activate(files))) {
@@ -819,6 +970,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         cfg!(windows) && !app.settings.borrow().tray_tip_seen && sys::tray_pinned() != Some(true),
     );
     app.sync_settings();
+    app.settle_mood();
     ui.set_dash_path(format::dashed_round_rect(308.0, 300.0, 28.0, 6.0, 7.0, 0.0).into());
 
     // Tidy old outputs. GPU encoders are checked when a video first needs one.
@@ -867,6 +1019,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         });
         let a = app.clone();
         ui.window().on_winit_window_event(move |_, event| {
+            a.native_window_event();
             match event {
                 winit::event::WindowEvent::Focused(false) => a.away(),
                 winit::event::WindowEvent::HoveredFile(_) => a.file_hover(true),
@@ -1022,26 +1175,30 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
             }
             View::Trim => a.set_view(View::Big),
             View::News => a.set_view(View::Idle),
+            View::Update => {
+                a.update_dismissed.set(true);
+                a.set_view(View::Idle);
+            }
             _ => a.close(),
         });
         let a = app.clone();
         ui.on_news_done(move || a.set_view(View::Idle));
-        // Restart: quit, and the installer runs on the way out (see the end of main).
         let a = app.clone();
-        ui.on_restart_to_update(move || {
-            let page = a
-                .update_ready
-                .borrow()
-                .as_ref()
-                .filter(|ready| !ready.installs_on_quit())
-                .cloned();
-            match page {
-                // Kompacter can't replace itself here: open the release page and keep running.
-                Some(ready) => {
-                    let _ = update::install(&ready);
-                }
-                None => a.trim_quit(),
-            }
+        ui.on_restart_to_update(move || a.update_now());
+        let a = app.clone();
+        ui.on_update_dismiss(move || {
+            a.update_dismissed.set(true);
+            a.set_view(View::Idle);
+        });
+        let a = app.clone();
+        prefs.on_update_now(move || a.update_now());
+        let a = app.clone();
+        prefs.on_set_prereleases(move |on| {
+            a.settings.borrow_mut().prereleases = on;
+            a.update_pre.store(on, Ordering::Relaxed);
+            a.save();
+            a.sync_settings();
+            a.wake_update_check();
         });
         let a = app.clone();
         ui.on_quick_expand(move || a.quick_expand());
@@ -1055,6 +1212,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
             a.update_on.store(on, Ordering::Relaxed);
             a.save();
             a.sync_settings();
+            a.wake_update_check();
         });
         let a = app.clone();
         prefs.on_set_shortcut(move |i| {
@@ -1119,6 +1277,18 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
             }
         });
         let a = app.clone();
+        prefs.on_set_gpu_drawing(move |on| {
+            let mut s = a.settings.borrow_mut();
+            // Back to "follow the preference" when the choice matches what it would pick.
+            let follows = s.compression_preference == CompressionPreference::Efficiency;
+            s.gpu_drawing = (on != follows).then_some(on);
+            drop(s);
+            a.save();
+            a.sync_settings();
+        });
+        let a = app.clone();
+        prefs.on_restart(move || a.restart());
+        let a = app.clone();
         prefs.on_set_gpu(move |on| {
             a.settings.borrow_mut().gpu = on;
             a.save();
@@ -1162,8 +1332,9 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         ui.on_welcome_done(move || a.welcome_done());
         let a = app.clone();
         prefs.on_set_compression_preference(move |i| {
-            a.settings.borrow_mut().compression_preference =
-                COMPRESSION_PREFERENCES[i.clamp(0, 2) as usize];
+            a.settings
+                .borrow_mut()
+                .set_preference(COMPRESSION_PREFERENCES[i.clamp(0, 2) as usize]);
             a.save();
             a.sync_settings();
         });
@@ -1319,8 +1490,10 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     linux_desktop::start(&app, linux_launch);
     slint::run_event_loop_until_quit()?;
     app.tray.borrow_mut().take();
-    // A checked update waits for Kompacter to close; the installer reopens it.
-    if app.settings.borrow().auto_update {
+    #[cfg(target_os = "macos")]
+    sys::set_dock_icon(None);
+    // An update the user pressed Update for runs as Kompacter closes and reopens it.
+    if app.update_go.get() {
         if let Some(ready) = app
             .update_ready
             .borrow()
@@ -1355,7 +1528,7 @@ fn demo_guard_app() -> &'static str {
     }
 }
 
-/// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord|welcome(-2|-3|-4|-preference)|news|update`
+/// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord|welcome(-2|-3|-4|-preference)|news|update|update-screen|update-settings`
 /// shows a screen with sample data, for screenshots.
 #[cfg(debug_assertions)]
 fn demo(app: &Rc<App>, which: &str) {
@@ -1475,6 +1648,20 @@ fn demo(app: &Rc<App>, which: &str) {
         "drag" => ui.set_dragging(true),
         "news" => app.whats_new(news::NOTES[0].0, news::NOTES[0].1),
         "update" => ui.set_update_version("0.0.8".into()),
+        // The "Update available" screen, and Settings with the version and update rows.
+        "update-screen" | "update-settings" => {
+            if which == "update-settings" {
+                ui.set_win_h(600.0);
+                ui.set_view(View::Settings);
+            } else {
+                ui.set_view(View::Update);
+            }
+            ui.set_update_version("0.2.0".into());
+            ui.set_app_version("0.1.2".into());
+            let prefs = ui.global::<Prefs>();
+            prefs.set_update_version("0.2.0".into());
+            prefs.set_app_version("0.1.2".into());
+        }
         "update-downloading" => {
             ui.set_update_version("0.0.8".into());
             ui.set_update_progress(0.42);
@@ -1610,7 +1797,14 @@ mod tests {
     fn hover_cancel_preserves_trim_and_drop_replaces_it() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = AppWindow::new().unwrap();
-        let app = App::new(&ui, Default::default(), Settings::default(), false, false);
+        let app = App::new(
+            &ui,
+            Default::default(),
+            Settings::default(),
+            false,
+            false,
+            false,
+        );
         ui.set_view(View::Trim);
         ui.set_trim_a(0.25);
         ui.set_trim_b(0.75);

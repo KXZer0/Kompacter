@@ -11,19 +11,25 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kompacter_core::{MediaInfo, MediaKind, Mode, Quality};
-use slint::{Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel};
+use slint::{
+    ComponentHandle, Image, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer, Timer, TimerMode,
+    VecModel,
+};
 
 use crate::frontend::{DetailRow, View};
 use crate::platform as sys;
 
 use super::format::{bytes, clock_ms, parse_time, rate};
 use super::trim_cache::FrameCache;
-use super::{run, with_app, App};
+use super::{run, with_app, App, APP};
 
 #[derive(Default)]
 pub struct Trim {
-    /// Filmstrip frames for `path` (kept so going back and forth doesn't redo them).
+    /// Filmstrip frames for `path` (kept so going back and forth doesn't redo them,
+    /// until the trimmer has been out of sight for `STRIP_KEEP`).
     frames: RefCell<Vec<Image>>,
+    /// Drops the filmstrip once the trimmer has been out of sight for `STRIP_KEEP`.
+    strip_drop: Timer,
     path: RefCell<Option<PathBuf>>,
     session: RefCell<Option<MediaInfo>>,
     strip_needed: Cell<bool>,
@@ -86,6 +92,10 @@ fn image(w: u32, h: u32, px: &[u8]) -> Image {
     Image::from_rgb8(SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(px, w, h))
 }
 
+/// How long the filmstrip is kept while the trimmer isn't showing. Coming back after
+/// that rebuilds it (the selection and handles are kept), like resuming a paused game.
+const STRIP_KEEP: Duration = Duration::from_secs(60);
+
 impl App {
     pub fn open_trim(self: &Rc<Self>) {
         self.trim_halt();
@@ -120,6 +130,7 @@ impl App {
         if self.view() != View::Trim || self.trim.session.borrow().is_some() {
             return;
         }
+        self.trim.strip_drop.stop();
         let Some(info) = self.current.borrow().as_ref().map(|c| c.info.clone()) else {
             return;
         };
@@ -878,6 +889,27 @@ impl App {
     pub fn trim_release(&self) {
         self.trim.scrub_painted.take();
         self.ui().set_trim_frame(Image::default());
+        self.trim_drop_later();
+    }
+
+    /// The trimmer went out of sight (another screen, or the panel hid): free its
+    /// filmstrip in a minute unless it's back by then. Never while it's showing.
+    pub fn trim_drop_later(&self) {
+        if self.trim.frames.borrow().is_empty() {
+            return;
+        }
+        self.trim
+            .strip_drop
+            .start(TimerMode::SingleShot, STRIP_KEEP, || {
+                let Some(app) = APP.with(|a| a.borrow().upgrade()) else {
+                    return;
+                };
+                let showing = app.view() == View::Trim && app.ui().window().is_visible();
+                if !showing {
+                    app.trim.frames.borrow_mut().clear();
+                    app.ui().set_thumbs(ModelRc::default());
+                }
+            });
     }
 
     pub fn trim_compress(self: &Rc<Self>) {
@@ -905,5 +937,53 @@ fn row(label: &str, value: String) -> DetailRow {
     DetailRow {
         label: label.into(),
         value: value.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::settings::Settings;
+    use crate::frontend::AppWindow;
+
+    #[test]
+    fn filmstrip_is_dropped_a_minute_after_the_trimmer_is_left() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = AppWindow::new().unwrap();
+        let app = App::new(
+            &ui,
+            Default::default(),
+            Settings::default(),
+            false,
+            false,
+            false,
+        );
+        APP.with(|a| *a.borrow_mut() = Rc::downgrade(&app));
+        let strip = || vec![image(2, 2, &[0; 12]); 3];
+        ui.show().unwrap();
+        ui.set_view(View::Trim);
+        ui.set_trim_a(0.25);
+        ui.set_trim_b(0.75);
+
+        // In the trimmer, with the panel showing: kept, however long.
+        *app.trim.frames.borrow_mut() = strip();
+        app.trim_drop_later();
+        i_slint_backend_testing::mock_elapsed_time(STRIP_KEEP + Duration::from_secs(1));
+        assert_eq!(app.trim.frames.borrow().len(), 3);
+
+        // Back within the minute: kept.
+        ui.set_view(View::Idle);
+        app.trim_drop_later();
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_secs(30));
+        ui.set_view(View::Trim);
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_secs(31));
+        assert_eq!(app.trim.frames.borrow().len(), 3);
+
+        // Away for a minute: dropped, the selection stays for when the user comes back.
+        ui.set_view(View::Idle);
+        app.trim_drop_later();
+        i_slint_backend_testing::mock_elapsed_time(STRIP_KEEP + Duration::from_secs(1));
+        assert!(app.trim.frames.borrow().is_empty());
+        assert_eq!((ui.get_trim_a(), ui.get_trim_b()), (0.25, 0.75));
     }
 }

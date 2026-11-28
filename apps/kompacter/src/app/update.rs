@@ -1,6 +1,7 @@
 //! Updates. Once a day Kompacter asks GitHub for its newest published release (drafts are
-//! skipped; pre-releases count, since that's how Kompacter ships for now). What happens
-//! with a newer one depends on how this copy was installed:
+//! skipped; pre-releases only with "Use pre-release versions" on). Nothing is installed
+//! until the user presses Update on the "Update available" screen (or in Settings). What
+//! happens then depends on how this copy was installed:
 //!
 //! - Windows: the installer is downloaded in the background and checked against the
 //!   SHA-256 the release publishes next to it. It's installed silently on the next restart
@@ -9,9 +10,16 @@
 //! - Linux AppImage (`$APPIMAGE` is set): the new `.AppImage` is downloaded and checked the
 //!   same way, then swapped in for the running file (same name, atomic rename) on the next
 //!   restart, and started again.
-//! - Everything else (macOS, the Linux .deb or tarball): nothing is downloaded; "install"
-//!   opens the release page so the user can get the new build for their system. Only a
-//!   release that actually has a build for this system counts as an update.
+//! - macOS, from a folder Kompacter can write to (normally Applications): the new `.dmg`
+//!   is downloaded and checked the same way; on the next restart it's mounted out of
+//!   sight, its `Kompacter.app` replaces this one in place (so there's never a second
+//!   copy), and the new version starts. The file comes from Kompacter itself, not a
+//!   browser, so macOS doesn't quarantine it.
+//! - Everything else (macOS running from the disk image, Downloads or a folder it can't
+//!   write to, and the Linux .deb or tarball): nothing is downloaded; "install" opens the
+//!   release page so the user can get the new build for their system (the .deb and
+//!   tarball are no longer published, so on Linux that's the AppImage). Only a release
+//!   that actually has a build for this system counts as an update.
 //!
 //! Only release builds know their version (the release workflow stamps
 //! `KOMPACTER_VERSION`), so dev builds never update. The only host contacted is GitHub.
@@ -51,6 +59,9 @@ enum How {
     Installer,
     /// Replace this AppImage file with the downloaded one.
     AppImage(PathBuf),
+    /// Replace this macOS app bundle with the one in the downloaded disk image; the page
+    /// opens instead if that fails.
+    MacApp { bundle: PathBuf, page: String },
     /// Open the release page in the browser.
     Page(String),
 }
@@ -64,14 +75,17 @@ struct Wanted {
     download: bool,
 }
 
-/// The release file for an `os`/`arch` (as in `std::env::consts`); `appimage` when
-/// running from an AppImage. `None`: no builds are published for this system.
-fn wanted(os: &str, arch: &str, appimage: bool) -> Option<Wanted> {
+/// The release file for an `os`/`arch` (as in `std::env::consts`); `replaceable` when
+/// this copy can replace itself (an AppImage, or a macOS app in a folder it can write
+/// to). `None`: no builds are published for this system.
+fn wanted(os: &str, arch: &str, replaceable: bool) -> Option<Wanted> {
     let (prefix, suffix, download) = match (os, arch) {
         ("windows", _) => ("Kompacter-", "-setup.exe", true),
-        ("linux", "x86_64") if appimage => ("Kompacter-", "-x86_64.AppImage", true),
-        ("linux", "x86_64") => ("kompacter_", "_amd64.deb", false),
-        ("macos", "aarch64") => ("Kompacter-", "-macos-arm64.dmg", false),
+        ("linux", "x86_64") if replaceable => ("Kompacter-", "-x86_64.AppImage", true),
+        // Installed from a .deb or tarball: those aren't published any more, so the
+        // AppImage tells it a new version is out (and the release page has it).
+        ("linux", "x86_64") => ("Kompacter-", "-x86_64.AppImage", false),
+        ("macos", "aarch64") => ("Kompacter-", "-macos-arm64.dmg", replaceable),
         ("macos", "x86_64") => ("Kompacter-", "-macos-x86_64.dmg", false),
         _ => return None,
     };
@@ -90,6 +104,30 @@ fn running_appimage() -> Option<PathBuf> {
     std::env::var_os("APPIMAGE")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute() && p.is_file())
+}
+
+/// This macOS app's bundle (`…/Kompacter.app`), if Kompacter can replace it: not when
+/// it runs from the disk image, from App Translocation (macOS runs a quarantined app
+/// opened in place, e.g. from Downloads, from a hidden read-only copy) or from a folder
+/// this user can't write to. Those keep opening the release page.
+fn replaceable_bundle() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let bundle = exe.ancestors().nth(3)?.to_path_buf();
+    let path = bundle.to_string_lossy();
+    if bundle.extension()? != "app"
+        || path.contains("/AppTranslocation/")
+        || path.starts_with("/Volumes/")
+    {
+        return None;
+    }
+    // Can a sibling be made (and removed) in its folder?
+    let probe = bundle.parent()?.join(".Kompacter-update-probe");
+    std::fs::create_dir(&probe).ok()?;
+    std::fs::remove_dir(&probe).ok()?;
+    Some(bundle)
 }
 
 /// "v0.0.7-test" (or "v.0.0.7-test") → (0, 0, 7). Anything after a dash is ignored.
@@ -183,13 +221,16 @@ fn sha256_hex(path: &Path) -> io::Result<String> {
         .collect())
 }
 
-/// A release's file for this system, its checksum file (only when Kompacter downloads
-/// it) and the release's page.
+/// A release's file for this system, its checksum (only when Kompacter downloads it)
+/// and the release's page.
 #[derive(Debug)]
 struct Asset {
     name: String,
     exe: String,
+    /// The `.sha256` file's address, when there's one and GitHub gave no digest.
     sha: String,
+    /// The file's SHA-256 as GitHub reports it (the asset's `digest`, lowercase hex).
+    digest: Option<String>,
     size: u64,
     page: String,
 }
@@ -215,7 +256,14 @@ fn assets(release: &Value, want: Wanted) -> Option<Asset> {
         })?
         .to_string();
     let exe = find(&name)?;
-    let sha = if want.download {
+    // GitHub records every asset's SHA-256 itself, so no `.sha256` file is needed; it is
+    // still read where GitHub gives none (releases from before it did).
+    let digest = exe["digest"]
+        .as_str()
+        .and_then(|d| d.strip_prefix("sha256:"))
+        .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase);
+    let sha = if want.download && digest.is_none() {
         find(&format!("{name}.sha256"))?["browser_download_url"]
             .as_str()?
             .to_string()
@@ -234,16 +282,19 @@ fn assets(release: &Value, want: Wanted) -> Option<Asset> {
         exe: exe["browser_download_url"].as_str()?.to_string(),
         sha,
         size: exe["size"].as_u64().unwrap_or(0),
+        digest: digest.filter(|_| want.download),
         name,
         page,
     })
 }
 
 /// The newest published release that has this system's file (and its checksum).
-fn newest(list: &Value, want: Wanted) -> Option<(String, Asset)> {
+/// Pre-releases count only when `prereleases` is on.
+fn newest(list: &Value, want: Wanted, prereleases: bool) -> Option<(String, Asset)> {
     list.as_array()?
         .iter()
         .filter(|r| r["draft"].as_bool() != Some(true))
+        .filter(|r| prereleases || r["prerelease"].as_bool() != Some(true))
         .filter_map(|r| {
             let tag = r["tag_name"].as_str()?;
             Some((parse(tag)?, tag.to_string(), assets(r, want)?))
@@ -258,20 +309,35 @@ fn newest(list: &Value, want: Wanted) -> Option<(String, Asset)> {
 /// the new version and 0..1 while the file downloads.
 pub fn check(
     current: &str,
+    prereleases: bool,
     dir: &Path,
     progress: &dyn Fn(&str, f32),
 ) -> Result<Option<Ready>, String> {
     let appimage = running_appimage();
+    let bundle = replaceable_bundle();
     let Some(want) = wanted(
         std::env::consts::OS,
         std::env::consts::ARCH,
-        appimage.is_some(),
+        appimage.is_some() || bundle.is_some(),
     ) else {
         return Ok(None);
     };
     let body = curl(RELEASES)?;
     let list: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
-    let Some((tag, asset)) = newest(&list, want) else {
+    // A Mac release with no checksum can't be installed, but it is still news: offer
+    // its page instead.
+    let found = newest(&list, want, prereleases)
+        .map(|f| (f, want))
+        .or_else(|| {
+            let page_only = Wanted {
+                download: false,
+                ..want
+            };
+            (bundle.is_some() && want.download)
+                .then(|| newest(&list, page_only, prereleases).map(|f| (f, page_only)))
+                .flatten()
+        });
+    let Some(((tag, asset), want)) = found else {
         return Ok(None);
     };
     if !newer(&tag, current) {
@@ -286,36 +352,48 @@ pub fn check(
             how: How::Page(asset.page),
         }));
     }
-    let want_sha = String::from_utf8_lossy(&curl(&asset.sha)?)
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if want_sha.len() != 64 {
-        return Err("the checksum file is broken".into());
-    }
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let installer = dir.join(&asset.name);
-    // Already downloaded on an earlier check.
-    if sha256_hex(&installer).ok().as_deref() != Some(want_sha.as_str()) {
-        download(&asset.exe, &installer, asset.size, &|p| {
-            progress(&version, p)
-        })?;
-        let got = sha256_hex(&installer).map_err(|e| e.to_string())?;
-        if got != want_sha {
-            let _ = std::fs::remove_file(&installer);
-            return Err("the download didn't match its checksum".into());
-        }
-    }
-    let how = match appimage {
-        Some(path) => How::AppImage(path),
-        None => How::Installer,
+    let installer = fetch(&asset, dir, &|p| progress(&version, p))?;
+    let how = match (appimage, bundle) {
+        (Some(path), _) => How::AppImage(path),
+        (None, Some(bundle)) => How::MacApp {
+            bundle,
+            page: asset.page,
+        },
+        (None, None) => How::Installer,
     };
     Ok(Some(Ready {
         version,
         installer,
         how,
     }))
+}
+
+/// Download `asset` into `dir` (unless an earlier check already did) and check it against
+/// its SHA-256: GitHub's digest, or the release's `.sha256` file. A file that doesn't match
+/// is deleted, never returned.
+fn fetch(asset: &Asset, dir: &Path, progress: &dyn Fn(f32)) -> Result<PathBuf, String> {
+    let want_sha = match &asset.digest {
+        Some(digest) => digest.clone(),
+        None => String::from_utf8_lossy(&curl(&asset.sha)?)
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase(),
+    };
+    if want_sha.len() != 64 {
+        return Err("the checksum file is broken".into());
+    }
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let installer = dir.join(&asset.name);
+    if sha256_hex(&installer).ok().as_deref() != Some(want_sha.as_str()) {
+        download(&asset.exe, &installer, asset.size, progress)?;
+        let got = sha256_hex(&installer).map_err(|e| e.to_string())?;
+        if got != want_sha {
+            let _ = std::fs::remove_file(&installer);
+            return Err("the download didn't match its checksum".into());
+        }
+    }
+    Ok(installer)
 }
 
 /// Where downloads wait until they're installed.
@@ -330,7 +408,8 @@ pub fn clear_downloads() {
 }
 
 impl Ready {
-    /// True when the update is applied as Kompacter quits (Windows installer, AppImage).
+    /// True when the update is applied as Kompacter quits (Windows installer, AppImage,
+    /// macOS app bundle).
     /// Otherwise the release page only opens when the user asks for it.
     pub fn installs_on_quit(&self) -> bool {
         !matches!(self.how, How::Page(_))
@@ -352,8 +431,92 @@ pub fn install(ready: &Ready) -> io::Result<()> {
                 .spawn()
                 .map(drop)
         }
+        How::MacApp { bundle, page } => match replace_bundle(&ready.installer, bundle) {
+            Ok(()) => relaunch_after_exit(bundle),
+            Err(_) => open_url(page),
+        },
         How::Page(url) => open_url(url),
     }
+}
+
+/// Mount the disk image `dmg` out of sight and put its `Kompacter.app` where `bundle`
+/// is: copied next to it first, then two renames, so a failure leaves the old app as it
+/// was. The running process keeps its already-open files until it quits.
+fn replace_bundle(dmg: &Path, bundle: &Path) -> io::Result<()> {
+    let (Some(dir), Some(name)) = (bundle.parent(), bundle.file_name()) else {
+        return Err(io::Error::other("not an app bundle"));
+    };
+    let mount = tempfile::tempdir()?;
+    let ok = |status: io::Result<std::process::ExitStatus>, what: &str| match status {
+        Ok(s) if s.success() => Ok(()),
+        _ => Err(io::Error::other(format!("{what} failed"))),
+    };
+    ok(
+        Command::new("/usr/bin/hdiutil")
+            .args([
+                "attach",
+                "-nobrowse",
+                "-readonly",
+                "-noautoopen",
+                "-quiet",
+                "-mountpoint",
+            ])
+            .arg(mount.path())
+            .arg(dmg)
+            .status(),
+        "mounting the update",
+    )?;
+    let sibling = |suffix: &str| {
+        let mut n = std::ffi::OsString::from(".");
+        n.push(name);
+        n.push(suffix);
+        dir.join(n)
+    };
+    let staged = sibling(".update");
+    let old = sibling(".old");
+    let _ = std::fs::remove_dir_all(&staged);
+    let _ = std::fs::remove_dir_all(&old);
+    let result = (|| {
+        let source = mount.path().join("Kompacter.app");
+        if !source.join("Contents/MacOS/Kompacter").is_file() {
+            return Err(io::Error::other("the update has no Kompacter.app"));
+        }
+        // ditto keeps the bundle's signature, permissions and attributes intact.
+        ok(
+            Command::new("/usr/bin/ditto")
+                .arg(&source)
+                .arg(&staged)
+                .status(),
+            "copying the update",
+        )?;
+        std::fs::rename(bundle, &old)?;
+        if let Err(e) = std::fs::rename(&staged, bundle) {
+            let _ = std::fs::rename(&old, bundle);
+            return Err(e);
+        }
+        Ok(())
+    })();
+    let _ = Command::new("/usr/bin/hdiutil")
+        .args(["detach", "-quiet", "-force"])
+        .arg(mount.path())
+        .status();
+    let _ = std::fs::remove_dir_all(&staged);
+    let _ = std::fs::remove_dir_all(&old);
+    result
+}
+
+/// Start `bundle` again once this process has exited (so the new copy doesn't hand off
+/// to the old one, which is still quitting).
+fn relaunch_after_exit(bundle: &Path) -> io::Result<()> {
+    Command::new("/bin/sh")
+        .args([
+            "-c",
+            "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open \"$0\"",
+        ])
+        .arg(bundle)
+        .arg(std::process::id().to_string())
+        .spawn()
+        .map(drop)
 }
 
 /// Copy `new` next to `target` (same folder, so the final rename is atomic), make it
@@ -403,19 +566,25 @@ mod tests {
         download: true,
     };
 
-    /// A release with every system's files, as the release workflow publishes them.
+    /// A release with every system's files, as the release workflow publishes them: no
+    /// version in the names, so the README can link to releases/latest/download/<name>.
     fn full_release(v: &str) -> Value {
+        release_with(
+            v,
+            &[
+                "Kompacter-windows-setup.exe",
+                "Kompacter-linux-x86_64.AppImage",
+                "Kompacter-installer-macos-arm64.dmg",
+            ],
+        )
+    }
+
+    /// A release with these files, each with its `.sha256`.
+    fn release_with(v: &str, names: &[&str]) -> Value {
         let base = format!("https://github.com/KXZer0/Kompacter/releases/download/v{v}");
-        let names = [
-            format!("Kompacter-{v}-setup.exe"),
-            format!("Kompacter-{v}-x86_64.AppImage"),
-            format!("kompacter_{v}_amd64.deb"),
-            format!("Kompacter-{v}-linux-x86_64.tar.gz"),
-            format!("Kompacter-{v}-macos-arm64.dmg"),
-        ];
         let assets: Vec<Value> = names
             .iter()
-            .flat_map(|n| [n.clone(), format!("{n}.sha256")])
+            .flat_map(|n| [n.to_string(), format!("{n}.sha256")])
             .map(|n| {
                 serde_json::json!({
                     "name": n, "size": 7, "browser_download_url": format!("{base}/{n}")
@@ -430,12 +599,154 @@ mod tests {
         })
     }
 
+    /// The whole update on this system, as the app does it, in a temp folder:
+    /// `cargo test -p kompacter -- --ignored update_end_to_end`. CI runs it on Windows,
+    /// macOS and Linux (`.github/workflows/update-test.yml`).
+    ///
+    /// The file is the newest published release's (found, downloaded and checked against
+    /// its SHA-256 exactly like the app does), or `KOMPACTER_UPDATE_FILE`, a freshly built
+    /// one (the release workflow checks each build this way before publishing). Then it's
+    /// installed: Windows runs the installer silently into the temp folder, Linux swaps a
+    /// stand-in AppImage for it, macOS mounts the disk image and replaces a stand-in
+    /// Kompacter.app.
+    #[test]
+    #[ignore]
+    fn update_end_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = match std::env::var_os("KOMPACTER_UPDATE_FILE") {
+            // Relative to the repository root (cargo runs tests in the package folder).
+            Some(path) => {
+                let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+                let path = root.join(path);
+                assert!(path.is_file(), "no file at {}", path.display());
+                path
+            }
+            None => {
+                let want = wanted(std::env::consts::OS, std::env::consts::ARCH, true)
+                    .expect("no builds are published for this system");
+                let list: Value = serde_json::from_slice(&releases_for_test()).unwrap();
+                let Some((tag, asset)) = newest(&list, want, true) else {
+                    // Nothing published for this system yet (drafts don't count): the
+                    // freshly built files are still checked in the release workflow.
+                    assert!(
+                        std::env::var_os("KOMPACTER_REQUIRE_RELEASE").is_none(),
+                        "no published release has this system's file and checksum"
+                    );
+                    println!("skipped: no published release has this system's file yet");
+                    return;
+                };
+                println!("newest release: {tag}, file {}", asset.name);
+                fetch(&asset, &dir.path().join("download"), &|_| {}).expect("download")
+            }
+        };
+        println!("installing {}", file.display());
+        install_for_test(&file, dir.path());
+    }
+
+    /// The release list, as an authenticated request when CI provides a token (the
+    /// anonymous limit is shared by every job on a runner's address).
+    fn releases_for_test() -> Vec<u8> {
+        let mut cmd = Command::new("curl");
+        cmd.args(["-fsSL", "--proto", "=https", "-A", "Kompacter-updater"])
+            .args(["-H", "Accept: application/vnd.github+json"]);
+        if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+            cmd.arg("-H").arg(format!("Authorization: Bearer {token}"));
+        }
+        let out = cmd.arg(RELEASES).output().expect("curl");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_for_test(file: &Path, dir: &Path) {
+        let target = dir.join("Kompacter.AppImage");
+        std::fs::write(&target, b"old").unwrap();
+        replace_file(file, &target).unwrap();
+        assert_eq!(sha256_hex(&target).unwrap(), sha256_hex(file).unwrap());
+        use std::os::unix::fs::PermissionsExt;
+        assert_ne!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o111,
+            0
+        );
+        // A real AppImage: it unpacks (no FUSE needed) and holds the app.
+        let ok = Command::new(&target)
+            .arg("--appimage-extract")
+            .current_dir(dir)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "the AppImage didn't unpack");
+        assert!(dir.join("squashfs-root/usr/bin/Kompacter").is_file());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn install_for_test(file: &Path, dir: &Path) {
+        let apps = dir.join("Applications");
+        let bundle = apps.join("Kompacter.app");
+        std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+        std::fs::write(bundle.join("Contents/MacOS/Kompacter"), b"old").unwrap();
+        replace_bundle(file, &bundle).unwrap();
+        let exe = std::fs::read(bundle.join("Contents/MacOS/Kompacter")).unwrap();
+        assert!(exe.len() > 1000 && exe != b"old", "the app wasn't replaced");
+        // Only the one app is left: no staged or old copy next to it.
+        let names: Vec<_> = std::fs::read_dir(&apps)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("Kompacter.app")]);
+        let signed = Command::new("/usr/bin/codesign")
+            .args(["--verify", "--deep", "--strict"])
+            .arg(&bundle)
+            .status()
+            .unwrap()
+            .success();
+        assert!(signed, "the replaced app's signature doesn't verify");
+    }
+
+    #[cfg(windows)]
+    fn install_for_test(file: &Path, dir: &Path) {
+        let target = dir.join("Kompacter");
+        // The same silent install the app runs, into the temp folder (/D must be last).
+        let mut d = std::ffi::OsString::from("/D=");
+        d.push(&target);
+        let ok = Command::new(file)
+            .arg("/S")
+            .arg(d)
+            .status()
+            .unwrap()
+            .success();
+        // A silent install opens the new version: close it again.
+        let _ = Command::new("taskkill")
+            .args(["/IM", "Kompacter.exe", "/F"])
+            .status();
+        assert!(ok, "the installer failed");
+        for f in [
+            "Kompacter.exe",
+            "ffmpeg.exe",
+            "ffprobe.exe",
+            "Uninstall.exe",
+        ] {
+            assert!(target.join(f).is_file(), "{f} wasn't installed");
+        }
+        let _ = Command::new(target.join("Uninstall.exe"))
+            .arg("/S")
+            .status();
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    fn install_for_test(_: &Path, _: &Path) {}
+
     /// Talks to GitHub: `cargo test -p kompacter -- --ignored live`.
     #[test]
     #[ignore]
     fn live_check_against_github() {
         let dir = tempfile::tempdir().unwrap();
-        let got = check("0.0.0", dir.path(), &|_, _| {});
+        let got = check("0.0.0", true, dir.path(), &|_, _| {});
         assert!(got.is_ok(), "{got:?}");
     }
 
@@ -477,7 +788,18 @@ mod tests {
             {"tag_name": "v0.1.0", "draft": false, "assets": []},
             rel("v0.0.7-App", false),
         ]);
-        assert_eq!(newest(&list, WINDOWS).unwrap().0, "v0.0.8-App");
+        assert_eq!(newest(&list, WINDOWS, true).unwrap().0, "v0.0.8-App");
+        // Stable only: the pre-releases are skipped.
+        assert!(newest(&list, WINDOWS, false).is_none());
+    }
+
+    #[test]
+    fn pre_releases_only_when_asked() {
+        let mut beta = full_release("0.3.0");
+        beta["prerelease"] = true.into();
+        let list = serde_json::json!([beta, full_release("0.2.0")]);
+        assert_eq!(newest(&list, WINDOWS, false).unwrap().0, "v0.2.0");
+        assert_eq!(newest(&list, WINDOWS, true).unwrap().0, "v0.3.0");
     }
 
     #[test]
@@ -507,29 +829,79 @@ mod tests {
             Some((assets(&release, want)?, want.download))
         };
         let (a, download) = pick("windows", "x86_64", false).unwrap();
-        assert_eq!(a.name, "Kompacter-0.2.0-setup.exe");
+        assert_eq!(a.name, "Kompacter-windows-setup.exe");
         assert!(download && a.sha.ends_with("-setup.exe.sha256"));
 
         let (a, download) = pick("linux", "x86_64", true).unwrap();
-        assert_eq!(a.name, "Kompacter-0.2.0-x86_64.AppImage");
+        assert_eq!(a.name, "Kompacter-linux-x86_64.AppImage");
         assert!(download && a.sha.ends_with(".AppImage.sha256"));
 
-        // The .deb and macOS builds only point at the release page.
+        // A .deb / tarball install and macOS only point at the release page.
         let (a, download) = pick("linux", "x86_64", false).unwrap();
-        assert_eq!(a.name, "kompacter_0.2.0_amd64.deb");
+        assert_eq!(a.name, "Kompacter-linux-x86_64.AppImage");
         assert!(!download && a.sha.is_empty());
         assert_eq!(
             a.page,
             "https://github.com/KXZer0/Kompacter/releases/tag/v0.2.0"
         );
         let (a, download) = pick("macos", "aarch64", false).unwrap();
-        assert_eq!(a.name, "Kompacter-0.2.0-macos-arm64.dmg");
+        assert_eq!(a.name, "Kompacter-installer-macos-arm64.dmg");
         assert!(!download);
+        // A Mac app in a folder it can write to downloads and replaces itself.
+        let (a, download) = pick("macos", "aarch64", true).unwrap();
+        assert_eq!(a.name, "Kompacter-installer-macos-arm64.dmg");
+        assert!(download && a.sha.ends_with(".dmg.sha256"));
 
         // No Intel Mac or ARM Linux build in this release: no update for them.
         assert!(pick("macos", "x86_64", false).is_none());
         assert!(pick("linux", "aarch64", true).is_none());
         assert!(pick("freebsd", "x86_64", false).is_none());
+    }
+
+    #[test]
+    fn githubs_digest_replaces_the_checksum_file() {
+        let base = "https://github.com/KXZer0/Kompacter/releases/download/v0.3.0";
+        let hex = "ab".repeat(32);
+        let release = serde_json::json!({"tag_name": "v0.3.0", "assets": [
+            {"name": "Kompacter-windows-setup.exe", "size": 7, "digest": format!("sha256:{}", hex.to_uppercase()),
+             "browser_download_url": format!("{base}/Kompacter-windows-setup.exe")}
+        ]});
+        let a = assets(&release, WINDOWS).unwrap();
+        assert_eq!(a.digest.as_deref(), Some(hex.as_str()));
+        assert!(a.sha.is_empty());
+        // No digest and no checksum file: not offered.
+        let mut bare = release.clone();
+        bare["assets"][0].as_object_mut().unwrap().remove("digest");
+        assert!(assets(&bare, WINDOWS).is_none());
+        // A broken digest falls back to the checksum file.
+        let mut odd = full_release("0.3.0");
+        odd["assets"][0]["digest"] = "sha256:nothex".into();
+        let a = assets(&odd, WINDOWS).unwrap();
+        assert!(a.digest.is_none() && a.sha.ends_with(".sha256"));
+    }
+
+    #[test]
+    fn older_versioned_names_still_match() {
+        // Releases up to 0.1.2 put the version in each name.
+        let old = release_with(
+            "0.1.2",
+            &[
+                "Kompacter-0.1.2-setup.exe",
+                "Kompacter-0.1.2-x86_64.AppImage",
+                "Kompacter-0.1.2-macos-arm64.dmg",
+            ],
+        );
+        for (os, arch, appimage, name) in [
+            ("windows", "x86_64", false, "Kompacter-0.1.2-setup.exe"),
+            ("linux", "x86_64", true, "Kompacter-0.1.2-x86_64.AppImage"),
+            ("macos", "aarch64", false, "Kompacter-0.1.2-macos-arm64.dmg"),
+        ] {
+            let a = assets(&old, wanted(os, arch, appimage).unwrap()).unwrap();
+            assert_eq!(a.name, name);
+        }
+        // And a new release beats it.
+        let list = serde_json::json!([old, full_release("0.2.0")]);
+        assert_eq!(newest(&list, WINDOWS, true).unwrap().0, "v0.2.0");
     }
 
     #[test]
@@ -541,8 +913,8 @@ mod tests {
             .retain(|a| a["name"].as_str().unwrap().contains("-setup.exe"));
         let list = serde_json::json!([windows_only, full_release("0.2.0")]);
         let mac = wanted("macos", "aarch64", false).unwrap();
-        assert_eq!(newest(&list, mac).unwrap().0, "v0.2.0");
-        assert_eq!(newest(&list, WINDOWS).unwrap().0, "v0.3.0");
+        assert_eq!(newest(&list, mac, true).unwrap().0, "v0.2.0");
+        assert_eq!(newest(&list, WINDOWS, true).unwrap().0, "v0.3.0");
     }
 
     #[test]
@@ -551,7 +923,7 @@ mod tests {
         release["assets"]
             .as_array_mut()
             .unwrap()
-            .retain(|a| a["name"].as_str() != Some("Kompacter-0.2.0-x86_64.AppImage.sha256"));
+            .retain(|a| a["name"].as_str() != Some("Kompacter-linux-x86_64.AppImage.sha256"));
         assert!(assets(&release, wanted("linux", "x86_64", true).unwrap()).is_none());
     }
 

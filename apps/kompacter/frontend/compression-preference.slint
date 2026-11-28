@@ -1,5 +1,8 @@
 import { Theme, Fx } from "theme.slint";
 
+/// Three-stop slider drawn like the app's on/off `Switch`, stretched: the same track
+/// colours, the same white knob with its soft shadow and the same springy motion.
+/// No box behind it, so it sits on whatever surface holds it.
 export component CompressionPreference inherits Rectangle {
     in property <int> index: 1;
     in property <bool> confirm-on-return;
@@ -8,15 +11,16 @@ export component CompressionPreference inherits Rectangle {
     callback confirmed;
     callback escaped;
 
-    min-height: 90px;
-    preferred-height: 90px;
+    // Exactly as tall as its content: no empty band under a one-line explanation.
+    min-height: 58px + explain.preferred-height;
+    preferred-height: self.min-height;
 
     property <[string]> labels: ["Compatibility", "Balanced", "Efficiency"];
     property <string> explanation: root.index == 0
-        ? "Favors formats that play on more devices."
+        ? "Plays on every phone, PC and chat app."
         : root.index == 1
-        ? "Balances detail and encoding time."
-        : "May take longer to keep more detail under the same size limit.";
+        ? "Good detail at a sensible speed."
+        : "Encodes on your GPU. Lightest on your PC.";
 
     accessible-role: slider;
     accessible-label: "Compression preference";
@@ -45,6 +49,19 @@ export component CompressionPreference inherits Rectangle {
         }
     }
 
+    // Same proportions as `Switch`: a 26 px track and a 22 px knob 2 px in from its edge.
+    property <length> knob: 22px;
+    property <length> travel: track.width - root.knob - 4px;
+    property <bool> dragging: touch.pressed;
+    property <length> drag-x;
+    // Where the knob's left edge sits: on a stop, or under the pointer while dragged.
+    property <length> knob-x: root.dragging
+        ? Math.clamp(root.drag-x - root.knob / 2, 2px, 2px + root.travel)
+        : 2px + root.travel * root.index / 2;
+    pure function stop-at(x: length) -> int {
+        return Math.clamp(Math.round((x - 2px - root.knob / 2) / root.travel * 2), 0, 2);
+    }
+
     keys := FocusScope {
         key-pressed(event) => {
             if (event.text == Key.LeftArrow || event.text == Key.DownArrow) {
@@ -71,89 +88,122 @@ export component CompressionPreference inherits Rectangle {
         }
     }
 
-    Rectangle {
-        height: 50px;
-        y: 0;
-        border-radius: 10px;
-        border-width: 1px;
-        border-color: keys.has-focus ? Theme.accent-text : transparent;
-        background: Theme.fill;
+    track := Rectangle {
+        x: 0;
+        y: 2px;
+        width: root.width;
+        height: 26px;
+        border-radius: self.height / 2;
+        background: Theme.fill-2;
 
-        rail := Rectangle {
-            x: parent.width / 6;
-            y: 15px;
-            width: parent.width * 2 / 3;
-            height: 4px;
-            background: Theme.label-2.transparentize(0.5);
-            border-radius: 2px;
-
-            Rectangle {
-                x: 0;
-                y: 0;
-                width: parent.width * root.index / 2;
-                height: parent.height;
-                background: Theme.accent;
-                border-radius: parent.border-radius;
-                animate width { duration: Fx.rich ? 140ms : 0ms; }
-            }
-
-            for i in root.labels.length: Rectangle {
-                x: rail.width * i / 2 - self.width / 2;
-                y: (rail.height - self.height) / 2;
-                width: 7px;
-                height: self.width;
-                border-radius: self.width / 2;
-                background: i <= root.index ? Theme.accent : Theme.label-2;
-            }
-
-            Rectangle {
-                x: rail.width * root.index / 2 - self.width / 2;
-                y: (rail.height - self.height) / 2;
-                width: 16px;
-                height: self.width;
-                border-radius: self.width / 2;
-                background: Theme.accent;
-                border-width: 2px;
-                border-color: Theme.on-accent;
-                animate x { duration: Fx.rich ? 140ms : 0ms; }
+        // The "on" part grows with the knob, like the Switch turning blue.
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: root.knob-x + root.knob + 2px;
+            height: parent.height;
+            border-radius: parent.border-radius;
+            background: Theme.accent;
+            // On the first stop the track is all grey, like a Switch that is off.
+            opacity: root.knob-x > 3px ? 1 : 0;
+            animate opacity { duration: Fx.rich ? 140ms : 0ms; }
+            animate width {
+                duration: root.dragging || !Fx.rich ? 0ms : 260ms;
+                easing: ease-out-back;
             }
         }
 
-        for label[i] in root.labels: Text {
-            x: parent.width * i / 3;
-            y: 28px;
-            width: parent.width / 3;
-            height: 16px;
-            text: label;
-            color: i == root.index ? Theme.accent-text : Theme.label-2;
-            font-size: 12px;
-            font-weight: i == root.index ? 650 : 500;
-            horizontal-alignment: center;
+        // The stops, quiet dots the knob settles on.
+        for i in 3: Rectangle {
+            x: 2px + root.travel * i / 2 + (root.knob - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 6px;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: i <= root.index ? #ffffff73 : Theme.label-2.transparentize(0.55);
+            opacity: i == root.index ? 0 : 1;
         }
 
-        TouchArea {
-            mouse-cursor: pointer;
-            pointer-event(event) => {
-                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
-                    keys.focus();
-                    root.pick(Math.floor(self.mouse-x * 3 / self.width));
-                }
+        // Keyboard focus: a soft accent halo around the knob.
+        Rectangle {
+            x: root.knob-x - 4px;
+            y: -2px;
+            width: root.knob + 8px;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: Theme.accent-soft;
+            opacity: keys.has-focus ? 1 : 0;
+            animate opacity { duration: 140ms; }
+            animate x {
+                duration: root.dragging || !Fx.rich ? 0ms : 260ms;
+                easing: ease-out-back;
             }
-            moved => {
-                if (self.pressed) {
-                    root.pick(Math.floor(self.mouse-x * 3 / self.width));
-                }
+        }
+
+        Rectangle {
+            x: root.knob-x;
+            y: 2px;
+            width: root.knob;
+            height: root.knob;
+            border-radius: root.knob / 2;
+            background: white;
+            drop-shadow-blur: 4px;
+            drop-shadow-offset-y: 1px;
+            drop-shadow-color: #00000033;
+            transform-scale: root.dragging ? 1.08 : 1;
+            animate transform-scale { duration: 180ms; easing: ease-out; }
+            animate x {
+                duration: root.dragging || !Fx.rich ? 0ms : 260ms;
+                easing: ease-out-back;
             }
         }
     }
 
-    Text {
-        y: 57px;
-        height: 33px;
+    // Labels line up with their stops: the outer ones hug the edges so none get cut off.
+    for label[i] in root.labels: Text {
+        x: i == 0 ? 0 : i == 1 ? (root.width - self.width) / 2 : root.width - self.width;
+        y: 36px;
+        width: root.width / 3;
+        height: 16px;
+        text: label;
+        color: i == root.index ? Theme.label : Theme.label-2;
+        font-size: 12px;
+        font-weight: i == root.index ? 600 : 500;
+        horizontal-alignment: i == 0 ? left : i == 1 ? center : right;
+        animate color { duration: 140ms; }
+    }
+
+    touch := TouchArea {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: 54px;
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                keys.focus();
+                root.drag-x = self.mouse-x;
+                root.pick(root.stop-at(self.mouse-x));
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.drag-x = self.mouse-x;
+                root.pick(root.stop-at(self.mouse-x));
+            }
+        }
+    }
+
+    explain := Text {
+        x: 0;
+        y: 58px;
+        width: root.width;
+        height: self.preferred-height;
         text: root.explanation;
         color: Theme.label-2;
-        font-size: 13px;
+        font-size: 12px;
         horizontal-alignment: center;
+        vertical-alignment: top;
         wrap: word-wrap;
     }
 }

@@ -6,22 +6,20 @@ Compress any file, any time. With better quality and more for those apps. All lo
 
 Copy a file that's too big for Discord (or email, or any app with an upload limit), and Kompacter shrinks it to fit, puts it back on your clipboard, and you paste. Videos, audio, images, documents, 3D models, whole folders. Nothing is uploaded anywhere: every byte stays on your computer. Runs on Windows, Linux and macOS.
 
-> Status: early development. One app and one compression engine on Windows, Linux and macOS. Windows draws with Skia, Linux and macOS with FemtoVG (OpenGL) or the software renderer. Media jobs run in FFmpeg, with hardware encoding on supported GPUs. The automatic features work on all three, within what each system allows (see the table under Features).
+> Status: early development. One app and one compression engine on Windows, Linux and macOS. Windows draws with Skia on the CPU by default, or on the GPU (Direct3D 12) with the GPU drawing setting; Linux and macOS draw with FemtoVG (OpenGL) or the software renderer. Media jobs run in FFmpeg, with hardware encoding on supported GPUs. The automatic features work on all three, within what each system allows (see the table under Features).
 
 > [!WARNING]
 > **Linux and macOS are untested on real machines.** Both versions build and pass the automated tests on every change (CI on Ubuntu and macOS), but nobody has used them day to day yet: expect rough edges, especially in the automatic features. Windows is the tested version. Please [report what you find](https://github.com/KXZer0/Kompacter/issues), and if you use Linux or a Mac and would like to help maintain those versions, say so in an issue.
 
 ## Download
 
-Get Kompacter from [Releases](https://github.com/KXZer0/Kompacter/releases). Every download has a `.sha256` checksum next to it.
-
 | System | Download | Notes |
 |---|---|---|
-| Windows 10/11 | `Kompacter-<version>-setup.exe` | No admin rights needed; ffmpeg is included. Updates itself. |
-| Linux (x86-64) | `Kompacter-<version>-x86_64.AppImage` | ffmpeg is included. `chmod +x` it and run it. Needs glibc 2.35+ (Ubuntu 22.04, Debian 12, Fedora 36 or newer) and the usual desktop OpenGL/Wayland/X11 libraries. |
-| Debian / Ubuntu | `kompacter_<version>_amd64.deb` | `sudo apt install ./kompacter_<version>_amd64.deb` ffmpeg is included. |
-| Linux, portable | `Kompacter-<version>-linux-x86_64.tar.gz` | Extract and run `./Kompacter`; ffmpeg is included; `./install-launcher.sh` adds a menu entry. |
-| macOS 26 or later (Apple silicon; no Intel build) | `Kompacter-<version>-macos-arm64.dmg` | Open it and drag Kompacter to Applications; ffmpeg is included. |
+| Windows 10/11 | **[Download for Windows](https://github.com/KXZer0/Kompacter/releases/latest/download/Kompacter-windows-setup.exe)** | No admin rights needed; ffmpeg is included. Updates itself (asks first). |
+| macOS 26 or later (Apple silicon) | **[Download for Mac](https://github.com/KXZer0/Kompacter/releases/latest/download/Kompacter-installer-macos-arm64.dmg)** | Open it and drag Kompacter to Applications; ffmpeg is included. No Intel build. |
+| Linux (x86-64) | **[Download for Linux](https://github.com/KXZer0/Kompacter/releases/latest/download/Kompacter-linux-x86_64.AppImage)** (AppImage) | ffmpeg is included. `chmod +x` it and run it. Updates itself (asks first). Needs glibc 2.35+ (Ubuntu 22.04, Debian 12, Fedora 36 or newer) and the usual desktop OpenGL/Wayland/X11 libraries. |
+
+Each link always gets the newest version. Older versions, and each file's SHA-256 checksum, are on [Releases](https://github.com/KXZer0/Kompacter/releases).
 
 Until the macOS builds are notarized, macOS blocks the first start: right-click Kompacter in Applications → **Open** → **Open** (or run `xattr -dr com.apple.quarantine /Applications/Kompacter.app`).
 
@@ -58,7 +56,7 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 ## Features
 
 - Fits files under a target size: Discord 20 / 50 / 500 MB, Slack 1 GB, WhatsApp 2 GB, Telegram 2 GB, Signal 100 MB, email 25 MB, or custom.
-- **Compression preference:** Compatibility (plays everywhere, fastest), Balanced, or Efficiency (smallest files, slower). Any output format can be pinned to override it.
+- **Compression preference:** Compatibility (plays everywhere), Balanced, or Efficiency (encodes on the GPU with newer formats, lightest on your PC). Any output format can be pinned instead of left on Automatic.
 - **Trim + compress** with live size and quality estimates while you drag the handles.
 - Videos are checked after encoding, so a result always plays and is always under the limit. A video that already fits is left untouched; one in a container chat apps dislike (MOV, MKV, WebM) is repackaged to MP4 without re-encoding.
 - Pictures keep their colour profile (Display P3 screenshots, phone photos), their orientation and their transparency. HDR pictures are tone-mapped. iPhone HEIC and AVIF photos become JPEGs (or WebP with the Efficiency preference) that fit.
@@ -71,7 +69,7 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 - Results go to Kompacter's folder, next to the original, a folder you pick, or replace the original (which goes to the Recycle Bin or Trash).
 - Lives in the tray (Windows, Linux) or the Dock (macOS: click the icon to open the panel above it, drop files on it). Open it by dropping a file, choosing one, pasting, or from the file manager.
 - Works on its own if you want: a hotkey quick bar, a paste guard for chat apps, a notice when you copy a file that's too big, shrinking new clips in your clip folders, and starting with the system (per-system details in the table below).
-- Updates itself: a new version is checked against its published checksum, with a short "What's new". Can be switched off.
+- Updates itself, after asking: an "Update available" screen (✕ to skip) or the Update button in Settings. Each download is checked against GitHub's SHA-256 first, and a short "What's new" follows. Pre-releases only if you opt in. Checking can be switched off.
 - No admin rights needed. No account. No network access except update checks.
 
 | | Windows | Linux | macOS |
@@ -85,7 +83,7 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 | Paste guard: a too-big paste into Discord, Slack, WhatsApp, Telegram or Signal is shrunk to that app's limit | ✓ | — (not allowed on Wayland) | ✓ (needs Accessibility permission) |
 | Notice when a too-big file is copied | ✓ | ✓ (Wayland on KDE, Sway and other wlroots desktops; not GNOME) | ✓ |
 | Start with the system | ✓ | ✓ (XDG autostart) | ✓ (Open at login) |
-| Updates | Installs itself on restart | AppImage replaces itself; .deb and tarball open the release page | Opens the release page |
+| Updates | Asks, then installs and restarts | Asks, then replaces itself | Asks, then replaces itself (from Applications) |
 
 ## Repository layout
 

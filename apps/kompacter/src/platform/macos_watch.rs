@@ -1,6 +1,8 @@
 //! Noticing copied files on macOS. AppKit is only touched on the main thread: a timer
 //! there compares the pasteboard's change count (a cheap integer read) and reads the
-//! file URLs only when it moved. The watch thread just reads what the timer left.
+//! file URLs only when it moved, then tells the watch thread, which reads what the timer
+//! left. macOS has no pasteboard-changed notification, so the timer stays; the watch
+//! thread itself sleeps until told.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -16,6 +18,8 @@ struct Shared {
     seq: AtomicU32,
     files: Mutex<Vec<PathBuf>>,
     stopped: AtomicBool,
+    /// Called on the main thread after each new copy.
+    on_copy: Box<dyn Fn() + Send + Sync>,
 }
 
 thread_local! {
@@ -29,12 +33,14 @@ pub struct Watcher {
 }
 
 impl Watcher {
-    /// `None` when the UI event loop is gone.
-    pub fn start() -> Option<Self> {
+    /// `None` when the UI event loop is gone. `on_copy` runs (on the main thread) after
+    /// each new copy.
+    pub fn start(on_copy: impl Fn() + Send + Sync + 'static) -> Option<Self> {
         let shared = Arc::new(Shared {
             seq: AtomicU32::new(0),
             files: Mutex::new(Vec::new()),
             stopped: AtomicBool::new(false),
+            on_copy: Box::new(on_copy),
         });
         let polled = shared.clone();
         slint::invoke_from_event_loop(move || poll_on_main_thread(polled)).ok()?;
@@ -88,6 +94,7 @@ fn poll_on_main_thread(shared: Arc<Shared>) {
             *latest = files;
         }
         shared.seq.fetch_add(1, Ordering::Release);
+        (shared.on_copy)();
     });
     TIMER.with(|t| *t.borrow_mut() = Some(timer));
 }

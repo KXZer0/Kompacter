@@ -13,7 +13,7 @@ import { CompressionPreference } from "compression-preference.slint";
 
 export { Theme, Fx, Prefs, PresetItem }
 
-export enum View { idle, reading, big, trim, busy, done, error, settings, quick, welcome, news }
+export enum View { idle, reading, big, trim, busy, done, error, settings, quick, welcome, news, update }
 
 /// One line of a before → after list (a folder's tree, or a video's stats).
 export struct DiffRow {
@@ -41,7 +41,9 @@ export component Tray inherits SystemTrayIcon {
     callback quit();
     in property <bool> has-chooser;
     in property <string> tip: "Kompacter";
-    icon: @image-url("tray.png");
+    /// Set from Rust to the mood and size the tray needs (src/app/tray_art.rs).
+    in property <image> art: @image-url("tray.png");
+    icon: root.art;
     tooltip: root.tip;
     clicked => { root.open(); }
     Menu {
@@ -155,6 +157,8 @@ export component AppWindow inherits Window {
     in property <int> preset-index;
     in property <string> dash-path;
     in property <float> ambient-turn;
+    // Set from Rust for each system (see `platform::UI_FONT`); empty is the system's own.
+    in property <string> ui-font;
     in property <string> target-text: "20 MB";
 
     in property <string> file-name;
@@ -231,6 +235,10 @@ export component AppWindow inherits Window {
     in property <string> update-version;
     /// The update's download, 0…1 (1: downloaded and checked, ready to install).
     in property <float> update-progress: 1;
+    /// Update replaces Kompacter itself (false: it opens the download page).
+    in property <bool> update-installs: true;
+    /// This build's version ("" for development builds).
+    in property <string> app-version;
 
     in property <string> error-text;
 
@@ -277,6 +285,8 @@ export component AppWindow inherits Window {
     callback tray-tip-dismiss();
     callback welcome-done();
     callback news-done();
+    /// The "Update available" screen's ✕: not now.
+    callback update-dismiss();
     callback restart-to-update();
 
     property <length> inset: Fx.glass ? 12px : 0;
@@ -294,7 +304,7 @@ export component AppWindow inherits Window {
     no-frame: true;
     always-on-top: true;
     background: Fx.glass ? transparent : Theme.bg;
-    default-font-family: "Segoe UI Variable Text";
+    default-font-family: root.ui-font;
     default-font-size: 14px;
     width: 360px + 2 * inset;
     forward-focus: keys;
@@ -436,7 +446,7 @@ export component AppWindow inherits Window {
             height: root.full-h;
 
             // ── Header ──
-            if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome && root.view != View.news: Rectangle {
+            if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome && root.view != View.news && root.view != View.update: Rectangle {
                 x: 16px;
                 y: 14px;
                 width: pill-row.preferred-width;
@@ -474,7 +484,7 @@ export component AppWindow inherits Window {
                     clicked => { menu.show(); }
                 }
             }
-            if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome && root.view != View.news: IconBtn {
+            if root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.welcome && root.view != View.news && root.view != View.update: IconBtn {
                 x: parent.width - 14px - self.width - (root.resident-controls ? 64px : 0px);
                 y: 13px;
                 icon: Icons.gear;
@@ -483,7 +493,7 @@ export component AppWindow inherits Window {
                 enabled: root.view != View.busy;
                 clicked => { root.open-settings(); }
             }
-            if root.resident-controls && root.view != View.settings && root.view != View.trim && root.view != View.quick: IconBtn {
+            if root.resident-controls && root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.update: IconBtn {
                 x: parent.width - 46px - self.width;
                 y: 13px;
                 icon: "M6 12h12";
@@ -491,7 +501,7 @@ export component AppWindow inherits Window {
                 tip-below: true;
                 clicked => { root.hide-resident(); }
             }
-            if root.resident-controls && root.view != View.settings && root.view != View.trim && root.view != View.quick: IconBtn {
+            if root.resident-controls && root.view != View.settings && root.view != View.trim && root.view != View.quick && root.view != View.update: IconBtn {
                 x: parent.width - 14px - self.width;
                 y: 13px;
                 icon: "M12 3v8M7 5.6a8 8 0 1 0 10 0";
@@ -923,7 +933,7 @@ export component AppWindow inherits Window {
                         x: 40px;
                         y: 266px;
                         width: parent.width - 80px;
-                        height: 90px;
+                        height: 88px;
                         index: root.welcome-preference;
                         confirm-on-return: true;
                         init => { self.focus-slider(); }
@@ -1036,6 +1046,71 @@ export component AppWindow inherits Window {
                         text: "Got it";
                         clicked => { root.news-done(); }
                     }
+                }
+            }
+
+            // A newer version is ready: shown when the panel opens, like the first-run
+            // screen. Nothing installs until Update is pressed; ✕ (or Escape) is "not now".
+            if root.view == View.update: Appear {
+                x: 0;
+                y: 0;
+                width: 360px;
+                height: 472px;
+                IconBtn {
+                    x: parent.width - 14px - self.width;
+                    y: 13px;
+                    icon: Icons.x;
+                    tip: "Not now";
+                    tip-below: true;
+                    clicked => { root.update-dismiss(); }
+                }
+                Rectangle {
+                    y: 36px;
+                    width: parent.width;
+                    height: 170px;
+                    Blob {
+                        mood: Mood.happy;
+                        s: 0.8;
+                        touchable: false;
+                        cx: parent.width / 2;
+                        cy: parent.height / 2;
+                    }
+                }
+                Title {
+                    x: 24px;
+                    y: 232px;
+                    width: parent.width - 48px;
+                    text: "Update available";
+                }
+                Sub {
+                    x: 24px;
+                    y: 264px;
+                    width: parent.width - 48px;
+                    text: root.app-version != ""
+                        ? "Kompacter " + root.update-version + " is ready. You have " + root.app-version + "."
+                        : "Kompacter " + root.update-version + " is ready.";
+                }
+                HorizontalLayout {
+                    x: 40px;
+                    y: 368px;
+                    width: 280px;
+                    height: 44px;
+                    Btn {
+                        large: true;
+                        primary: true;
+                        text: root.update-installs ? "Update now" : "Get the update";
+                        clicked => { root.restart-to-update(); }
+                    }
+                }
+                Text {
+                    x: 24px;
+                    y: 424px;
+                    width: parent.width - 48px;
+                    text: root.update-installs ? "Kompacter restarts with the new version"
+                        : "Opens the download page";
+                    font-size: 12px;
+                    color: Theme.label-2;
+                    horizontal-alignment: center;
                 }
             }
 
