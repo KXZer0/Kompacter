@@ -6,7 +6,9 @@
 # xvfb-run. Fails if any screen can't be captured.
 set -euo pipefail
 root=$(pwd)
-out=$(realpath -m "${1:-$root/target/screens}")
+out=${1:-$root/target/screens}
+# (No realpath -m: macOS's realpath doesn't have it.)
+case "$out" in /*|[A-Za-z]:*) ;; *) out="$root/$out" ;; esac
 extra=${2:-}
 work="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/kompacter-screens"
 rm -rf "$work" "$out"
