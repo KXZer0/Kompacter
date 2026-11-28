@@ -40,7 +40,7 @@ use self::settings::Settings;
 const COMPRESSION_PREFERENCES: [CompressionPreference; 3] = [
     CompressionPreference::Compatibility,
     CompressionPreference::Balanced,
-    CompressionPreference::Efficiency,
+    CompressionPreference::Quality,
 ];
 const VIDEO_OVERRIDES: [Option<VideoCodec>; 4] = [
     None,
@@ -405,7 +405,6 @@ impl App {
         prefs.set_gpu(s.gpu);
         prefs.set_gpu_drawing_available(cfg!(windows));
         prefs.set_gpu_drawing(s.gpu_drawing());
-        prefs.set_gpu_drawing_follows(s.gpu_drawing.is_none());
         prefs.set_gpu_drawing_running(self.gpu_drawing);
         prefs.set_auto_update(s.auto_update);
         prefs.set_prereleases(s.prereleases);
@@ -1287,11 +1286,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         });
         let a = app.clone();
         prefs.on_set_gpu_drawing(move |on| {
-            let mut s = a.settings.borrow_mut();
-            // Back to "follow the preference" when the choice matches what it would pick.
-            let follows = s.compression_preference == CompressionPreference::Efficiency;
-            s.gpu_drawing = (on != follows).then_some(on);
-            drop(s);
+            a.settings.borrow_mut().gpu_drawing = Some(on);
             a.save();
             a.sync_settings();
         });

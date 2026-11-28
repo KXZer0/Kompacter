@@ -6,17 +6,26 @@ use serde::{Deserialize, Serialize};
 use crate::{Options, Speed};
 
 /// How to trade format compatibility, detail and encoding time.
+///
+/// - Compatibility: formats every phone, PC and chat app plays, encoded quickly.
+/// - Balanced (default): the most detail that still plays almost everywhere: H.264,
+///   MP3 (Opus only when the budget is tiny), pictures in their best fitting format, Zip.
+/// - Quality: the most detail per MB, for newer devices: AV1, Opus, WebP and 7z, with
+///   the slower encoder settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CompressionPreference {
     Compatibility,
     #[default]
     Balanced,
-    Efficiency,
+    /// Called "Efficiency" before; settings saved with that name still load.
+    #[serde(alias = "efficiency")]
+    Quality,
 }
 
 impl CompressionPreference {
     /// Defaults for a preference. Explicit format choices can override these options.
+    /// Whether video goes to the graphics card is the GPU encoding switch, not this.
     pub fn options(self, target_bytes: u64) -> Options {
         let mut options = Options::new(target_bytes);
         match self {
@@ -25,13 +34,16 @@ impl CompressionPreference {
                 options.audio_format = AudioFormat::Mp3;
                 options.image_format = ImageFormat::Jpeg;
             }
-            Self::Balanced => options.audio_format = AudioFormat::Mp3,
-            // Lightest on the PC: video goes to the graphics card (CPU only as a fallback)
-            // and audio and pictures use the newer, smaller formats.
-            Self::Efficiency => {
-                options.gpu = true;
+            Self::Balanced => {
+                options.audio_format = AudioFormat::Auto;
+                options.image_format = ImageFormat::Auto;
+            }
+            Self::Quality => {
+                options.speed = Speed::Quality;
+                options.video_codec = VideoCodec::Av1;
                 options.audio_format = AudioFormat::Opus;
                 options.image_format = ImageFormat::Webp;
+                options.archive = ArchiveFormat::SevenZ;
             }
         }
         options
