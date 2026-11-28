@@ -31,6 +31,10 @@ export global Prefs {
     in property <bool> replace-available;
     in property <string> trash-name: "Recycle Bin";
     in property <bool> auto-update;
+    /// This build's version ("" for development builds) and a newer one that's ready ("").
+    in property <string> app-version;
+    in property <string> update-version;
+    in property <bool> prereleases;
     in property <bool> auto-hide;
     in property <string> auto-hide-error;
     /// Starting at login: whether this copy can, and what the system calls it.
@@ -79,6 +83,8 @@ export global Prefs {
     /// Start Kompacter again (for settings read at start).
     callback restart();
     callback set-auto-update(bool);
+    callback update-now();
+    callback set-prereleases(bool);
     callback set-auto-hide(bool);
     callback set-start(bool);
     callback set-tray-pinned(bool);
@@ -710,9 +716,9 @@ export component SettingsView inherits Rectangle {
                         toggled(on) => { Prefs.set-explorer-menu(on); }
                     }
                 }
-                if Prefs.windows-integration: Cell {
-                    label: "Install updates";
-                    small: "Checked daily, installed on restart";
+                Cell {
+                    label: "Check for updates";
+                    small: "Daily · asks before installing";
                     Switch {
                         checked: Prefs.auto-update;
                         y: (parent.height - self.height) / 2;
@@ -726,6 +732,54 @@ export component SettingsView inherits Rectangle {
                         checked: Prefs.tray-pinned;
                         y: (parent.height - self.height) / 2;
                         toggled(on) => { Prefs.set-tray-pinned(on); }
+                    }
+                }
+            }
+
+            // The version, with the update (when there is one) right under it.
+            GroupTitle { text: "VERSION"; }
+            Group {
+                Cell {
+                    label: "Version";
+                    first: true;
+                    Text {
+                        text: Prefs.app-version != "" ? Prefs.app-version : "Development build";
+                        font-size: 14px;
+                        color: Theme.label-2;
+                        vertical-alignment: center;
+                    }
+                }
+                if Prefs.update-version != "": Rectangle {
+                    height: 56px;
+                    Rectangle {
+                        x: 12px;
+                        y: 0;
+                        width: parent.width - 12px;
+                        height: 1px;
+                        background: Theme.sep;
+                    }
+                    HorizontalLayout {
+                        padding: 10px;
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        Btn {
+                            primary: true;
+                            icon: Icons.download;
+                            text: "Update to " + Prefs.update-version;
+                            clicked => { Prefs.update-now(); }
+                        }
+                    }
+                }
+            }
+            Group {
+                Cell {
+                    label: "Use pre-release versions";
+                    small: "Test features before they come out";
+                    first: true;
+                    Switch {
+                        checked: Prefs.prereleases;
+                        y: (parent.height - self.height) / 2;
+                        toggled(on) => { Prefs.set-prereleases(on); }
                     }
                 }
             }

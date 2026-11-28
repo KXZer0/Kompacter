@@ -296,6 +296,7 @@ impl App {
         let was_hidden = !ui.window().is_visible();
         if was_hidden {
             self.mood_seen();
+            self.offer_update();
         }
         if was_hidden || self.motion.anchor.get().is_none() {
             self.motion.anchor.set(sys::anchor());

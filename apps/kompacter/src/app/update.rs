@@ -1,6 +1,7 @@
 //! Updates. Once a day Kompacter asks GitHub for its newest published release (drafts are
-//! skipped; pre-releases count, since that's how Kompacter ships for now). What happens
-//! with a newer one depends on how this copy was installed:
+//! skipped; pre-releases only with "Use pre-release versions" on). Nothing is installed
+//! until the user presses Update on the "Update available" screen (or in Settings). What
+//! happens then depends on how this copy was installed:
 //!
 //! - Windows: the installer is downloaded in the background and checked against the
 //!   SHA-256 the release publishes next to it. It's installed silently on the next restart
@@ -288,10 +289,12 @@ fn assets(release: &Value, want: Wanted) -> Option<Asset> {
 }
 
 /// The newest published release that has this system's file (and its checksum).
-fn newest(list: &Value, want: Wanted) -> Option<(String, Asset)> {
+/// Pre-releases count only when `prereleases` is on.
+fn newest(list: &Value, want: Wanted, prereleases: bool) -> Option<(String, Asset)> {
     list.as_array()?
         .iter()
         .filter(|r| r["draft"].as_bool() != Some(true))
+        .filter(|r| prereleases || r["prerelease"].as_bool() != Some(true))
         .filter_map(|r| {
             let tag = r["tag_name"].as_str()?;
             Some((parse(tag)?, tag.to_string(), assets(r, want)?))
@@ -306,6 +309,7 @@ fn newest(list: &Value, want: Wanted) -> Option<(String, Asset)> {
 /// the new version and 0..1 while the file downloads.
 pub fn check(
     current: &str,
+    prereleases: bool,
     dir: &Path,
     progress: &dyn Fn(&str, f32),
 ) -> Result<Option<Ready>, String> {
@@ -322,15 +326,17 @@ pub fn check(
     let list: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
     // A Mac release with no checksum can't be installed, but it is still news: offer
     // its page instead.
-    let found = newest(&list, want).map(|f| (f, want)).or_else(|| {
-        let page_only = Wanted {
-            download: false,
-            ..want
-        };
-        (bundle.is_some() && want.download)
-            .then(|| newest(&list, page_only).map(|f| (f, page_only)))
-            .flatten()
-    });
+    let found = newest(&list, want, prereleases)
+        .map(|f| (f, want))
+        .or_else(|| {
+            let page_only = Wanted {
+                download: false,
+                ..want
+            };
+            (bundle.is_some() && want.download)
+                .then(|| newest(&list, page_only, prereleases).map(|f| (f, page_only)))
+                .flatten()
+        });
     let Some(((tag, asset), want)) = found else {
         return Ok(None);
     };
@@ -593,7 +599,7 @@ mod tests {
     #[ignore]
     fn live_check_against_github() {
         let dir = tempfile::tempdir().unwrap();
-        let got = check("0.0.0", dir.path(), &|_, _| {});
+        let got = check("0.0.0", true, dir.path(), &|_, _| {});
         assert!(got.is_ok(), "{got:?}");
     }
 
@@ -635,7 +641,18 @@ mod tests {
             {"tag_name": "v0.1.0", "draft": false, "assets": []},
             rel("v0.0.7-App", false),
         ]);
-        assert_eq!(newest(&list, WINDOWS).unwrap().0, "v0.0.8-App");
+        assert_eq!(newest(&list, WINDOWS, true).unwrap().0, "v0.0.8-App");
+        // Stable only: the pre-releases are skipped.
+        assert!(newest(&list, WINDOWS, false).is_none());
+    }
+
+    #[test]
+    fn pre_releases_only_when_asked() {
+        let mut beta = full_release("0.3.0");
+        beta["prerelease"] = true.into();
+        let list = serde_json::json!([beta, full_release("0.2.0")]);
+        assert_eq!(newest(&list, WINDOWS, false).unwrap().0, "v0.2.0");
+        assert_eq!(newest(&list, WINDOWS, true).unwrap().0, "v0.3.0");
     }
 
     #[test]
@@ -737,7 +754,7 @@ mod tests {
         }
         // And a new release beats it.
         let list = serde_json::json!([old, full_release("0.2.0")]);
-        assert_eq!(newest(&list, WINDOWS).unwrap().0, "v0.2.0");
+        assert_eq!(newest(&list, WINDOWS, true).unwrap().0, "v0.2.0");
     }
 
     #[test]
@@ -749,8 +766,8 @@ mod tests {
             .retain(|a| a["name"].as_str().unwrap().contains("-setup.exe"));
         let list = serde_json::json!([windows_only, full_release("0.2.0")]);
         let mac = wanted("macos", "aarch64", false).unwrap();
-        assert_eq!(newest(&list, mac).unwrap().0, "v0.2.0");
-        assert_eq!(newest(&list, WINDOWS).unwrap().0, "v0.3.0");
+        assert_eq!(newest(&list, mac, true).unwrap().0, "v0.2.0");
+        assert_eq!(newest(&list, WINDOWS, true).unwrap().0, "v0.3.0");
     }
 
     #[test]

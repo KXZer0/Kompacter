@@ -17,13 +17,14 @@ Every download is built by GitHub Actions; nobody has to build from source.
    | `linux` (Ubuntu 22.04) | `Kompacter-linux-x86_64.AppImage` (the .deb and tarball are still built as a check, not published) | `packaging/linux/appimage.sh` and `build.sh`; ffmpeg included |
    | `macos` (`macos-latest`, Apple silicon; no Intel build because Homebrew no longer supports Intel Macs) | `Kompacter-installer-macos-arm64.dmg` | `packaging/macos/build-app.sh`, `make-dmg.sh` and, with the signing secrets, `notarize.sh`; Homebrew ffmpeg included |
 
-3. Once it's published (pre-releases count; drafts don't), installed copies find it within a
-   day:
-   - Windows downloads the installer in the background, checks its `.sha256` and installs it on
-     the next restart.
-   - The Linux AppImage downloads the new `.AppImage`, checks its `.sha256` and replaces itself
-     (same file name) on the next restart.
-   - macOS (in Applications or another folder it can write to) downloads the new `.dmg`, checks it and swaps its app bundle in place on restart, so there is never a second copy. Run from the disk image, Downloads or a read-only folder, and from an older .deb or tarball install, it opens the release page.
+3. Once it's published (drafts don't count; pre-releases only for users who turned on "Use
+   pre-release versions"), installed copies find it within a day and show "Update available".
+   Nothing installs until the user presses Update:
+   - Windows downloads the installer in the background, checks its SHA-256, and runs it when
+     the user presses Update (Kompacter restarts).
+   - The Linux AppImage downloads the new `.AppImage`, checks it and replaces itself (same
+     file name) when the user presses Update.
+   - macOS (in Applications or another folder it can write to) downloads the new `.dmg`, checks it and swaps its app bundle in place when the user presses Update, so there is never a second copy. Run from the disk image, Downloads or a read-only folder, and from an older .deb or tarball install, it opens the release page.
 
    The release page only opens when the user clicks the update pill, never on quit.
 

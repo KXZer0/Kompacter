@@ -196,10 +196,19 @@ pub struct App {
     /// New clips waiting to shrink on their own, one at a time.
     pub auto_queue: RefCell<std::collections::VecDeque<PathBuf>>,
     pub auto_busy: Cell<bool>,
-    /// "Install updates" (read by the background check).
+    /// "Check for updates" (read by the background check).
     pub update_on: Arc<AtomicBool>,
-    /// A downloaded, checked update; installed when Kompacter quits.
+    /// "Use pre-release versions" (read by the background check).
+    pub update_pre: Arc<AtomicBool>,
+    /// Wakes the background check now (a setting changed) instead of tomorrow.
+    pub update_wake: RefCell<Option<std::sync::mpsc::Sender<()>>>,
+    /// A downloaded, checked update (or a newer release's page). Nothing is installed
+    /// until the user presses Update.
     pub update_ready: RefCell<Option<update::Ready>>,
+    /// The "Update available" screen was closed with its ✕ (asks again next start).
+    pub update_dismissed: Cell<bool>,
+    /// The user pressed Update: install as Kompacter quits.
+    pub update_go: Cell<bool>,
 }
 
 impl App {
@@ -230,6 +239,7 @@ impl App {
         gpu_drawing: bool,
     ) -> Rc<Self> {
         let prefs_auto_update = prefs.auto_update;
+        let prefs_prereleases = prefs.prereleases;
         Rc::new(Self {
             ui: ui.as_weak(),
             engine: Arc::new(Engine::new(sys::ffmpeg())),
@@ -261,7 +271,11 @@ impl App {
             auto_queue: RefCell::new(Default::default()),
             auto_busy: Cell::new(false),
             update_on: Arc::new(AtomicBool::new(prefs_auto_update)),
+            update_pre: Arc::new(AtomicBool::new(prefs_prereleases)),
+            update_wake: RefCell::new(None),
             update_ready: RefCell::new(None),
+            update_dismissed: Cell::new(false),
+            update_go: Cell::new(false),
         })
     }
 
@@ -392,6 +406,9 @@ impl App {
         prefs.set_gpu_drawing_follows(s.gpu_drawing.is_none());
         prefs.set_gpu_drawing_running(self.gpu_drawing);
         prefs.set_auto_update(s.auto_update);
+        prefs.set_prereleases(s.prereleases);
+        prefs.set_app_version(update::VERSION.unwrap_or("").into());
+        ui.set_app_version(update::VERSION.unwrap_or("").into());
         prefs.set_auto_hide(s.auto_hide);
         prefs.set_start_available(sys::start_with_system_supported());
         prefs.set_start_label(sys::START_WITH_SYSTEM_NAME.into());
@@ -480,11 +497,14 @@ impl App {
     /// "Update ready" line.
     fn start_update_checks(&self, current: &'static str) {
         let on = self.update_on.clone();
+        let pre = self.update_pre.clone();
+        let (wake, woken) = std::sync::mpsc::channel::<()>();
+        *self.update_wake.borrow_mut() = Some(wake);
         std::thread::spawn(move || {
             // The installer of the update that just ran (or an old one) isn't needed.
             update::clear_downloads();
             // Let startup (and starting with the system) settle first.
-            std::thread::sleep(Duration::from_secs(90));
+            let _ = woken.recv_timeout(Duration::from_secs(90));
             loop {
                 if on.load(Ordering::Relaxed) {
                     // The pill shows the download filling a ring (only whole-percent steps
@@ -501,14 +521,10 @@ impl App {
                             });
                         }
                     };
-                    match update::check(current, &update::download_dir(), &progress) {
+                    let prereleases = pre.load(Ordering::Relaxed);
+                    match update::check(current, prereleases, &update::download_dir(), &progress) {
                         Ok(Some(ready)) => {
-                            with_app(move |a| {
-                                let ui = a.ui();
-                                ui.set_update_version(ready.version.as_str().into());
-                                ui.set_update_progress(1.0);
-                                *a.update_ready.borrow_mut() = Some(ready);
-                            });
+                            with_app(move |a| a.update_found(ready));
                             return;
                         }
                         // A failed download: hide the pill until the next try.
@@ -518,9 +534,69 @@ impl App {
                         _ => {}
                     }
                 }
-                std::thread::sleep(Duration::from_secs(24 * 60 * 60));
+                // Tomorrow, or now when a setting changes. A closed channel means the
+                // app is gone.
+                if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) =
+                    woken.recv_timeout(Duration::from_secs(24 * 60 * 60))
+                {
+                    return;
+                }
             }
         });
+    }
+
+    /// Check again now (an update setting changed).
+    fn wake_update_check(&self) {
+        if let Some(wake) = self.update_wake.borrow().as_ref() {
+            let _ = wake.send(());
+        }
+    }
+
+    /// A newer version is ready: the pill, the Settings row, and the "Update available"
+    /// screen next time the panel opens (or now, if it's open on the start screen).
+    fn update_found(&self, ready: update::Ready) {
+        let ui = self.ui();
+        ui.set_update_version(ready.version.as_str().into());
+        ui.set_update_progress(1.0);
+        ui.set_update_installs(ready.installs_on_quit());
+        let prefs = ui.global::<Prefs>();
+        prefs.set_update_version(ready.version.as_str().into());
+        *self.update_ready.borrow_mut() = Some(ready);
+        if ui.window().is_visible() {
+            self.offer_update();
+        }
+    }
+
+    /// Show the "Update available" screen if there's an update the user hasn't closed it
+    /// for, and nothing else is going on.
+    pub(crate) fn offer_update(&self) {
+        if self.update_ready.borrow().is_some()
+            && !self.update_dismissed.get()
+            && self.view() == View::Idle
+            && !self.quick.get()
+        {
+            self.set_view(View::Update);
+        }
+    }
+
+    /// Update pressed: install now. Where Kompacter replaces itself it quits and the
+    /// update runs on the way out (see the end of `start`); elsewhere the download page
+    /// opens and Kompacter keeps running.
+    fn update_now(&self) {
+        let Some(ready) = self.update_ready.borrow().clone() else {
+            return;
+        };
+        if ready.installs_on_quit() {
+            self.update_go.set(true);
+            if let Some(app) = APP.with(|a| a.borrow().upgrade()) {
+                app.trim_quit();
+            }
+        } else {
+            let _ = update::install(&ready);
+            if self.view() == View::Update {
+                self.set_view(View::Idle);
+            }
+        }
     }
 
     /// "Done" on the first-run screen: save the available choices and never ask again.
@@ -1099,26 +1175,30 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
             }
             View::Trim => a.set_view(View::Big),
             View::News => a.set_view(View::Idle),
+            View::Update => {
+                a.update_dismissed.set(true);
+                a.set_view(View::Idle);
+            }
             _ => a.close(),
         });
         let a = app.clone();
         ui.on_news_done(move || a.set_view(View::Idle));
-        // Restart: quit, and the installer runs on the way out (see the end of main).
         let a = app.clone();
-        ui.on_restart_to_update(move || {
-            let page = a
-                .update_ready
-                .borrow()
-                .as_ref()
-                .filter(|ready| !ready.installs_on_quit())
-                .cloned();
-            match page {
-                // Kompacter can't replace itself here: open the release page and keep running.
-                Some(ready) => {
-                    let _ = update::install(&ready);
-                }
-                None => a.trim_quit(),
-            }
+        ui.on_restart_to_update(move || a.update_now());
+        let a = app.clone();
+        ui.on_update_dismiss(move || {
+            a.update_dismissed.set(true);
+            a.set_view(View::Idle);
+        });
+        let a = app.clone();
+        prefs.on_update_now(move || a.update_now());
+        let a = app.clone();
+        prefs.on_set_prereleases(move |on| {
+            a.settings.borrow_mut().prereleases = on;
+            a.update_pre.store(on, Ordering::Relaxed);
+            a.save();
+            a.sync_settings();
+            a.wake_update_check();
         });
         let a = app.clone();
         ui.on_quick_expand(move || a.quick_expand());
@@ -1132,6 +1212,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
             a.update_on.store(on, Ordering::Relaxed);
             a.save();
             a.sync_settings();
+            a.wake_update_check();
         });
         let a = app.clone();
         prefs.on_set_shortcut(move |i| {
@@ -1411,8 +1492,8 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     app.tray.borrow_mut().take();
     #[cfg(target_os = "macos")]
     sys::set_dock_icon(None);
-    // A checked update waits for Kompacter to close; the installer reopens it.
-    if app.settings.borrow().auto_update {
+    // An update the user pressed Update for runs as Kompacter closes and reopens it.
+    if app.update_go.get() {
         if let Some(ready) = app
             .update_ready
             .borrow()
@@ -1447,7 +1528,7 @@ fn demo_guard_app() -> &'static str {
     }
 }
 
-/// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord|welcome(-2|-3|-4|-preference)|news|update`
+/// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord|welcome(-2|-3|-4|-preference)|news|update|update-screen|update-settings`
 /// shows a screen with sample data, for screenshots.
 #[cfg(debug_assertions)]
 fn demo(app: &Rc<App>, which: &str) {
@@ -1567,6 +1648,20 @@ fn demo(app: &Rc<App>, which: &str) {
         "drag" => ui.set_dragging(true),
         "news" => app.whats_new(news::NOTES[0].0, news::NOTES[0].1),
         "update" => ui.set_update_version("0.0.8".into()),
+        // The "Update available" screen, and Settings with the version and update rows.
+        "update-screen" | "update-settings" => {
+            if which == "update-settings" {
+                ui.set_win_h(600.0);
+                ui.set_view(View::Settings);
+            } else {
+                ui.set_view(View::Update);
+            }
+            ui.set_update_version("0.2.0".into());
+            ui.set_app_version("0.1.2".into());
+            let prefs = ui.global::<Prefs>();
+            prefs.set_update_version("0.2.0".into());
+            prefs.set_app_version("0.1.2".into());
+        }
         "update-downloading" => {
             ui.set_update_version("0.0.8".into());
             ui.set_update_progress(0.42);

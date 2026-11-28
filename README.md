@@ -15,9 +15,9 @@ Copy a file that's too big for Discord (or email, or any app with an upload limi
 
 | System | Download | Notes |
 |---|---|---|
-| Windows 10/11 | **[Download for Windows](https://github.com/KXZer0/Kompacter/releases/latest/download/Kompacter-windows-setup.exe)** | No admin rights needed; ffmpeg is included. Updates itself. |
+| Windows 10/11 | **[Download for Windows](https://github.com/KXZer0/Kompacter/releases/latest/download/Kompacter-windows-setup.exe)** | No admin rights needed; ffmpeg is included. Updates itself (asks first). |
 | macOS 26 or later (Apple silicon) | **[Download for Mac](https://github.com/KXZer0/Kompacter/releases/latest/download/Kompacter-installer-macos-arm64.dmg)** | Open it and drag Kompacter to Applications; ffmpeg is included. No Intel build. |
-| Linux (x86-64) | **[Download for Linux](https://github.com/KXZer0/Kompacter/releases/latest/download/Kompacter-linux-x86_64.AppImage)** (AppImage) | ffmpeg is included. `chmod +x` it and run it. Updates itself. Needs glibc 2.35+ (Ubuntu 22.04, Debian 12, Fedora 36 or newer) and the usual desktop OpenGL/Wayland/X11 libraries. |
+| Linux (x86-64) | **[Download for Linux](https://github.com/KXZer0/Kompacter/releases/latest/download/Kompacter-linux-x86_64.AppImage)** (AppImage) | ffmpeg is included. `chmod +x` it and run it. Updates itself (asks first). Needs glibc 2.35+ (Ubuntu 22.04, Debian 12, Fedora 36 or newer) and the usual desktop OpenGL/Wayland/X11 libraries. |
 
 Each link always gets the newest version. Older versions, and each file's SHA-256 checksum, are on [Releases](https://github.com/KXZer0/Kompacter/releases).
 
@@ -69,7 +69,7 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 - Results go to Kompacter's folder, next to the original, a folder you pick, or replace the original (which goes to the Recycle Bin or Trash).
 - Lives in the tray (Windows, Linux) or the Dock (macOS: click the icon to open the panel above it, drop files on it). Open it by dropping a file, choosing one, pasting, or from the file manager.
 - Works on its own if you want: a hotkey quick bar, a paste guard for chat apps, a notice when you copy a file that's too big, shrinking new clips in your clip folders, and starting with the system (per-system details in the table below).
-- Updates itself: a new version is checked against its published checksum, with a short "What's new". Can be switched off.
+- Updates itself, after asking: an "Update available" screen (✕ to skip) or the Update button in Settings. Each download is checked against GitHub's SHA-256 first, and a short "What's new" follows. Pre-releases only if you opt in. Checking can be switched off.
 - No admin rights needed. No account. No network access except update checks.
 
 | | Windows | Linux | macOS |
@@ -83,7 +83,7 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 | Paste guard: a too-big paste into Discord, Slack, WhatsApp, Telegram or Signal is shrunk to that app's limit | ✓ | — (not allowed on Wayland) | ✓ (needs Accessibility permission) |
 | Notice when a too-big file is copied | ✓ | ✓ (Wayland on KDE, Sway and other wlroots desktops; not GNOME) | ✓ |
 | Start with the system | ✓ | ✓ (XDG autostart) | ✓ (Open at login) |
-| Updates | Installs itself on restart | Replaces itself on restart | Replaces itself on restart (from Applications) |
+| Updates | Asks, then installs and restarts | Asks, then replaces itself | Asks, then replaces itself (from Applications) |
 
 ## Repository layout
 
