@@ -51,7 +51,7 @@ jobs:
         run: |
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/microsoft-prod.sources
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libfontconfig-dev xvfb
+          sudo apt-get install -y ffmpeg libfontconfig-dev xvfb libxkbcommon-x11-0 libegl1 libgl1-mesa-dri
       - name: Install ffmpeg (Windows)
         if: runner.os == 'Windows'
         run: choco install ffmpeg -y --no-progress

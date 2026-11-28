@@ -50,7 +50,7 @@ jobs:
         run: |
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/microsoft-prod.sources
           sudo apt-get update
-          sudo apt-get install -y libfontconfig-dev xvfb fonts-inter
+          sudo apt-get install -y libfontconfig-dev xvfb fonts-inter libxkbcommon-x11-0 libegl1 libgl1-mesa-dri
       - run: cargo build --locked -p kompacter
       - name: Capture every screen
         shell: bash
