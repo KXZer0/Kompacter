@@ -1,0 +1,44 @@
+name: Commit authors
+
+# Every commit in a pull request must be authored by the account that opened it, and
+# none may carry a "Co-authored-by:" line. GitHub lists every co-author, and every author
+# whose email belongs to another account, as a repository contributor, and a squash
+# merge copies the other authors of the PR's commits into "Co-authored-by:" lines on
+# main. This stops that before the merge. Bot pull requests (Dependabot) are skipped.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  authors:
+    name: Only the PR author's commits, no co-authors
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check every commit in the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          OPENER: ${{ github.event.pull_request.user.login }}
+        run: |
+          case "$OPENER" in *"[bot]") echo "Opened by $OPENER: skipped."; exit 0 ;; esac
+          gh api --paginate "repos/$REPO/pulls/$PR/commits" \
+            --jq '.[] | [.sha[0:7], (.author.login // "-"), (.commit.message | test("(?im)^co-authored-by:") | tostring), (.commit.message | split("\n")[0])] | @tsv' \
+            > commits.tsv
+          bad=0
+          while IFS=$'\t' read -r sha login coauthored subject; do
+            if [ "$login" != "$OPENER" ]; then
+              echo "::error::$sha \"$subject\": authored by '$login', not $OPENER (an email not linked to $OPENER shows as '-')"
+              bad=1
+            fi
+            if [ "$coauthored" = "true" ]; then
+              echo "::error::$sha \"$subject\": has a Co-authored-by line"
+              bad=1
+            fi
+          done < commits.tsv
+          echo "Checked $(wc -l < commits.tsv) commit(s)."
+          exit $bad

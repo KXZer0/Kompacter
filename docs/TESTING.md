@@ -141,3 +141,20 @@ text. Only the big file should bring up the bar, once per copy.
 - [ ] A path with spaces or accents (`My Clips/été.mp4`) is noticed.
 - [ ] GNOME (Wayland) and any X11 session: the setting is greyed out with a short reason,
       and first start doesn't offer it.
+
+## Automated checks (CI)
+
+What CI catches without a person, on every pull request that touches the app:
+
+- **Memory and idle CPU** (`memory-test.yml`, Linux, Windows with CPU and with GPU
+  drawing, macOS): the debug app compresses a video, an audio file, a picture, a folder
+  and a zip, twice each, hiding and reopening the panel in between, then stays hidden for
+  20 s. It fails if memory grows between rounds (more than 15 MB), stays more than 40 MB
+  over its starting point once hidden, or the hidden app uses more than 2% of a core.
+  Locally: `cargo build -p kompacter && tools/selftest/run.sh` (under `xvfb-run` on a
+  Linux machine without a screen; `tools/selftest/run.sh '{"gpuDrawing": true}'` for GPU
+  drawing on Windows).
+- **Updates** (`update-test.yml`, and the release workflow before publishing): see
+  docs/RELEASING.md.
+- **Commit authors** (`commit-hygiene.yml`): every commit must be authored by the PR's
+  author, with no `Co-authored-by:` lines, so no one else shows up as a contributor.

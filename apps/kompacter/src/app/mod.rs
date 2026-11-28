@@ -7,6 +7,8 @@ mod linux_desktop;
 mod news;
 mod output;
 mod quick;
+#[cfg(debug_assertions)]
+mod selftest;
 pub(crate) mod settings;
 mod tray_art;
 mod trim;
@@ -1417,6 +1419,11 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     #[cfg(debug_assertions)]
     if let Ok(v) = std::env::var("KOMPACTER_DEMO") {
         demo(&app, &v);
+    }
+    // Dev builds only: the memory self-test CI runs (see selftest.rs).
+    #[cfg(debug_assertions)]
+    if let Ok(list) = std::env::var("KOMPACTER_SELFTEST") {
+        selftest::start(&app, &list);
     }
     // Dev builds only: open this file at startup (for testing on a virtual display).
     #[cfg(debug_assertions)]
