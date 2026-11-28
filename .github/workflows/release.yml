@@ -47,7 +47,9 @@ jobs:
       # ffmpeg ships inside the installer so users don't install anything: the newest
       # stable release (BtbN's "nX.Y" build with the latest fixes on that branch, never
       # the nightly "master" build). GPL build (includes x264); its license goes into the
-      # install folder.
+      # install folder. The "shared" build: ffmpeg.exe and ffprobe.exe share one set of
+      # libraries (av*.dll, sw*.dll) instead of each carrying all of them, about half the
+      # size of the static build.
       - name: Download ffmpeg
         shell: pwsh
         env:
@@ -55,10 +57,10 @@ jobs:
         run: |
           $rel = Invoke-RestMethod -Headers @{ Authorization = "Bearer $env:GH_TOKEN" } `
             "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest"
-          $stable = $rel.assets | Where-Object { $_.name -match '^ffmpeg-n(\d+)\.(\d+)-latest-win64-gpl-\d+\.\d+\.zip$' } |
+          $stable = $rel.assets | Where-Object { $_.name -match '^ffmpeg-n(\d+)\.(\d+)-latest-win64-gpl-shared-\d+\.\d+\.zip$' } |
             Sort-Object { [version]($_.name -replace '^ffmpeg-n(\d+\.\d+)-.*$', '$1') } -Descending |
             Select-Object -First 1
-          if (-not $stable) { throw "No stable win64 GPL ffmpeg build found in BtbN's latest release" }
+          if (-not $stable) { throw "No stable win64 GPL shared ffmpeg build found in BtbN's latest release" }
           Write-Host "ffmpeg: $($stable.name)"
           Invoke-WebRequest $stable.browser_download_url -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-dl
@@ -66,6 +68,14 @@ jobs:
           $dist = "packaging/windows/dist"
           New-Item -ItemType Directory -Force $dist | Out-Null
           Copy-Item "$bin/ffmpeg.exe", "$bin/ffprobe.exe" $dist
+          Copy-Item "$bin/*.dll" $dist
+          # The DLLs are found next to the programs; check they really run.
+          # (Read all of its output first: cutting a pipe short makes PowerShell report a
+          # failed exit code for a program that ran fine.)
+          $version = & "$dist/ffprobe.exe" -hide_banner -version
+          if ($LASTEXITCODE -ne 0) { throw "the bundled ffprobe doesn't start" }
+          $version | Select-Object -First 1
+          Get-ChildItem $dist | Format-Table Name, Length
           $license = Get-ChildItem ffmpeg-dl -Recurse -Filter LICENSE.txt | Select-Object -First 1
           Copy-Item $license.FullName "$dist/FFMPEG-LICENSE.txt"
           Copy-Item LICENSE "$dist/LICENSE.txt"
@@ -89,6 +99,15 @@ jobs:
           $f = Get-Item Kompacter-windows-setup.exe
           $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
           "$hash  $($f.Name)" | Out-File -Encoding ascii -NoNewline "$($f.FullName).sha256"
+
+      # A size limit, so a packaging change (like ffmpeg doubling in size) shows up here
+      # instead of in users' downloads. Raise it on purpose when something is added.
+      - name: Size limit
+        shell: pwsh
+        run: |
+          $size = (Get-Item packaging/windows/Kompacter-windows-setup.exe).Length
+          Write-Host ("installer: {0:N1} MB (limit 80 MB)" -f ($size / 1MB))
+          if ($size -gt 80MB) { throw "the installer grew past 80 MB" }
 
       # Install it the way the app updates itself (silently, into a temp folder) before
       # anyone gets it.
@@ -135,27 +154,40 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/microsoft-prod.sources
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libfontconfig-dev desktop-file-utils dpkg-dev appstream xz-utils file
+            libfontconfig-dev desktop-file-utils dpkg-dev appstream xz-utils file patchelf
 
       - name: Build Kompacter
         run: cargo build --locked --release -p kompacter
 
-      # Static linux64 builds of the newest stable ffmpeg branch, from the same source as
+      # Shared linux64 builds of the newest stable ffmpeg branch, from the same source as
       # the Windows installer (BtbN "nX.Y", never "master"). GPL build; license included.
+      # ffmpeg and ffprobe share one set of libraries in ffmpeg-libs/ next to them (about
+      # half the size of two static programs); patchelf makes them look there wherever
+      # the folder ends up (AppImage, .deb, tarball).
       - name: Download ffmpeg
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           name=$(gh api repos/BtbN/FFmpeg-Builds/releases/tags/latest --jq '.assets[].name' |
-            grep -E '^ffmpeg-n[0-9]+\.[0-9]+-latest-linux64-gpl-[0-9]+\.[0-9]+\.tar\.xz$' |
+            grep -E '^ffmpeg-n[0-9]+\.[0-9]+-latest-linux64-gpl-shared-[0-9]+\.[0-9]+\.tar\.xz$' |
             sort -V | tail -n 1)
-          if [[ -z "$name" ]]; then echo "No stable linux64 GPL ffmpeg build found" >&2; exit 1; fi
+          if [[ -z "$name" ]]; then echo "No stable linux64 GPL shared ffmpeg build found" >&2; exit 1; fi
           echo "ffmpeg: $name"
           gh release download latest --repo BtbN/FFmpeg-Builds --pattern "$name" --dir "$RUNNER_TEMP"
           mkdir -p "$RUNNER_TEMP/ffmpeg-dl" "$RUNNER_TEMP/ffmpeg"
           tar -xJf "$RUNNER_TEMP/$name" -C "$RUNNER_TEMP/ffmpeg-dl"
           src=$(dirname "$(find "$RUNNER_TEMP/ffmpeg-dl" -type f -name ffmpeg -path '*/bin/*' | head -n 1)")
           install -m755 "$src/ffmpeg" "$src/ffprobe" "$RUNNER_TEMP/ffmpeg/"
+          libs="$RUNNER_TEMP/ffmpeg/ffmpeg-libs"
+          mkdir -p "$libs"
+          cp -a "$src/../lib/"*.so* "$libs/"
+          patchelf --set-rpath '$ORIGIN/ffmpeg-libs' "$RUNNER_TEMP/ffmpeg/ffmpeg" "$RUNNER_TEMP/ffmpeg/ffprobe"
+          for so in "$libs"/*.so*; do
+            [ -L "$so" ] || patchelf --set-rpath '$ORIGIN' "$so"
+          done
+          du -sh "$RUNNER_TEMP/ffmpeg/ffmpeg" "$RUNNER_TEMP/ffmpeg/ffprobe" "$libs"
+          # Every library the programs need resolves inside ffmpeg-libs or the system.
+          ! ldd "$RUNNER_TEMP/ffmpeg/ffprobe" | grep 'not found'
           install -m644 "$(find "$RUNNER_TEMP/ffmpeg-dl" -name LICENSE.txt | head -n 1)" "$RUNNER_TEMP/ffmpeg/LICENSE"
           echo "$name" > "$RUNNER_TEMP/ffmpeg/VERSION"
           file "$RUNNER_TEMP/ffmpeg/ffmpeg"
@@ -196,6 +228,12 @@ jobs:
         run: |
           mv "Kompacter-$VERSION-x86_64.AppImage" Kompacter-linux-x86_64.AppImage
           sha256sum Kompacter-linux-x86_64.AppImage > Kompacter-linux-x86_64.AppImage.sha256
+
+      - name: Size limit
+        run: |
+          size=$(stat -c %s dist/linux/Kompacter-linux-x86_64.AppImage)
+          echo "AppImage: $((size / 1048576)) MB (limit 105 MB)"
+          [ "$size" -le $((105 * 1048576)) ] || { echo "the AppImage grew past 105 MB" >&2; exit 1; }
 
       - name: Update with this AppImage
         env:
@@ -305,6 +343,12 @@ jobs:
             exit 0
           fi
           packaging/macos/notarize.sh "$DMG"
+
+      - name: Size limit
+        run: |
+          size=$(stat -f %z "$DMG")
+          echo "DMG: $((size / 1048576)) MB (limit 40 MB)"
+          [ "$size" -le $((40 * 1048576)) ] || { echo "the DMG grew past 40 MB" >&2; exit 1; }
 
       - name: Update with this DMG
         run: KOMPACTER_UPDATE_FILE="$DMG" cargo test --locked -p kompacter update_end_to_end -- --ignored --nocapture

@@ -39,16 +39,32 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "AGPL-3.0-only"
 
+; Only ffmpeg's own libraries, by name: the folder may be one the user chose.
+!macro DeleteFFmpegLibs
+  Delete "$INSTDIR\avcodec-*.dll"
+  Delete "$INSTDIR\avdevice-*.dll"
+  Delete "$INSTDIR\avfilter-*.dll"
+  Delete "$INSTDIR\avformat-*.dll"
+  Delete "$INSTDIR\avutil-*.dll"
+  Delete "$INSTDIR\postproc-*.dll"
+  Delete "$INSTDIR\swresample-*.dll"
+  Delete "$INSTDIR\swscale-*.dll"
+!macroend
+
 Section "Install"
   ; Close a running copy so its files can be replaced.
   nsExec::Exec 'taskkill /IM Kompacter.exe /F'
   ; Updates install over the old files (same names). If a version stops shipping a
   ; file, delete it here so updated installs don't keep it, e.g.:
   ;   Delete "$INSTDIR\old-file.dll"
+  ; ffmpeg's libraries (shared build): drop the old version's first, since their names
+  ; carry ffmpeg's version numbers (avcodec-61.dll), then install the new ones.
+  !insertmacro DeleteFFmpegLibs
   SetOutPath "$INSTDIR"
   File "dist\Kompacter.exe"
   File "dist\ffmpeg.exe"
   File "dist\ffprobe.exe"
+  File /nonfatal "dist\*.dll"
   File "dist\FFMPEG-LICENSE.txt"
   File "dist\LICENSE.txt"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -83,6 +99,7 @@ Section "Uninstall"
   Delete "$INSTDIR\Kompacter.exe"
   Delete "$INSTDIR\ffmpeg.exe"
   Delete "$INSTDIR\ffprobe.exe"
+  !insertmacro DeleteFFmpegLibs
   Delete "$INSTDIR\FFMPEG-LICENSE.txt"
   Delete "$INSTDIR\LICENSE.txt"
   Delete "$INSTDIR\Uninstall.exe"

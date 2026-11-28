@@ -37,7 +37,7 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 
 <p align="center"><img src="docs/media/folder.gif" alt="Dropping a folder of clips and photos: each file shows its before and after size, then it's compressed and zipped" width="720"></p>
 
-**Settings.** Pick the limit (Discord, Nitro, email, custom), the look, where results go, a compression preference (Compatibility, Balanced or Efficiency) with optional per-format overrides, and what Kompacter may do on its own. Hover a feature to see it in action.
+**Settings.** Pick the limit (Discord, Nitro, email, custom), the look, where results go, a compression preference (Compatibility, Balanced or Quality) with optional per-format overrides, and what Kompacter may do on its own. Hover a feature to see it in action.
 
 <p align="center"><img src="docs/media/settings.gif" alt="Kompacter's Settings: choosing a target size and hovering the automatic features to preview them" width="720"></p>
 
@@ -56,10 +56,10 @@ Until the macOS builds are notarized, macOS blocks the first start: right-click 
 ## Features
 
 - Fits files under a target size: Discord 20 / 50 / 500 MB, Slack 1 GB, WhatsApp 2 GB, Telegram 2 GB, Signal 100 MB, email 25 MB, or custom.
-- **Compression preference:** Compatibility (plays everywhere), Balanced, or Efficiency (encodes on the GPU with newer formats, lightest on your PC). Any output format can be pinned instead of left on Automatic.
+- **Compression preference:** Compatibility (H.264, MP3, JPEG, Zip: plays everywhere, fastest), Balanced (the default: the most detail that still plays almost everywhere, H.264 with MP3 or Opus and pictures in their best fitting format), or Quality (AV1, Opus, WebP and 7z with slower encoder settings: the most detail per MB, for newer devices). GPU encoding and GPU drawing are separate switches. Any output format can be pinned instead of left on Automatic.
 - **Trim + compress** with live size and quality estimates while you drag the handles.
 - Videos are checked after encoding, so a result always plays and is always under the limit. A video that already fits is left untouched; one in a container chat apps dislike (MOV, MKV, WebM) is repackaged to MP4 without re-encoding.
-- Pictures keep their colour profile (Display P3 screenshots, phone photos), their orientation and their transparency. HDR pictures are tone-mapped. iPhone HEIC and AVIF photos become JPEGs (or WebP with the Efficiency preference) that fit.
+- Pictures keep their colour profile (Display P3 screenshots, phone photos), their orientation and their transparency. HDR pictures are tone-mapped. iPhone HEIC and AVIF photos become JPEGs (or WebP with the Quality preference) that fit.
 - Animated GIFs stay GIFs, and animated PNG and WebP become GIFs, so they autoplay in every chat app.
 - Folders: shrinks every video, picture, document and model inside, then zips (several zips that each fit, if one can't).
 - Documents (PDF, Word, PowerPoint, Excel, EPUB, CBZ) and 3D models (glTF/GLB) stay documents and models: only the pictures and textures inside are shrunk.

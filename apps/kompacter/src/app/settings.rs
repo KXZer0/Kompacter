@@ -23,7 +23,8 @@ pub struct Settings {
     pub discord_theme: String,
     pub gpu: bool,
     /// Windows: draw the window on the GPU (Skia on Direct3D 12) instead of the CPU.
-    /// `None` follows the preference: on with Efficiency, off otherwise. Read at start.
+    /// Off unless switched on (`None` from before this was a plain choice is off too).
+    /// Read at start.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_drawing: Option<bool>,
     /// Where results go: "app" | "beside" | "custom" | "replace" (see output.rs).
@@ -131,21 +132,15 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Changes the preference. Efficiency switches GPU encoding on, but it stays the
-    /// user's switch: they can turn it off again and the preference keeps it that way.
+    /// Changes the preference. It picks formats only: GPU encoding and GPU drawing stay
+    /// their own switches.
     pub fn set_preference(&mut self, preference: CompressionPreference) {
-        if preference == CompressionPreference::Efficiency
-            && self.compression_preference != preference
-        {
-            self.gpu = true;
-        }
         self.compression_preference = preference;
     }
 
     /// Whether the window is drawn on the GPU (see `gpu_drawing`).
     pub fn gpu_drawing(&self) -> bool {
-        self.gpu_drawing
-            .unwrap_or(self.compression_preference == CompressionPreference::Efficiency)
+        self.gpu_drawing.unwrap_or(false)
     }
 
     pub fn options(&self, target: u64) -> Options {
@@ -154,7 +149,6 @@ impl Settings {
         options.audio_format = self.audio_format.unwrap_or(options.audio_format);
         options.image_format = self.image_format.unwrap_or(options.image_format);
         options.archive = self.archive_format.unwrap_or(options.archive);
-        // The switch decides; choosing Efficiency only turns it on (`set_preference`).
         options.gpu &= self.gpu;
         options
     }
@@ -222,12 +216,15 @@ mod tests {
             CompressionPreference::Balanced
         );
         assert_eq!(settings.options(10).speed, Speed::Balanced);
-        assert_eq!(settings.options(10).audio_format, AudioFormat::Mp3);
+        assert_eq!(settings.options(10).video_codec, VideoCodec::H264);
+        assert_eq!(settings.options(10).audio_format, AudioFormat::Auto);
+        assert_eq!(settings.options(10).image_format, ImageFormat::Auto);
+        assert_eq!(settings.options(10).archive, ArchiveFormat::Zip);
 
         settings.compression_preference = CompressionPreference::Compatibility;
         assert_eq!(settings.options(10).image_format, ImageFormat::Jpeg);
 
-        settings.compression_preference = CompressionPreference::Efficiency;
+        settings.compression_preference = CompressionPreference::Quality;
         settings.welcomed = true;
         let saved = serde_json::to_vec(&settings).unwrap();
         let reloaded: Settings = serde_json::from_slice(&saved).unwrap();
@@ -235,41 +232,42 @@ mod tests {
         assert!(reloaded.welcomed);
         assert_eq!(
             reloaded.compression_preference,
-            CompressionPreference::Efficiency
+            CompressionPreference::Quality
         );
-        assert_eq!(options.speed, Speed::Balanced);
-        assert_eq!(options.video_codec, VideoCodec::H264);
+        assert_eq!(options.speed, Speed::Quality);
+        assert_eq!(options.video_codec, VideoCodec::Av1);
         assert_eq!(options.audio_format, AudioFormat::Opus);
         assert_eq!(options.image_format, ImageFormat::Webp);
+        assert_eq!(options.archive, ArchiveFormat::SevenZ);
         assert!(options.gpu);
     }
 
     #[test]
-    fn gpu_drawing_follows_efficiency_unless_set() {
-        let mut settings: Settings = serde_json::from_str("{}").unwrap();
-        assert!(!settings.gpu_drawing());
-        settings.compression_preference = CompressionPreference::Efficiency;
-        assert!(settings.gpu_drawing());
-        settings.gpu_drawing = Some(false);
-        assert!(!settings.gpu_drawing());
-        settings.compression_preference = CompressionPreference::Balanced;
-        settings.gpu_drawing = Some(true);
-        assert!(settings.gpu_drawing());
+    fn settings_saved_as_efficiency_load_as_quality() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"compressionPreference": "efficiency"}"#).unwrap();
+        assert_eq!(
+            settings.compression_preference,
+            CompressionPreference::Quality
+        );
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert!(saved.contains(r#""compressionPreference":"quality""#));
     }
 
     #[test]
-    fn efficiency_turns_gpu_encoding_on_but_never_locks_it() {
+    fn gpu_switches_are_independent_of_the_preference() {
         let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.gpu_drawing());
+        settings.set_preference(CompressionPreference::Quality);
+        assert!(!settings.gpu_drawing());
+        settings.gpu_drawing = Some(true);
+        assert!(settings.gpu_drawing());
         settings.gpu = false;
-        settings.set_preference(CompressionPreference::Efficiency);
-        assert!(settings.options(10).gpu);
-        // Still the user's switch.
-        settings.gpu = false;
-        assert!(!settings.options(10).gpu);
-        settings.set_preference(CompressionPreference::Efficiency);
         assert!(!settings.options(10).gpu);
         settings.set_preference(CompressionPreference::Compatibility);
         assert!(!settings.options(10).gpu);
+        settings.gpu = true;
+        assert!(settings.options(10).gpu);
     }
 
     #[test]
@@ -291,7 +289,7 @@ mod tests {
             CompressionPreference::Balanced
         );
 
-        settings.compression_preference = CompressionPreference::Efficiency;
+        settings.compression_preference = CompressionPreference::Quality;
         let saved = serde_json::to_vec(&settings).unwrap();
         let (reloaded, migrated) = parse(&saved).unwrap();
         assert!(!migrated);
@@ -323,7 +321,7 @@ mod tests {
         assert_eq!(settings.archive_format, None);
 
         // So the preference now decides.
-        settings.compression_preference = CompressionPreference::Efficiency;
+        settings.compression_preference = CompressionPreference::Quality;
         assert_eq!(settings.options(10).audio_format, AudioFormat::Opus);
         assert_eq!(settings.options(10).image_format, ImageFormat::Webp);
         settings.compression_preference = CompressionPreference::Compatibility;

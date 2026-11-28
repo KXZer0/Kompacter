@@ -64,6 +64,10 @@ if [ -n "${KOMPACTER_FFMPEG_DIR:-}" ]; then
     fi
     install -m755 "$KOMPACTER_FFMPEG_DIR/ffmpeg" "$KOMPACTER_FFMPEG_DIR/ffprobe" \
         "$deb/usr/lib/kompacter/"
+    # A shared build's libraries (see release.yml): next to the programs, which look there.
+    if [ -d "$KOMPACTER_FFMPEG_DIR/ffmpeg-libs" ]; then
+        cp -a "$KOMPACTER_FFMPEG_DIR/ffmpeg-libs" "$deb/usr/lib/kompacter/"
+    fi
     install -Dm644 "$ffmpeg_license" "$deb/usr/share/doc/kompacter/FFmpeg-LICENSE"
     ffmpeg_dep=
 fi
@@ -98,6 +102,9 @@ install -Dm644 "$here/$app_id.desktop" "$bundle/$app_id.desktop"
 install -Dm644 "$icon" "$bundle/$app_id.png"
 if [ -n "$ffmpeg_license" ]; then
     install -m755 "$KOMPACTER_FFMPEG_DIR/ffmpeg" "$KOMPACTER_FFMPEG_DIR/ffprobe" "$bundle/"
+    if [ -d "$KOMPACTER_FFMPEG_DIR/ffmpeg-libs" ]; then
+        cp -a "$KOMPACTER_FFMPEG_DIR/ffmpeg-libs" "$bundle/"
+    fi
     install -Dm644 "$ffmpeg_license" "$bundle/FFmpeg-LICENSE"
 fi
 tar -C "$stage" -czf "$out/$bundle_name.tar.gz" "$bundle_name"

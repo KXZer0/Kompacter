@@ -1,0 +1,71 @@
+name: Memory test
+
+# The app compresses a video, an audio file, a picture, a folder and a zip, twice each,
+# hiding and reopening the panel between jobs, and measures its own memory. It fails if
+# memory keeps growing between rounds or stays high once the panel is hidden. See
+# apps/kompacter/src/app/selftest.rs and tools/selftest/run.sh.
+on:
+  pull_request:
+    paths:
+      - apps/**
+      - crates/**
+      - Cargo.lock
+      - tools/selftest/**
+      - .github/workflows/memory-test.yml
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  memory:
+    name: Memory (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-26.04
+            settings: ""
+          - name: Windows, CPU drawing
+            os: windows-latest
+            settings: ""
+          - name: Windows, GPU drawing
+            os: windows-latest
+            settings: '{"gpuDrawing": true}'
+          - name: macOS
+            os: macos-latest
+            settings: ""
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: memory
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/microsoft-prod.sources
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libfontconfig-dev xvfb libxkbcommon-x11-0 libegl1 libgl1-mesa-dri
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install ffmpeg
+      - run: cargo build --locked -p kompacter
+      - name: Memory self-test
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a tools/selftest/run.sh '${{ matrix.settings }}'
+          else
+            tools/selftest/run.sh '${{ matrix.settings }}'
+          fi

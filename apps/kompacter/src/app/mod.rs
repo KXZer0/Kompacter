@@ -7,6 +7,8 @@ mod linux_desktop;
 mod news;
 mod output;
 mod quick;
+#[cfg(debug_assertions)]
+mod selftest;
 pub(crate) mod settings;
 mod tray_art;
 mod trim;
@@ -38,7 +40,7 @@ use self::settings::Settings;
 const COMPRESSION_PREFERENCES: [CompressionPreference; 3] = [
     CompressionPreference::Compatibility,
     CompressionPreference::Balanced,
-    CompressionPreference::Efficiency,
+    CompressionPreference::Quality,
 ];
 const VIDEO_OVERRIDES: [Option<VideoCodec>; 4] = [
     None,
@@ -403,7 +405,6 @@ impl App {
         prefs.set_gpu(s.gpu);
         prefs.set_gpu_drawing_available(cfg!(windows));
         prefs.set_gpu_drawing(s.gpu_drawing());
-        prefs.set_gpu_drawing_follows(s.gpu_drawing.is_none());
         prefs.set_gpu_drawing_running(self.gpu_drawing);
         prefs.set_auto_update(s.auto_update);
         prefs.set_prereleases(s.prereleases);
@@ -851,9 +852,16 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     // Hiding the panel drops its window and renderer (GPU surface, glyph and image
     // caches) instead of keeping them for the next show, as Slint already does on
     // Wayland. Slint's winit backend reads this on every hide; set before any thread
-    // starts. Not on Windows: Skia raster gains little, and the GPU path is untested.
+    // starts. On Windows only with GPU drawing: Direct3D 12 (through wgpu) keeps its
+    // graphics memory pools across resizes and reopenings and grows to hundreds of MB,
+    // so the window and its device are released while the panel is hidden. Skia raster
+    // (the default) holds almost nothing and keeps its window.
     #[cfg(not(windows))]
     std::env::set_var("SLINT_DESTROY_WINDOW_ON_HIDE", "1");
+    #[cfg(windows)]
+    if settings::load().gpu_drawing() {
+        std::env::set_var("SLINT_DESTROY_WINDOW_ON_HIDE", "1");
+    }
     #[cfg(target_os = "linux")]
     let Some(linux_launch) = sys::linux::launch()
         .map_err(|error| slint::PlatformError::Other(format!("Kompacter activation: {error}")))?
@@ -1278,11 +1286,7 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
         });
         let a = app.clone();
         prefs.on_set_gpu_drawing(move |on| {
-            let mut s = a.settings.borrow_mut();
-            // Back to "follow the preference" when the choice matches what it would pick.
-            let follows = s.compression_preference == CompressionPreference::Efficiency;
-            s.gpu_drawing = (on != follows).then_some(on);
-            drop(s);
+            a.settings.borrow_mut().gpu_drawing = Some(on);
             a.save();
             a.sync_settings();
         });
@@ -1411,6 +1415,18 @@ pub(crate) fn start() -> Result<(), slint::PlatformError> {
     if let Ok(v) = std::env::var("KOMPACTER_DEMO") {
         demo(&app, &v);
     }
+    // Dev builds only: `KOMPACTER_SNAPSHOT=<file.png>` saves what the window shows once it
+    // has settled (with KOMPACTER_DEMO for any screen) and quits. CI collects these from
+    // every system for review (tools/selftest/screens.sh).
+    #[cfg(debug_assertions)]
+    if let Ok(out) = std::env::var("KOMPACTER_SNAPSHOT") {
+        snapshot_and_quit(&app, PathBuf::from(out));
+    }
+    // Dev builds only: the memory self-test CI runs (see selftest.rs).
+    #[cfg(debug_assertions)]
+    if let Ok(list) = std::env::var("KOMPACTER_SELFTEST") {
+        selftest::start(&app, &list);
+    }
     // Dev builds only: open this file at startup (for testing on a virtual display).
     #[cfg(debug_assertions)]
     if let Ok(p) = std::env::var("KOMPACTER_OPEN") {
@@ -1526,6 +1542,43 @@ fn demo_guard_app() -> &'static str {
         Ok("signal") => "signal",
         _ => "discord",
     }
+}
+
+/// Dev builds only: after the opening animation, write the window's contents to `out`
+/// as a PNG and quit (exit code 3 if the snapshot or the file fails).
+#[cfg(debug_assertions)]
+fn snapshot_and_quit(app: &Rc<App>, out: PathBuf) {
+    app.show_with(false);
+    let weak = Rc::downgrade(app);
+    slint::Timer::single_shot(Duration::from_millis(2500), move || {
+        let Some(app) = weak.upgrade() else { return };
+        let result = app
+            .ui()
+            .window()
+            .take_snapshot()
+            .map_err(|e| e.to_string())
+            .and_then(|shot| {
+                let file = std::fs::File::create(&out).map_err(|e| e.to_string())?;
+                let mut png =
+                    png::Encoder::new(std::io::BufWriter::new(file), shot.width(), shot.height());
+                png.set_color(png::ColorType::Rgba);
+                png.set_depth(png::BitDepth::Eight);
+                let mut writer = png.write_header().map_err(|e| e.to_string())?;
+                writer
+                    .write_image_data(shot.as_bytes())
+                    .map_err(|e| e.to_string())
+            });
+        match result {
+            Ok(()) => {
+                println!("snapshot: {}", out.display());
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("snapshot failed: {e}");
+                std::process::exit(3);
+            }
+        }
+    });
 }
 
 /// Dev builds only: `KOMPACTER_DEMO=big|split|trim|busy|done|toobig|parts|error|settings|drag|discord|welcome(-2|-3|-4|-preference)|news|update|update-screen|update-settings`

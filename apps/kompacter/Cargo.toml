@@ -16,6 +16,8 @@ serde.workspace = true
 serde_json.workspace = true
 # Checking downloaded updates (SHA-256).
 sha2 = "0.11"
+# Dev builds: KOMPACTER_SNAPSHOT writes the window as a PNG (already used by Slint).
+png = "0.18"
 tempfile.workspace = true
 slint = { version = "1.19", default-features = false, features = [
   "std",
@@ -109,6 +111,7 @@ features = [
   "Win32_System_LibraryLoader",
   "Win32_System_Memory",
   "Win32_System_Registry",
+  "Win32_System_ProcessStatus",
   "Win32_System_Threading",
   "Win32_UI_Controls",
   "Win32_UI_HiDpi",

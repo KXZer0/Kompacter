@@ -15,12 +15,12 @@ export component CompressionPreference inherits Rectangle {
     min-height: 58px + explain.preferred-height;
     preferred-height: self.min-height;
 
-    property <[string]> labels: ["Compatibility", "Balanced", "Efficiency"];
+    property <[string]> labels: ["Compatibility", "Balanced", "Quality"];
     property <string> explanation: root.index == 0
         ? "Plays on every phone, PC and chat app."
         : root.index == 1
-        ? "Good detail at a sensible speed."
-        : "Encodes on your GPU. Lightest on your PC.";
+        ? "Great quality that plays almost everywhere."
+        : "Most detail per MB, for newer devices.";
 
     accessible-role: slider;
     accessible-label: "Compression preference";

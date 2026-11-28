@@ -1,0 +1,69 @@
+name: Screenshots
+
+# Every screen of the app (dark, light and Discord style) as it really draws on each
+# system, uploaded as an artifact to look through in review. Fails only if a screen
+# can't be captured. See tools/selftest/screens.sh.
+on:
+  pull_request:
+    paths:
+      - apps/**
+      - tools/selftest/**
+      - .github/workflows/screenshots.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  screens:
+    name: Screenshots (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-26.04
+            settings: ""
+            artifact: screenshots-linux
+          - name: Windows
+            os: windows-latest
+            settings: ""
+            artifact: screenshots-windows
+          - name: Windows, GPU drawing
+            os: windows-latest
+            settings: '{"gpuDrawing": true}'
+            artifact: screenshots-windows-gpu
+          - name: macOS
+            os: macos-latest
+            settings: ""
+            artifact: screenshots-macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: screens
+      - name: Install build libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/microsoft-prod.sources
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig-dev xvfb fonts-inter libxkbcommon-x11-0 libegl1 libgl1-mesa-dri
+      - run: cargo build --locked -p kompacter
+      - name: Capture every screen
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/screens"
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a -s "-screen 0 1280x900x24" tools/selftest/screens.sh "$out" '${{ matrix.settings }}'
+          else
+            tools/selftest/screens.sh "$out" '${{ matrix.settings }}'
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/screens/*.png
+          if-no-files-found: warn
